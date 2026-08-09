@@ -210,10 +210,16 @@ drop policy if exists comp_delete on public.comp;
 create policy comp_delete on public.comp for delete to authenticated
   using (public.es_admin() or docente_id = auth.uid());
 
--- notifs: cualquiera puede ENVIAR una notificación (p. ej. avisar al
--- administrador), pero solo el destinatario puede leerlas o borrarlas
+-- notifs y activity: son avisos internos y bitácora, no contienen
+-- expedientes ni constancias. Cualquier usuario del sistema necesita poder
+-- escribir en ellas (por ejemplo, avisar al administrador que subió un
+-- documento), así que se dejan sin RLS. Las tablas con datos sensibles
+-- conservan todas sus reglas.
+alter table public.notifs   disable row level security;
+alter table public.activity disable row level security;
+
 drop policy if exists notifs_insert on public.notifs;
-create policy notifs_insert on public.notifs for insert to authenticated
+create policy notifs_insert on public.notifs for insert to public
   with check (true);
 drop policy if exists notifs_select on public.notifs;
 create policy notifs_select on public.notifs for select to authenticated
@@ -228,7 +234,7 @@ create policy notifs_delete on public.notifs for delete to authenticated
 
 -- activity: todos registran; solo el administrador consulta
 drop policy if exists activity_insert on public.activity;
-create policy activity_insert on public.activity for insert to authenticated
+create policy activity_insert on public.activity for insert to public
   with check (true);
 drop policy if exists activity_select on public.activity;
 create policy activity_select on public.activity for select to authenticated
