@@ -641,12 +641,11 @@ function DashboardAdmin({ db, irA }) {
     { name: "En proceso", value: docentes.filter(d => { const p = 100 * horasValidadas(db, d.id, ciclo) / metaDe(db, d.id); return p >= db.config.semAmarillo && p < db.config.semVerde; }).length, color: SEM_COLORS.amarillo },
     { name: "Bajo cumplimiento", value: docentes.filter(d => { const p = 100 * horasValidadas(db, d.id, ciclo) / metaDe(db, d.id); return p < db.config.semAmarillo; }).length, color: SEM_COLORS.rojo },
   ].filter(x => x.value > 0);
-  const porAnio = {};
-  db.certs.filter(c => c.estado === "validada" && c.datos.fecha_termino).forEach(c => {
-    const a = c.datos.fecha_termino.slice(0, 4);
-    porAnio[a] = (porAnio[a] || 0) + (Number(c.datos.horas) || 0);
+  const porCiclo = {};
+  db.certs.filter(c => c.estado === "validada" && c.ciclo).forEach(c => {
+    porCiclo[c.ciclo] = (porCiclo[c.ciclo] || 0) + (Number(c.datos.horas) || 0);
   });
-  const evolucion = Object.entries(porAnio).sort().map(([anio, horas]) => ({ anio, horas }));
+  const evolucion = Object.entries(porCiclo).sort().map(([anio, horas]) => ({ anio, horas }));
 
   return (
     <div className="space-y-5">
@@ -699,7 +698,7 @@ function DashboardAdmin({ db, irA }) {
           </ResponsiveContainer>}
         </Card>
         <Card className="p-4 lg:col-span-2">
-          <h3 className="font-bold text-sm mb-3">Evolución de horas de capacitación por año (histórico)</h3>
+          <h3 className="font-bold text-sm mb-3">Evolución de horas de capacitación por ciclo escolar (histórico)</h3>
           {evolucion.length === 0 ? <p className="text-sm text-slate-400 py-8 text-center">Aún no hay historial.</p> :
           <ResponsiveContainer width="100%" height={200}>
             <LineChart data={evolucion}><CartesianGrid strokeDasharray="3 3" stroke="#e5e9f0" />
@@ -750,7 +749,7 @@ function DashboardAdmin({ db, irA }) {
    ================================================================ */
 
 function DashboardDocente({ db, user, irA }) {
-  const ciclo = db.config.cicloActual;
+  const [ciclo, setCiclo] = useState(db.config.cicloActual);
   const h = horasValidadas(db, user.id, ciclo);
   const hp = horasPendientes(db, user.id, ciclo);
   const meta = metaDe(db, user.id);
@@ -771,10 +770,15 @@ function DashboardDocente({ db, user, irA }) {
           <img src={MASCOTA} alt="" className="w-14 h-14 object-contain object-top hidden sm:block" />
           <div>
             <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Hola, {user.nombre.split(" ")[0]}</h2>
-            <p className="text-sm text-slate-500">{user.area || "Docente"} · Ciclo {ciclo}</p>
+            <p className="text-sm text-slate-500">{user.area || "Docente"}</p>
           </div>
         </div>
-        <button className={btnPrim} onClick={() => irA("subir")}><Upload size={15} /> Subir constancia</button>
+        <div className="flex items-center gap-2">
+          <select className={inputCls + " !mt-0 !w-auto"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
+            {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+          </select>
+          <button className={btnPrim} onClick={() => irA("subir")}><Upload size={15} /> Subir constancia</button>
+        </div>
       </div>
 
       {exp.pct < 100 && (
@@ -830,7 +834,8 @@ function TablaCursos({ certs, db, acciones }) {
         <thead><tr className="text-left text-[11px] uppercase text-slate-400 border-b border-slate-200">
           <th className="py-2 pr-3">Curso</th><th className="py-2 pr-3 hidden md:table-cell">Institución</th>
           <th className="py-2 pr-3">Horas</th><th className="py-2 pr-3 hidden lg:table-cell">Categoría</th>
-          <th className="py-2 pr-3 hidden md:table-cell">Término</th><th className="py-2 pr-3">Estado</th>
+          <th className="py-2 pr-3 hidden md:table-cell">Término</th>
+          <th className="py-2 pr-3 hidden sm:table-cell">Ciclo</th><th className="py-2 pr-3">Estado</th>
           {acciones && <th className="py-2"></th>}
         </tr></thead>
         <tbody>
@@ -844,6 +849,13 @@ function TablaCursos({ certs, db, acciones }) {
               <td className="py-2.5 pr-3 font-semibold">{c.datos.horas ?? "—"}</td>
               <td className="py-2.5 pr-3 hidden lg:table-cell text-slate-500">{c.datos.categoria || "—"}</td>
               <td className="py-2.5 pr-3 hidden md:table-cell text-slate-500">{fmtFecha(c.datos.fecha_termino)}</td>
+              <td className="py-2.5 pr-3 hidden sm:table-cell text-slate-500 whitespace-nowrap">
+                {c.ciclo || "—"}
+                {!c.datos.fecha_termino && !c.datos.fecha_inicio && (
+                  <span title="Sin fecha registrada: captura la fecha del curso para archivarlo en el ciclo correcto."
+                    className="ml-1 text-amber-500">⚠</span>
+                )}
+              </td>
               <td className="py-2.5 pr-3"><Badge estado={c.estado} />
                 {c.estado === "rechazada" && c.motivoRechazo && <div className="text-[11px] text-rose-600 mt-0.5 max-w-[180px]">Motivo: {c.motivoRechazo}</div>}
               </td>
@@ -1068,16 +1080,16 @@ function VerArchivoBtn({ certId, guardado }) {
 }
 
 function MisCursos({ db, user, mutar }) {
-  const [anio, setAnio] = useState("todos");
+  const [cicloF, setCicloF] = useState("todos");
   const [estado, setEstado] = useState("todos");
   const [cat, setCat] = useState("todas");
   const [editando, setEditando] = useState(null);
   const mis = db.certs.filter(c => c.docenteId === user.id)
-    .filter(c => anio === "todos" || (c.datos.fecha_termino || c.creadoEn || "").startsWith(anio))
+    .filter(c => cicloF === "todos" || c.ciclo === cicloF)
     .filter(c => estado === "todos" || c.estado === estado)
     .filter(c => cat === "todas" || c.datos.categoria === cat)
     .sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || ""));
-  const anios = [...new Set(db.certs.filter(c => c.docenteId === user.id).map(c => (c.datos.fecha_termino || c.creadoEn || "").slice(0, 4)).filter(Boolean))].sort().reverse();
+  const misCiclos = [...new Set(db.certs.filter(c => c.docenteId === user.id).map(c => c.ciclo).filter(Boolean))].sort().reverse();
 
   const guardarEdicion = async () => {
     await mutar(d => {
@@ -1098,8 +1110,8 @@ function MisCursos({ db, user, mutar }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Mis cursos</h2>
         <div className="flex flex-wrap gap-2">
-          <select className={inputCls + " !mt-0 !w-auto"} value={anio} onChange={e => setAnio(e.target.value)}>
-            <option value="todos">Todos los años</option>{anios.map(a => <option key={a}>{a}</option>)}
+          <select className={inputCls + " !mt-0 !w-auto"} value={cicloF} onChange={e => setCicloF(e.target.value)}>
+            <option value="todos">Todos los ciclos</option>{misCiclos.map(a => <option key={a} value={a}>Ciclo {a}</option>)}
           </select>
           <select className={inputCls + " !mt-0 !w-auto"} value={cat} onChange={e => setCat(e.target.value)}>
             <option value="todas">Todas las categorías</option>{CATEGORIAS.map(c => <option key={c}>{c}</option>)}
