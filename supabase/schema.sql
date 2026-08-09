@@ -176,9 +176,11 @@ create policy certs_update on public.certs for update to authenticated
     and estado in ('procesando','revision_docente','pendiente_validacion','rechazada')))
   with check (public.es_admin() or (docente_id = auth.uid()
     and estado in ('procesando','revision_docente','pendiente_validacion')));
+-- El administrador puede eliminar cualquier constancia, incluso validadas.
+-- El docente solo puede quitar las suyas que fueron rechazadas.
 drop policy if exists certs_delete on public.certs;
 create policy certs_delete on public.certs for delete to authenticated
-  using (public.es_admin());
+  using (public.es_admin() or (docente_id = auth.uid() and estado = 'rechazada'));
 
 -- grados: mismo patrón (el estado 'validado'/'rechazado' lo pone el admin)
 drop policy if exists grados_select on public.grados;
