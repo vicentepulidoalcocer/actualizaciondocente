@@ -57,6 +57,10 @@ const LOGROS_DEF = [
 ];
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+
+/* Imágenes institucionales (archivos dentro de la carpeta /public) */
+const LOGO = import.meta.env.BASE_URL + "logo.png";
+const MASCOTA = import.meta.env.BASE_URL + "mascota.png";
 const hoy = () => new Date().toISOString().slice(0, 10);
 const ahora = () => new Date().toISOString();
 
@@ -153,11 +157,34 @@ function completitudExpediente(db, docenteId) {
       cuenta: nivel === "Licenciatura",
     });
   }
-  partes.push({ nombre: "Formación complementaria", ok: db.comp.some(x => x.docenteId === docenteId), cuenta: true });
+  partes.push({ nombre: "Formación complementaria", ok: db.comp.some(x => x.docenteId === docenteId), cuenta: false });
   partes.push({ nombre: "Capacitación", ok: db.certs.some(c => c.docenteId === docenteId && c.estado === "validada"), cuenta: true });
   const evaluadas = partes.filter(p => p.cuenta);
   const pct = Math.round(100 * evaluadas.filter(p => p.ok).length / evaluadas.length);
   return { partes, pct };
+}
+
+/* El ciclo escolar corre de agosto a julio: una fecha de agosto en adelante
+   pertenece al ciclo que inicia ese año; de enero a julio, al que inició el
+   año anterior. */
+function cicloDeFecha(fecha) {
+  const f = fecha ? new Date(fecha) : new Date();
+  const d = isNaN(f) ? new Date() : f;
+  const anio = d.getFullYear();
+  const inicio = d.getMonth() >= 7 ? anio : anio - 1; // getMonth: 7 = agosto
+  return `${inicio}-${inicio + 1}`;
+}
+
+// Ciclo al que corresponde una constancia, según la fecha del curso
+const cicloDeConstancia = (datos = {}) =>
+  cicloDeFecha(datos.fecha_termino || datos.fecha_inicio || datos.fecha_emision || null);
+
+// Ciclos disponibles: los configurados más los que aparezcan en constancias
+function ciclosDisponibles(db) {
+  const set = new Set(db.config.ciclos || []);
+  set.add(cicloDeFecha());
+  db.certs.forEach(c => c.ciclo && set.add(c.ciclo));
+  return [...set].sort().reverse();
 }
 
 /* ---------------- Utilidades de exportación ---------------------- */
@@ -182,7 +209,7 @@ function imprimirReporte(titulo, html) {
     th,td{border:1px solid #cbd2e0;padding:6px 10px;text-align:left}
     th{background:#eef1f7}.pie{margin-top:24px;font-size:11px;color:#667}
   </style></head><body><h1>${titulo}</h1>${html}
-  <p class="pie">Sistema de Seguimiento y Desarrollo Docente · Generado el ${new Date().toLocaleString("es-MX")}</p>
+  <p class="pie">Departamento de Formación Docente · CBTA No. 291 · Generado el ${new Date().toLocaleString("es-MX")}</p>
   <script>window.print()</script></body></html>`);
   w.document.close();
 }
@@ -287,9 +314,9 @@ function Login() {
     <div className="min-h-screen flex items-center justify-center bg-[#1a2340] p-4" style={{fontFamily:"'Inter', sans-serif"}}>
       <div className="w-full max-w-md">
         <div className="text-center mb-6">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-[#E8871E] text-white mb-3"><GraduationCap size={28} /></div>
-          <h1 className="text-white text-2xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Desarrollo Docente</h1>
-          <p className="text-slate-300 text-sm mt-1">Sistema de seguimiento de capacitación y expediente académico</p>
+          <img src={LOGO} alt="CBTA No. 291" className="w-24 h-24 mx-auto mb-3 rounded-full bg-white p-1 shadow-lg" />
+          <h1 className="text-white text-2xl font-bold leading-tight" style={{fontFamily:"'Archivo', sans-serif"}}>Departamento de<br />Formación Docente</h1>
+          <p className="text-slate-300 text-sm mt-1">Seguimiento de capacitación y expediente académico</p>
         </div>
         <Card className="p-6">
           <form onSubmit={entrar} className="space-y-4">
@@ -309,6 +336,12 @@ function Login() {
             solicita a la administración que te asigne una nueva.
           </p>
         </Card>
+        <div className="flex items-end justify-center mt-4">
+          <img src={MASCOTA} alt="" className="w-28 drop-shadow-xl" />
+          <p className="text-slate-200 text-xs mb-6 -ml-2 bg-white/10 rounded-2xl rounded-bl-sm px-3 py-2 leading-snug">
+            ¡Bienvenido!<br />CBTA No. 291
+          </p>
+        </div>
       </div>
     </div>
   );
@@ -447,8 +480,8 @@ export default function App() {
         <div className="flex items-center gap-3 px-4 py-2.5">
           <button className="lg:hidden p-1.5 rounded-lg hover:bg-white/10" onClick={() => setMenuAbierto(v => !v)}><Menu size={20} /></button>
           <div className="flex items-center gap-2 font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>
-            <span className="inline-flex w-8 h-8 items-center justify-center rounded-lg bg-[#E8871E]"><GraduationCap size={18} /></span>
-            <span className="hidden sm:inline">Desarrollo Docente</span>
+            <img src={LOGO} alt="CBTA 291" className="w-9 h-9 rounded-full bg-white p-0.5" />
+            <span className="hidden sm:inline leading-tight text-[13px]">Departamento de<br />Formación Docente</span>
           </div>
           <div className="flex-1 max-w-md mx-auto relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -571,7 +604,7 @@ function usarFiltros(db) {
     <div className="flex flex-wrap gap-2 items-center">
       <Filter size={15} className="text-slate-400" />
       <select className={inputCls + " !mt-0 !w-auto"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
-        {db.config.ciclos.map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+        {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
         <option value="historico">Histórico</option>
       </select>
       <select className={inputCls + " !mt-0 !w-auto"} value={categoria} onChange={e => setCategoria(e.target.value)}>
@@ -734,9 +767,12 @@ function DashboardDocente({ db, user, irA }) {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Hola, {user.nombre.split(" ")[0]}</h2>
-          <p className="text-sm text-slate-500">{user.area || "Docente"} · Ciclo {ciclo}</p>
+        <div className="flex items-center gap-3">
+          <img src={MASCOTA} alt="" className="w-14 h-14 object-contain object-top hidden sm:block" />
+          <div>
+            <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Hola, {user.nombre.split(" ")[0]}</h2>
+            <p className="text-sm text-slate-500">{user.area || "Docente"} · Ciclo {ciclo}</p>
+          </div>
         </div>
         <button className={btnPrim} onClick={() => irA("subir")}><Upload size={15} /> Subir constancia</button>
       </div>
@@ -887,7 +923,7 @@ function SubirConstancia({ db, user, mutar, irA }) {
       } catch (e) { fallo = true; }
       setProgreso(90);
       const nuevo = {
-        id, docenteId: user.id, ciclo: db.config.cicloActual,
+        id, docenteId: user.id, ciclo: cicloDeConstancia(datos),
         archivoNombre: file.name, archivoGuardado: guardado.guardado,
         estado: "revision_docente",
         datos: {
@@ -1048,6 +1084,7 @@ function MisCursos({ db, user, mutar }) {
       const c = d.certs.find(x => x.id === editando.id);
       if (!c || c.estado === "validada") return; // no editable tras validación
       c.datos = editando.datos;
+      c.ciclo = cicloDeConstancia(editando.datos); // corte de ciclo en agosto
       c.estado = "pendiente_validacion";
       c.dupFlag = !!detectarDuplicado(d, c);
       c.historial.push({ fecha: ahora(), accion: "Datos corregidos por el docente y reenviados a validación", por: user.nombre });
@@ -1117,7 +1154,7 @@ function Ranking({ db, user }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Podio de capacitación</h2>
         <select className={inputCls + " !mt-0 !w-auto"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
-          {db.config.ciclos.map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+          {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
           <option value="historico">Histórico</option>
         </select>
       </div>
@@ -1372,18 +1409,18 @@ function Docentes({ db, mutar, irA }) {
         }
         await mutar(d => {
           const u = d.users.find(x => x.id === e.id);
-          Object.assign(u, { nombre: e.nombre, email: e.email.trim(), area: e.area, asignaturas: e.asignaturas, antiguedad: e.antiguedad });
+          Object.assign(u, { nombre: e.nombre, email: e.email.trim(), area: e.area, asignaturas: e.asignaturas });
         });
       } else {
         // Crea la cuenta real (correo + contraseña) mediante la función Edge
         const creado = await crearDocente({
           email: e.email.trim(), password: e.nuevaPass || "docente123",
-          nombre: e.nombre, area: e.area || "", asignaturas: e.asignaturas || "", antiguedad: e.antiguedad || "",
+          nombre: e.nombre, area: e.area || "", asignaturas: e.asignaturas || "",
         });
         await mutar(d => {
           const u = d.users.find(x => x.id === creado.id);
-          if (u) Object.assign(u, { nombre: e.nombre, area: e.area || "", asignaturas: e.asignaturas || "", antiguedad: e.antiguedad || "", creadoEn: ahora() });
-          else d.users.push({ id: creado.id, nombre: e.nombre, email: e.email.trim(), rol: "docente", area: e.area || "", asignaturas: e.asignaturas || "", antiguedad: e.antiguedad || "", activo: true, creadoEn: ahora() });
+          if (u) Object.assign(u, { nombre: e.nombre, area: e.area || "", asignaturas: e.asignaturas || "", creadoEn: ahora() });
+          else d.users.push({ id: creado.id, nombre: e.nombre, email: e.email.trim(), rol: "docente", area: e.area || "", asignaturas: e.asignaturas || "", activo: true, creadoEn: ahora() });
           registrarActividad(d, `Se dio de alta al docente ${e.nombre}.`);
         });
       }
@@ -1427,7 +1464,6 @@ function Docentes({ db, mutar, irA }) {
             <Campo label="Correo institucional"><input className={inputCls} type="email" value={editando.email} onChange={e => setEditando({ ...editando, email: e.target.value })} /></Campo>
             <Campo label="Área o academia"><input className={inputCls} value={editando.area || ""} onChange={e => setEditando({ ...editando, area: e.target.value })} /></Campo>
             <Campo label="Asignatura(s) que imparte"><input className={inputCls} value={editando.asignaturas || ""} onChange={e => setEditando({ ...editando, asignaturas: e.target.value })} /></Campo>
-            <Campo label="Antigüedad (opcional)"><input className={inputCls} value={editando.antiguedad || ""} onChange={e => setEditando({ ...editando, antiguedad: e.target.value })} /></Campo>
             <Campo label={editando.id ? "Nueva contraseña (opcional)" : "Contraseña inicial"}><input className={inputCls} value={editando.nuevaPass} onChange={e => setEditando({ ...editando, nuevaPass: e.target.value })} placeholder={editando.id ? "Dejar en blanco para no cambiar" : "docente123"} /></Campo>
           </div>
           {errAlta && <p className="text-sm text-rose-600 mt-3 flex items-center gap-1.5"><AlertTriangle size={14} />{errAlta}</p>}
@@ -1530,7 +1566,6 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
           <div><span className="text-slate-400 text-xs block">Correo institucional</span>{docente.email}</div>
           <div><span className="text-slate-400 text-xs block">Área / academia</span>{docente.area || "—"}</div>
           <div><span className="text-slate-400 text-xs block">Asignaturas</span>{docente.asignaturas || "—"}</div>
-          {docente.antiguedad && <div><span className="text-slate-400 text-xs block">Antigüedad</span>{docente.antiguedad}</div>}
         </div>
         <div className="mt-3 flex flex-wrap gap-1.5">
           {exp.partes.map(p => (
@@ -1742,7 +1777,7 @@ function Reportes({ db }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Reportes</h2>
         <select className={inputCls + " !mt-0 !w-auto"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
-          {db.config.ciclos.map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+          {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
           <option value="historico">Histórico</option>
         </select>
       </div>
@@ -1770,10 +1805,21 @@ function PerfilInstitucional({ db }) {
   const docentes = db.users.filter(u => u.rol === "docente" && u.activo)
     .filter(d => area === "todas" || d.area === area);
   const areas = [...new Set(db.users.filter(u => u.rol === "docente").map(u => u.area).filter(Boolean))];
-  const con = (nivel) => docentes.filter(d => db.grados.some(g => g.docenteId === d.id && g.nivel === nivel && g.estado === "validado")).length;
+  // Grado máximo validado de cada docente: se cuenta una sola vez, en su
+  // nivel más alto (quien tiene doctorado no suma también en licenciatura).
+  const gradoMaximo = (docenteId) => {
+    for (const nivel of [...NIVELES].reverse()) {
+      if (db.grados.some(g => g.docenteId === docenteId && g.nivel === nivel && g.estado === "validado")) return nivel;
+    }
+    return "Sin grado validado";
+  };
+  const maximos = docentes.map(d => gradoMaximo(d.id));
+  const con = (nivel) => maximos.filter(m => m === nivel).length;
   const conComp = docentes.filter(d => db.comp.some(c => c.docenteId === d.id && c.estado === "validado")).length;
   const completos = docentes.filter(d => completitudExpediente(db, d.id).pct === 100).length;
-  const dist = NIVELES.map(n => ({ name: n, value: con(n) })).filter(x => x.value > 0);
+  const dist = [...NIVELES, "Sin grado validado"]
+    .map(n => ({ name: n, value: maximos.filter(m => m === n).length }))
+    .filter(x => x.value > 0);
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1783,16 +1829,17 @@ function PerfilInstitucional({ db }) {
         </select>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <Stat icono={GraduationCap} label="Con licenciatura validada" valor={con("Licenciatura")} />
-        <Stat icono={GraduationCap} label="Con maestría validada" valor={con("Maestría")} />
-        <Stat icono={GraduationCap} label="Con doctorado validado" valor={con("Doctorado")} />
+        <Stat icono={GraduationCap} label="Máximo grado: licenciatura" valor={con("Licenciatura")} />
+        <Stat icono={GraduationCap} label="Máximo grado: maestría" valor={con("Maestría")} />
+        <Stat icono={GraduationCap} label="Máximo grado: doctorado" valor={con("Doctorado")} />
         <Stat icono={Star} label="Con formación complementaria" valor={conComp} />
         <Stat icono={FolderOpen} label="Expedientes completos" valor={docentes.length ? Math.round(100 * completos / docentes.length) + "%" : "—"} sub={`${completos} de ${docentes.length}`} />
       </div>
       <div className="grid lg:grid-cols-2 gap-4">
         <Card className="p-4">
-          <h3 className="font-bold text-sm mb-3">Distribución de grados académicos</h3>
-          {dist.length === 0 ? <p className="text-sm text-slate-400 py-8 text-center">Aún no hay grados validados.</p> :
+          <h3 className="font-bold text-sm mb-1">Distribución por grado máximo</h3>
+          <p className="text-[11px] text-slate-400 mb-2">Cada docente se cuenta una sola vez, en su nivel de estudios más alto.</p>
+          {dist.length === 0 ? <p className="text-sm text-slate-400 py-8 text-center">Aún no hay docentes registrados.</p> :
           <ResponsiveContainer width="100%" height={220}>
             <PieChart><Pie data={dist} dataKey="value" nameKey="name" outerRadius={80} label>
               {dist.map((_, i) => <Cell key={i} fill={PIE_COLORS[i]} />)}</Pie><Tooltip /><Legend wrapperStyle={{fontSize:11}}/></PieChart>
@@ -1922,7 +1969,22 @@ function Administracion({ db, user, mutar }) {
           <input className={inputCls + " !mt-0 !w-40"} placeholder="2026-2027" value={nuevoCiclo} onChange={e => setNuevoCiclo(e.target.value)} />
           <button className={btnSec} onClick={agregarCiclo}><Plus size={14}/>Agregar ciclo</button>
         </div>
-        <p className="text-xs text-slate-400">Las constancias nuevas se registran en el ciclo actual; el historial de ciclos anteriores se conserva por separado.</p>
+        <p className="text-xs text-slate-400">
+          El ciclo escolar corre de <b>agosto a julio</b>. Cada constancia se registra
+          automáticamente en el ciclo que le corresponde según la fecha del curso, sin importar
+          cuándo se suba al sistema. El ciclo marcado como actual es el que se usa en los
+          tableros y el ranking.
+        </p>
+        {cicloDeFecha() !== cfg.cicloActual && (
+          <div className="text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-xl p-3 flex flex-wrap items-center gap-2">
+            <AlertTriangle size={14} />
+            Por la fecha de hoy, el ciclo en curso es <b>{cicloDeFecha()}</b>.
+            <button className="underline font-semibold" onClick={() => mutar(d => {
+              if (!d.config.ciclos.includes(cicloDeFecha())) d.config.ciclos.push(cicloDeFecha());
+              d.config.cicloActual = cicloDeFecha();
+            })}>Cambiar al ciclo {cicloDeFecha()}</button>
+          </div>
+        )}
       </Card>
 
       <Card className="p-5 space-y-3">
