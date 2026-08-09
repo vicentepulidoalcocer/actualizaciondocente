@@ -112,23 +112,27 @@ function detectarDuplicado(db, cert) {
   });
 }
 
-function otorgarLogros(db, docenteId) {
-  const tiene = (clave) => db.logros.some(l => l.docenteId === docenteId && l.clave === clave);
+// Las insignias se ganan dentro de cada ciclo escolar: la clave guardada
+// combina el logro y el ciclo (por ejemplo "h20@2025-2026"), de modo que
+// un docente vuelve a conquistarlas cada ciclo.
+const claveLogro = (clave, ciclo) => `${clave}@${ciclo}`;
+
+function otorgarLogros(db, docenteId, cicloRef) {
+  const ciclo = cicloRef || db.config.cicloActual;
+  const tiene = (clave) => db.logros.some(l => l.docenteId === docenteId && l.clave === claveLogro(clave, ciclo));
   const dar = (clave) => {
     if (tiene(clave)) return;
-    db.logros.push({ id: uid(), docenteId, clave, fecha: ahora() });
+    db.logros.push({ id: uid(), docenteId, clave: claveLogro(clave, ciclo), ciclo, fecha: ahora() });
     const def = LOGROS_DEF.find(l => l.clave === clave);
-    notificar(db, docenteId, `🏅 Insignia obtenida: ${def.nombre}`);
+    notificar(db, docenteId, `🏅 Insignia obtenida (ciclo ${ciclo}): ${def.nombre}`);
   };
-  const ciclo = db.config.cicloActual;
   const h = horasValidadas(db, docenteId, ciclo);
-  const hHist = horasValidadas(db, docenteId, "historico");
-  const nCursos = db.certs.filter(c => c.docenteId === docenteId && c.estado === "validada").length;
+  const nCursos = db.certs.filter(c => c.docenteId === docenteId && c.estado === "validada" && c.ciclo === ciclo).length;
   if (nCursos >= 1) dar("primer_curso");
-  if (hHist >= 20) dar("h20");
-  if (hHist >= 50) dar("h50");
-  if (hHist >= 100) dar("h100");
-  if (h >= metaDe(db, docenteId)) { dar("meta"); }
+  if (h >= 20) dar("h20");
+  if (h >= 50) dar("h50");
+  if (h >= 100) dar("h100");
+  if (h >= metaDe(db, docenteId)) dar("meta");
   const top3 = rankingDe(db, ciclo).slice(0, 3).map(r => r.id);
   if (top3.includes(docenteId) && h > 0) dar("top3");
 }
@@ -766,7 +770,7 @@ function DashboardDocente({ db, user, irA }) {
   const validados = misCerts.filter(c => c.estado === "validada");
   const pendCount = misCerts.filter(c => ["pendiente_validacion", "revision_docente"].includes(c.estado)).length;
   const exp = completitudExpediente(db, user.id);
-  const misLogros = db.logros.filter(l => l.docenteId === user.id);
+  const misLogros = db.logros.filter(l => l.docenteId === user.id && l.clave.endsWith("@" + ciclo));
 
   return (
     <div className="space-y-5">
@@ -817,7 +821,7 @@ function DashboardDocente({ db, user, irA }) {
         <Stat icono={BookOpen} label="Cursos validados" valor={validados.filter(c => c.ciclo === ciclo).length} sub={`${validados.length} en total`} />
         <Stat icono={Clock} label="Horas acumuladas" valor={h} sub="este ciclo" />
         <Stat icono={FileCheck} label="Horas pendientes" valor={hp} sub={`${pendCount} constancia(s)`} color={hp > 0 ? "text-amber-600" : "text-slate-900"} />
-        <Stat icono={Award} label="Insignias" valor={misLogros.length} sub={`de ${LOGROS_DEF.length} posibles`} />
+        <Stat icono={Award} label="Insignias del ciclo" valor={misLogros.length} sub={`de ${LOGROS_DEF.length} posibles`} />
       </div>
 
       <Card className="p-4">
@@ -1229,13 +1233,23 @@ function Ranking({ db, user }) {
    ================================================================ */
 
 function Logros({ db, user }) {
+  const [ciclo, setCiclo] = useState(db.config.cicloActual);
   const mios = db.logros.filter(l => l.docenteId === user.id);
+  const totalCiclo = mios.filter(m => m.clave.endsWith("@" + ciclo)).length;
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Mis logros</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Mis logros</h2>
+          <p className="text-sm text-slate-500">{totalCiclo} de {LOGROS_DEF.length} insignias en el ciclo {ciclo}</p>
+        </div>
+        <select className={inputCls + " !mt-0 !w-auto"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
+          {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+        </select>
+      </div>
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {LOGROS_DEF.map(l => {
-          const ganado = mios.find(m => m.clave === l.clave);
+          const ganado = mios.find(m => m.clave === claveLogro(l.clave, ciclo));
           return (
             <Card key={l.clave} className={`p-4 flex items-center gap-3 ${ganado ? "border-[#E8871E] bg-amber-50/60" : "opacity-55"}`}>
               <span className="text-3xl">{l.icono}</span>
@@ -1279,7 +1293,7 @@ function Validaciones({ db, user, mutar }) {
       c.historial.push({ fecha: ahora(), accion: "Validada por la administración", por: user.nombre });
       notificar(d, c.docenteId, `✅ Tu constancia “${c.datos.curso}” fue validada. Se sumaron ${c.datos.horas || 0} horas a tu historial.`);
       registrarActividad(d, `Se validó la constancia “${c.datos.curso}” de ${nombreDe(c.docenteId)} (${c.datos.horas || 0} h).`);
-      otorgarLogros(d, c.docenteId);
+      otorgarLogros(d, c.docenteId, c.ciclo);
       const h = horasValidadas(d, c.docenteId, d.config.cicloActual);
       const m = metaDe(d, c.docenteId);
       if (h >= m) registrarActividad(d, `🎉 ${nombreDe(c.docenteId)} alcanzó ${h} horas y cumplió su meta del ciclo.`);
@@ -1758,7 +1772,7 @@ function ExpedienteIntegral({ db, docenteId, mutar, user, volver }) {
             <Stat icono={BookOpen} label="Cursos validados" valor={certs.filter(c => c.estado === "validada").length} />
             <Stat icono={Clock} label="Horas del ciclo" valor={h} />
             <Stat icono={FileCheck} label="Horas pendientes" valor={horasPendientes(db, docenteId, ciclo)} />
-            <Stat icono={Award} label="Insignias" valor={db.logros.filter(l => l.docenteId === docenteId).length} />
+            <Stat icono={Award} label="Insignias del ciclo" valor={db.logros.filter(l => l.docenteId === docenteId && l.clave.endsWith("@" + ciclo)).length} />
           </div>
           <Card className="p-5"><Progreso actual={h} meta={meta} semaforo={semaforoDe(db, meta ? Math.round(100*h/meta) : 0)} /></Card>
           <Card className="p-4"><h3 className="font-bold text-sm mb-2">Constancias</h3><TablaCursos certs={certs} db={db} /></Card>
