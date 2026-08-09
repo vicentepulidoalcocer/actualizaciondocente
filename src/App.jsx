@@ -175,9 +175,14 @@ function cicloDeFecha(fecha) {
   return `${inicio}-${inicio + 1}`;
 }
 
-// Ciclo al que corresponde una constancia, según la fecha del curso
+// Ciclo al que corresponde una constancia. Manda la FECHA DE EMISIÓN del
+// documento; solo si no aparece se recurre a las fechas del curso.
 const cicloDeConstancia = (datos = {}) =>
-  cicloDeFecha(datos.fecha_termino || datos.fecha_inicio || datos.fecha_emision || null);
+  cicloDeFecha(datos.fecha_emision || datos.fecha_termino || datos.fecha_inicio || null);
+
+// ¿Se pudo determinar el ciclo con una fecha real del documento?
+const tieneFechaDeCiclo = (datos = {}) =>
+  !!(datos.fecha_emision || datos.fecha_termino || datos.fecha_inicio);
 
 // Ciclos disponibles: los configurados más los que aparezcan en constancias
 function ciclosDisponibles(db) {
@@ -851,8 +856,8 @@ function TablaCursos({ certs, db, acciones }) {
               <td className="py-2.5 pr-3 hidden md:table-cell text-slate-500">{fmtFecha(c.datos.fecha_termino)}</td>
               <td className="py-2.5 pr-3 hidden sm:table-cell text-slate-500 whitespace-nowrap">
                 {c.ciclo || "—"}
-                {!c.datos.fecha_termino && !c.datos.fecha_inicio && (
-                  <span title="Sin fecha registrada: captura la fecha del curso para archivarlo en el ciclo correcto."
+                {!tieneFechaDeCiclo(c.datos) && (
+                  <span title="Sin fecha de emisión registrada: captúrala para archivar la constancia en el ciclo correcto."
                     className="ml-1 text-amber-500">⚠</span>
                 )}
               </td>
@@ -1091,6 +1096,14 @@ function MisCursos({ db, user, mutar }) {
     .sort((a, b) => (b.creadoEn || "").localeCompare(a.creadoEn || ""));
   const misCiclos = [...new Set(db.certs.filter(c => c.docenteId === user.id).map(c => c.ciclo).filter(Boolean))].sort().reverse();
 
+  // El docente puede quitar de su historial una constancia rechazada
+  const descartarRechazada = async (c) => {
+    if (c.estado !== "rechazada") return;
+    if (!window.confirm(`¿Quitar de tu historial la constancia “${c.datos.curso || c.archivoNombre}”?\n\nNo pasó la validación, así que no suma horas. Esta acción no se puede deshacer.`)) return;
+    await mutar(d => { d.certs = d.certs.filter(x => x.id !== c.id); });
+    await eliminarArchivo(c.id);
+  };
+
   const guardarEdicion = async () => {
     await mutar(d => {
       const c = d.certs.find(x => x.id === editando.id);
@@ -1128,6 +1141,8 @@ function MisCursos({ db, user, mutar }) {
             <VerArchivoBtn certId={c.id} guardado={c.archivoGuardado} />
             {["revision_docente", "pendiente_validacion", "rechazada"].includes(c.estado) &&
               <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Corregir datos" onClick={() => setEditando(JSON.parse(JSON.stringify(c)))}><Pencil size={15} /></button>}
+            {c.estado === "rechazada" &&
+              <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500" title="Quitar de mi historial" onClick={() => descartarRechazada(c)}><Trash2 size={15} /></button>}
           </div>
         )} />
       </Card>
@@ -1285,8 +1300,16 @@ function Validaciones({ db, user, mutar }) {
   };
 
   const eliminarCert = async (c) => {
-    if (!window.confirm("¿Eliminar definitivamente este registro? Esta acción no se puede deshacer.")) return;
-    await mutar(d => { d.certs = d.certs.filter(x => x.id !== c.id); });
+    const eraValidada = c.estado === "validada";
+    const aviso = eraValidada
+      ? `Esta constancia está VALIDADA. Al eliminarla se restarán ${c.datos.horas || 0} horas del ciclo ${c.ciclo} de ${nombreDe(c.docenteId)}.\n\n¿Eliminar definitivamente?`
+      : "¿Eliminar definitivamente este registro? Esta acción no se puede deshacer.";
+    if (!window.confirm(aviso)) return;
+    await mutar(d => {
+      d.certs = d.certs.filter(x => x.id !== c.id);
+      notificar(d, c.docenteId, `🗑️ La administración eliminó tu constancia “${c.datos.curso || c.archivoNombre}”${eraValidada ? ` y se restaron ${c.datos.horas || 0} horas de tu historial` : ""}.`);
+      registrarActividad(d, `Se eliminó la constancia “${c.datos.curso || "sin título"}” de ${nombreDe(c.docenteId)}.`);
+    });
     await eliminarArchivo(c.id);
     setRevisando(null);
   };
@@ -1333,6 +1356,8 @@ function Validaciones({ db, user, mutar }) {
               <Badge estado={c.estado} />
               <VerArchivoBtn certId={c.id} guardado={c.archivoGuardado} />
               <button className={btnSec + " !px-3 !py-1.5"} onClick={() => { setRevisando(JSON.parse(JSON.stringify(c))); setMotivo(""); }}>Revisar</button>
+              <button title="Eliminar constancia" className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50"
+                onClick={() => eliminarCert(c)}><Trash2 size={16} /></button>
             </div>
           ))}
         </Card>
