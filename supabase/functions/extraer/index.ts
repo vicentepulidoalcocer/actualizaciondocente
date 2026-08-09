@@ -60,7 +60,7 @@ Deno.serve(async (req) => {
     };
 
     const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${clave}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${clave}`,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cuerpo) },
     );
     const j = await r.json();
