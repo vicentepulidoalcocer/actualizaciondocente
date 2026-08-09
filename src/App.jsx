@@ -142,14 +142,21 @@ function registrarActividad(db, texto) {
 function completitudExpediente(db, docenteId) {
   const u = db.users.find(x => x.id === docenteId);
   const partes = [];
-  partes.push({ nombre: "Perfil personal", ok: !!(u?.area && u?.asignaturas) });
+  partes.push({ nombre: "Perfil personal", ok: !!(u?.area && u?.asignaturas), cuenta: true });
   for (const nivel of NIVELES) {
     const g = db.grados.find(x => x.docenteId === docenteId && x.nivel === nivel);
-    partes.push({ nombre: nivel, ok: g?.estado === "validado", opcional: nivel !== "Licenciatura", registrado: !!g });
+    // Maestría y doctorado se registran y se muestran, pero no afectan el
+    // porcentaje: no todos los docentes cuentan con posgrado.
+    partes.push({
+      nombre: nivel, ok: g?.estado === "validado",
+      opcional: nivel !== "Licenciatura", registrado: !!g,
+      cuenta: nivel === "Licenciatura",
+    });
   }
-  partes.push({ nombre: "Formación complementaria", ok: db.comp.some(x => x.docenteId === docenteId) });
-  partes.push({ nombre: "Capacitación", ok: db.certs.some(c => c.docenteId === docenteId && c.estado === "validada") });
-  const pct = Math.round(100 * partes.filter(p => p.ok).length / partes.length);
+  partes.push({ nombre: "Formación complementaria", ok: db.comp.some(x => x.docenteId === docenteId), cuenta: true });
+  partes.push({ nombre: "Capacitación", ok: db.certs.some(c => c.docenteId === docenteId && c.estado === "validada"), cuenta: true });
+  const evaluadas = partes.filter(p => p.cuenta);
+  const pct = Math.round(100 * evaluadas.filter(p => p.ok).length / evaluadas.length);
   return { partes, pct };
 }
 
@@ -1528,7 +1535,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
         <div className="mt-3 flex flex-wrap gap-1.5">
           {exp.partes.map(p => (
             <span key={p.nombre} className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${p.ok ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-500"}`}>
-              {p.ok ? "✓" : "—"} {p.nombre}
+              {p.ok ? "✓" : "—"} {p.nombre}{!p.cuenta && <span className="font-normal opacity-70"> · no cuenta</span>}
             </span>
           ))}
         </div>
