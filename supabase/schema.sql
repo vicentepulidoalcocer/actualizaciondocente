@@ -309,3 +309,108 @@ create policy archivos_update on storage.objects for update to authenticated
 drop policy if exists archivos_delete on storage.objects;
 create policy archivos_delete on storage.objects for delete to authenticated
   using (bucket_id = 'archivos');
+
+-- ================================================================
+-- MÓDULO DE AVISOS Y CIRCULARES
+-- ================================================================
+
+-- ---------- Tabla de avisos -------------------------------------
+-- El contenido del aviso vive en `data` (jsonb), igual que el resto
+-- del sistema. `estado` se saca a columna para poder filtrar por RLS.
+
+create table if not exists public.avisos (
+  id         text primary key,
+  estado     text not null default 'draft' check (estado in ('draft','published','archived')),
+  data       jsonb not null,
+  created_by uuid references public.perfiles (id) on delete set null,
+  creado     timestamptz not null default now()
+);
+
+create index if not exists avisos_estado_idx on public.avisos (estado);
+
+-- ---------- Tabla de acuses de enterado -------------------------
+-- Aquí NO se usa jsonb: el usuario y la fecha son columnas con valor
+-- por defecto puesto por el servidor, de modo que el navegador no
+-- puede elegir a nombre de quién ni con qué hora se firma.
+
+create table if not exists public.acuses (
+  id             uuid primary key default gen_random_uuid(),
+  aviso_id       text not null references public.avisos (id) on delete cascade,
+  usuario_id     uuid not null default auth.uid() references public.perfiles (id) on delete cascade,
+  fecha_enterado timestamptz not null default now(),
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now(),
+  -- Un solo acuse por docente y aviso
+  constraint acuses_unicos unique (aviso_id, usuario_id)
+);
+
+create index if not exists acuses_aviso_idx   on public.acuses (aviso_id);
+create index if not exists acuses_usuario_idx on public.acuses (usuario_id);
+
+-- ---------- Blindaje del acuse ----------------------------------
+-- Refuerzo en el servidor: aunque la petición traiga otro usuario u
+-- otra fecha, el trigger los reescribe con los valores reales.
+
+create or replace function public.forzar_datos_acuse()
+returns trigger
+language plpgsql security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.usuario_id     := auth.uid();
+    new.fecha_enterado := now();
+    new.created_at     := now();
+    new.updated_at     := now();
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_forzar_acuse on public.acuses;
+create trigger trg_forzar_acuse
+  before insert on public.acuses
+  for each row execute function public.forzar_datos_acuse();
+
+-- ---------- Seguridad a nivel de fila ---------------------------
+
+alter table public.avisos enable row level security;
+alter table public.acuses enable row level security;
+
+-- Avisos: solo el administrador crea, edita y archiva.
+-- El docente ve únicamente los publicados y los archivados (para que
+-- conserve su historial); los borradores le quedan invisibles.
+drop policy if exists avisos_select on public.avisos;
+create policy avisos_select on public.avisos for select to authenticated
+  using (public.es_admin() or estado in ('published','archived'));
+
+drop policy if exists avisos_insert on public.avisos;
+create policy avisos_insert on public.avisos for insert to authenticated
+  with check (public.es_admin());
+
+drop policy if exists avisos_update on public.avisos;
+create policy avisos_update on public.avisos for update to authenticated
+  using (public.es_admin()) with check (public.es_admin());
+
+drop policy if exists avisos_delete on public.avisos;
+create policy avisos_delete on public.avisos for delete to authenticated
+  using (public.es_admin());
+
+-- Acuses: el docente ve los suyos; el administrador ve todos.
+drop policy if exists acuses_select on public.acuses;
+create policy acuses_select on public.acuses for select to authenticated
+  using (usuario_id = auth.uid() or public.es_admin());
+
+-- REGLA CENTRAL: un docente solo puede firmar por sí mismo, y solo
+-- sobre avisos que estén publicados.
+drop policy if exists acuses_insert on public.acuses;
+create policy acuses_insert on public.acuses for insert to authenticated
+  with check (
+    usuario_id = auth.uid()
+    and exists (select 1 from public.avisos a where a.id = aviso_id and a.estado = 'published')
+  );
+
+-- El acuse es evidencia de recepción: nadie lo modifica ni lo borra.
+-- (Sin políticas de UPDATE ni DELETE, RLS las niega por defecto.)
+drop policy if exists acuses_update on public.acuses;
+drop policy if exists acuses_delete on public.acuses;
