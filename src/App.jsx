@@ -4,7 +4,8 @@ import {
   GraduationCap, Bell, Search, LogOut, CheckCircle2, XCircle, Clock,
   AlertTriangle, ChevronRight, Users, Target, TrendingUp, FileCheck,
   Download, Filter, Plus, Pencil, Trash2, Eye, Medal, Star, Loader2,
-  FolderOpen, User, Activity, ShieldCheck, Menu, X
+  FolderOpen, User, Activity, ShieldCheck, Menu, X, Megaphone,
+  Paperclip, Link2, Archive, Send
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie,
@@ -21,6 +22,7 @@ import { supabase, configurada } from "./lib/supabase";
 import {
   cargarTodo, sincronizar, guardarArchivo, leerArchivo, eliminarArchivo,
   extraerConIA, crearDocente, restablecerPassword, cambiarEmailDocente,
+  marcarEnterado,
 } from "./lib/nube";
 
 const CATEGORIAS = [
@@ -46,6 +48,16 @@ const ESTADOS_GRADO = {
 };
 
 const NIVELES = ["Licenciatura", "Maestría", "Doctorado"];
+
+/* ---- Avisos y circulares ---- */
+const TIPOS_AVISO = ["Circular", "Curso", "Reunión", "Información general", "Actividad", "Importante", "Urgente"];
+const PRIORIDADES = ["Normal", "Importante", "Urgente"];
+const COLOR_PRIORIDAD = {
+  Normal:     { chip: "bg-slate-100 text-slate-600", borde: "border-slate-200", punto: "" },
+  Importante: { chip: "bg-amber-100 text-amber-800", borde: "border-amber-300", punto: "🟠" },
+  Urgente:    { chip: "bg-rose-100 text-rose-700",   borde: "border-rose-400",  punto: "🔴" },
+};
+const ESTADO_AVISO = { draft: "Borrador", published: "Publicado", archived: "Archivado" };
 
 const LOGROS_DEF = [
   { clave: "primer_curso", nombre: "Primer curso registrado", icono: "🎓", desc: "Tu primera constancia validada" },
@@ -195,6 +207,43 @@ function ciclosDisponibles(db) {
   db.certs.forEach(c => c.ciclo && set.add(c.ciclo));
   return [...set].sort().reverse();
 }
+
+/* ---------------- Avisos y circulares ---------------------------- */
+
+// Destinatarios de un aviso: por ahora, todos los docentes activos.
+// El campo `destino` queda guardado en cada aviso para poder ampliarlo
+// después (una academia, un departamento, un docente en particular)
+// sin migrar los avisos ya publicados.
+function destinatariosDe(db, aviso) {
+  const activos = db.users.filter(u => u.rol === "docente" && u.activo);
+  const destino = aviso?.destino || { tipo: "todos" };
+  if (destino.tipo === "docentes" && Array.isArray(destino.ids)) {
+    return activos.filter(u => destino.ids.includes(u.id));
+  }
+  if (destino.tipo === "area" && destino.area) {
+    return activos.filter(u => u.area === destino.area);
+  }
+  return activos;
+}
+
+const acuseDe = (db, avisoId, usuarioId) =>
+  db.acuses.find(a => a.avisoId === avisoId && a.usuarioId === usuarioId);
+
+function seguimientoDe(db, aviso) {
+  const total = destinatariosDe(db, aviso);
+  const enterados = total.filter(d => acuseDe(db, aviso.id, d.id));
+  const pct = total.length ? Math.round(1000 * enterados.length / total.length) / 10 : 0;
+  return { total, enterados, pendientes: total.filter(d => !acuseDe(db, aviso.id, d.id)), pct };
+}
+
+const avisoVencido = (aviso) =>
+  !!aviso.fechaLimite && new Date(aviso.fechaLimite + "T23:59:59") < new Date();
+
+// Avisos que un docente todavía no ha confirmado
+const avisosPendientes = (db, user) =>
+  db.avisos.filter(a => a.estado === "published"
+    && destinatariosDe(db, a).some(d => d.id === user.id)
+    && !acuseDe(db, a.id, user.id));
 
 /* ---------------- Utilidades de exportación ---------------------- */
 
@@ -464,6 +513,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: db.certs.filter(c => c.estado === "pendiente_validacion").length + db.grados.filter(g => g.estado === "pendiente").length + db.comp.filter(x => x.estado === "pendiente").length },
     { id: "docentes", label: "Docentes", icono: Users },
+    { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "ranking", label: "Ranking", icono: Trophy },
     { id: "reportes", label: "Reportes", icono: FileText },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
@@ -473,6 +523,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "subir", label: "Subir constancia", icono: Upload },
     { id: "cursos", label: "Mis cursos", icono: BookOpen },
+    { id: "avisos", label: "Avisos", icono: Megaphone, badge: avisosPendientes(db, user).length },
     { id: "expediente", label: "Mi perfil académico", icono: GraduationCap },
     ...(db.config.rankingPublico ? [{ id: "ranking", label: "Ranking", icono: Trophy }] : []),
     { id: "logros", label: "Logros", icono: Award },
@@ -548,6 +599,9 @@ export default function App() {
           {pagina === "expediente" && <PerfilAcademico db={db} user={user} docenteId={user.id} mutar={mutar} editable />}
           {pagina === "ranking" && <Ranking db={db} user={user} />}
           {pagina === "logros" && <Logros db={db} user={user} />}
+          {pagina === "avisos" && (esAdmin
+            ? <Avisos db={db} user={user} mutar={mutar} />
+            : <MisAvisos db={db} user={user} recargar={() => recargar(user.id)} />)}
           {pagina === "validaciones" && esAdmin && <Validaciones db={db} user={user} mutar={mutar} />}
           {pagina === "docentes" && esAdmin && <Docentes db={db} mutar={mutar} irA={irA} />}
           {pagina === "expediente_docente" && esAdmin && <ExpedienteIntegral db={db} docenteId={paginaCtx} mutar={mutar} user={user} volver={() => irA("docentes")} />}
@@ -571,6 +625,10 @@ function Buscador({ db, user, q, irA, cerrar }) {
   ).slice(0, 6);
   const docentes = esAdmin ? db.users.filter(u => u.rol === "docente" &&
     (u.nombre.toLowerCase().includes(t) || (u.area || "").toLowerCase().includes(t))).slice(0, 5) : [];
+  const avisos = db.avisos.filter(a =>
+    (esAdmin || a.estado !== "draft") &&
+    [a.titulo, a.tipo, a.descripcion].some(v => (v || "").toLowerCase().includes(t))
+  ).slice(0, 5);
   return (
     <div className="absolute left-0 right-0 top-10 bg-white text-slate-800 rounded-2xl shadow-xl border border-slate-200 overflow-hidden z-50">
       {docentes.length > 0 && <div className="px-3 pt-2 text-[11px] font-bold text-slate-400 uppercase">Docentes</div>}
@@ -587,7 +645,14 @@ function Buscador({ db, user, q, irA, cerrar }) {
           {c.datos.curso || "(sin título)"} <span className="text-xs text-slate-400">· {c.datos.institucion || "—"}</span>
         </button>
       ))}
-      {docentes.length === 0 && certs.length === 0 && <p className="px-3 py-3 text-sm text-slate-500">Sin resultados para “{q}”.</p>}
+      {avisos.length > 0 && <div className="px-3 pt-2 text-[11px] font-bold text-slate-400 uppercase">Avisos</div>}
+      {avisos.map(a => (
+        <button key={a.id} onClick={() => { irA("avisos"); cerrar(); }}
+          className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2">
+          <Megaphone size={14} className="text-slate-400" />{a.titulo} <span className="text-xs text-slate-400">· {a.tipo}</span>
+        </button>
+      ))}
+      {docentes.length === 0 && certs.length === 0 && avisos.length === 0 && <p className="px-3 py-3 text-sm text-slate-500">Sin resultados para “{q}”.</p>}
     </div>
   );
 }
@@ -771,6 +836,7 @@ function DashboardDocente({ db, user, irA }) {
   const pendCount = misCerts.filter(c => ["pendiente_validacion", "revision_docente"].includes(c.estado)).length;
   const exp = completitudExpediente(db, user.id);
   const misLogros = db.logros.filter(l => l.docenteId === user.id && l.clave.endsWith("@" + ciclo));
+  const pendAvisos = avisosPendientes(db, user);
 
   return (
     <div className="space-y-5">
@@ -789,6 +855,21 @@ function DashboardDocente({ db, user, irA }) {
           <button className={btnPrim} onClick={() => irA("subir")}><Upload size={15} /> Subir constancia</button>
         </div>
       </div>
+
+      {pendAvisos.length > 0 && (
+        <button onClick={() => irA("avisos")}
+          className={`w-full text-left p-3 rounded-2xl border flex items-center gap-3 transition ${
+            pendAvisos.some(a => a.prioridad === "Urgente")
+              ? "bg-rose-50 border-rose-200 hover:bg-rose-100"
+              : "bg-amber-50 border-amber-200 hover:bg-amber-100"}`}>
+          <Megaphone className={pendAvisos.some(a => a.prioridad === "Urgente") ? "text-rose-600 shrink-0" : "text-amber-600 shrink-0"} size={20} />
+          <div className="flex-1 text-sm">
+            <b>{pendAvisos.length} aviso{pendAvisos.length > 1 ? "s" : ""} pendiente{pendAvisos.length > 1 ? "s" : ""} de enterado.</b>{" "}
+            Consulta los comunicados y confirma que los leíste.
+          </div>
+          <ChevronRight size={16} className="text-slate-400" />
+        </button>
+      )}
 
       {exp.pct < 100 && (
         <button onClick={() => irA("expediente")} className="w-full text-left p-3 rounded-2xl bg-sky-50 border border-sky-200 flex items-center gap-3 hover:bg-sky-100 transition">
@@ -1264,6 +1345,484 @@ function Logros({ db, user }) {
         })}
       </div>
     </div>
+  );
+}
+
+/* ================================================================
+   AVISOS Y CIRCULARES
+   ================================================================ */
+
+function ChipPrioridad({ prioridad }) {
+  const c = COLOR_PRIORIDAD[prioridad] || COLOR_PRIORIDAD.Normal;
+  return <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${c.chip}`}>{c.punto} {prioridad.toUpperCase()}</span>;
+}
+
+// Texto con saltos de línea, **negritas**, *cursivas*, listas y enlaces
+function TextoAviso({ texto }) {
+  const lineas = (texto || "").split("\n");
+  const inline = (t, k) => {
+    const partes = t.split(/(\*\*[^*]+\*\*|\*[^*]+\*|https?:\/\/\S+)/g).filter(Boolean);
+    return partes.map((p, i) => {
+      if (p.startsWith("**") && p.endsWith("**")) return <b key={i}>{p.slice(2, -2)}</b>;
+      if (p.startsWith("*") && p.endsWith("*")) return <i key={i}>{p.slice(1, -1)}</i>;
+      if (/^https?:\/\//.test(p)) return <a key={i} href={p} target="_blank" rel="noreferrer" className="text-indigo-600 underline break-all">{p}</a>;
+      return <span key={i}>{p}</span>;
+    });
+  };
+  return (
+    <div className="text-sm text-slate-600 space-y-1">
+      {lineas.map((l, i) => {
+        const li = l.match(/^\s*[-*•]\s+(.*)$/);
+        if (li) return <div key={i} className="flex gap-2 pl-1"><span className="text-slate-400">•</span><span>{inline(li[1], i)}</span></div>;
+        if (!l.trim()) return <div key={i} className="h-1.5" />;
+        return <p key={i}>{inline(l, i)}</p>;
+      })}
+    </div>
+  );
+}
+
+/* ---------------- Administrador ---------------- */
+
+function Avisos({ db, user, mutar }) {
+  const [editando, setEditando] = useState(null);
+  const [confirmar, setConfirmar] = useState(null);   // aviso por publicar
+  const [siguiendo, setSiguiendo] = useState(null);   // aviso en seguimiento
+  const [guardando, setGuardando] = useState(false);
+  const [err, setErr] = useState("");
+  const [q, setQ] = useState("");
+  const [fTipo, setFTipo] = useState("todos");
+  const [fEstado, setFEstado] = useState("todos");
+  const [fPrio, setFPrio] = useState("todas");
+
+  const lista = db.avisos
+    .filter(a => !q || (a.titulo || "").toLowerCase().includes(q.toLowerCase()))
+    .filter(a => fTipo === "todos" || a.tipo === fTipo)
+    .filter(a => fEstado === "todos" || a.estado === fEstado)
+    .filter(a => fPrio === "todas" || a.prioridad === fPrio);
+
+  const nuevo = () => setEditando({
+    id: uid(), titulo: "", descripcion: "", tipo: "Circular", prioridad: "Normal",
+    fechaLimite: "", enlace: "", archivoNombre: null, archivoGuardado: false,
+    estado: "draft", destino: { tipo: "todos" }, creadoEn: ahora(), creadoPor: user.nombre,
+    _archivoNuevo: null,
+  });
+
+  const subirAdjunto = async (aviso) => {
+    if (!aviso._archivoNuevo) return { nombre: aviso.archivoNombre, guardado: aviso.archivoGuardado };
+    const f = aviso._archivoNuevo;
+    const b64 = await leerComoBase64(f);
+    const r = await guardarArchivo("aviso_" + aviso.id, b64, f.type, f.name);
+    return { nombre: f.name, guardado: r.guardado };
+  };
+
+  const guardar = async (publicar) => {
+    if (!editando.titulo.trim() || !editando.descripcion.trim()) {
+      setErr("El título y la descripción son obligatorios."); return;
+    }
+    setGuardando(true); setErr("");
+    try {
+      const adj = await subirAdjunto(editando);
+      await mutar(d => {
+        const { _archivoNuevo, ...limpio } = editando;
+        const base = {
+          ...limpio, archivoNombre: adj.nombre, archivoGuardado: adj.guardado,
+          estado: publicar ? "published" : "draft",
+          actualizadoEn: ahora(),
+        };
+        if (publicar && !base.fechaPublicacion) base.fechaPublicacion = ahora();
+        const i = d.avisos.findIndex(a => a.id === base.id);
+        if (i >= 0) d.avisos[i] = { ...d.avisos[i], ...base };
+        else d.avisos.unshift(base);
+        if (publicar) {
+          destinatariosDe(d, base).forEach(doc => notificar(d, doc.id,
+            `${base.prioridad === "Urgente" ? "🔴 URGENTE · " : "📢 "}Nuevo aviso: “${base.titulo}”. Márcalo como enterado en la sección Avisos.`));
+          registrarActividad(d, `Se publicó el aviso “${base.titulo}”.`);
+        }
+      });
+      setEditando(null); setConfirmar(null);
+    } catch (e) { setErr(e.message); }
+    setGuardando(false);
+  };
+
+  const cambiarEstado = async (aviso, estado) => {
+    const verbo = estado === "archived" ? "archivar" : "reactivar";
+    if (!window.confirm(`¿Deseas ${verbo} el aviso “${aviso.titulo}”?\n\nLos acuses ya registrados se conservan.`)) return;
+    await mutar(d => {
+      const a = d.avisos.find(x => x.id === aviso.id);
+      a.estado = estado; a.actualizadoEn = ahora();
+      registrarActividad(d, `Se ${estado === "archived" ? "archivó" : "reactivó"} el aviso “${a.titulo}”.`);
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Avisos y Circulares</h2>
+          <p className="text-sm text-slate-500">Publica comunicados y consulta el seguimiento de los acuses de enterado.</p>
+        </div>
+        <button className={btnPrim} onClick={nuevo}><Plus size={15}/>Nuevo aviso</button>
+      </div>
+
+      <Card className="p-3 flex flex-wrap gap-2 items-center">
+        <div className="relative flex-1 min-w-[180px]">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar por título…" value={q} onChange={e => setQ(e.target.value)} />
+        </div>
+        <select className={inputCls + " !mt-0 !w-auto"} value={fTipo} onChange={e => setFTipo(e.target.value)}>
+          <option value="todos">Todos los tipos</option>{TIPOS_AVISO.map(t => <option key={t}>{t}</option>)}
+        </select>
+        <select className={inputCls + " !mt-0 !w-auto"} value={fPrio} onChange={e => setFPrio(e.target.value)}>
+          <option value="todas">Toda prioridad</option>{PRIORIDADES.map(t => <option key={t}>{t}</option>)}
+        </select>
+        <select className={inputCls + " !mt-0 !w-auto"} value={fEstado} onChange={e => setFEstado(e.target.value)}>
+          <option value="todos">Todos los estados</option>
+          {Object.entries(ESTADO_AVISO).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+      </Card>
+
+      <Card className="p-4">
+        {lista.length === 0 && <p className="text-sm text-slate-400 py-8 text-center">No hay avisos que coincidan. Crea el primero con “Nuevo aviso”.</p>}
+        {lista.map(a => {
+          const s = seguimientoDe(db, a);
+          return (
+            <div key={a.id} className="flex flex-wrap items-center gap-3 py-3 border-b border-slate-100 last:border-0">
+              <div className="flex-1 min-w-[200px]">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold text-sm">{a.titulo}</span>
+                  <ChipPrioridad prioridad={a.prioridad} />
+                  <span className="text-[11px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{a.tipo}</span>
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5">
+                  {a.estado === "draft" ? "Sin publicar" : `Publicado ${fmtFecha((a.fechaPublicacion || "").slice(0,10))}`}
+                  {a.fechaLimite && ` · Límite ${fmtFecha(a.fechaLimite)}`}
+                  {a.archivoNombre && ` · 📎 ${a.archivoNombre}`}
+                </div>
+              </div>
+              {a.estado !== "draft" && (
+                <div className="text-center min-w-[86px]">
+                  <div className="text-sm font-bold">{s.enterados.length}/{s.total.length}</div>
+                  <div className="w-20 h-1.5 rounded-full bg-slate-200 overflow-hidden mx-auto mt-1">
+                    <div className="h-full bg-emerald-600" style={{ width: s.pct + "%" }} />
+                  </div>
+                </div>
+              )}
+              <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
+                a.estado === "published" ? "bg-emerald-100 text-emerald-800"
+                : a.estado === "draft" ? "bg-slate-100 text-slate-600" : "bg-slate-200 text-slate-500"}`}>
+                {ESTADO_AVISO[a.estado]}
+              </span>
+              <div className="flex gap-1">
+                {a.estado !== "draft" &&
+                  <button className={btnSec + " !px-3 !py-1.5"} onClick={() => setSiguiendo(a)}>Ver seguimiento</button>}
+                <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar"
+                  onClick={() => setEditando({ ...JSON.parse(JSON.stringify(a)), _archivoNuevo: null })}><Pencil size={15}/></button>
+                {a.estado === "published" &&
+                  <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Archivar"
+                    onClick={() => cambiarEstado(a, "archived")}><Archive size={15}/></button>}
+                {a.estado === "archived" &&
+                  <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Reactivar"
+                    onClick={() => cambiarEstado(a, "published")}><Send size={15}/></button>}
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+
+      {/* Formulario */}
+      {editando && (
+        <Modal titulo={db.avisos.some(a => a.id === editando.id) ? "Editar aviso" : "Nuevo aviso"} onClose={() => setEditando(null)} ancho="max-w-2xl">
+          <div className="space-y-3">
+            <Campo label="Título">
+              <input className={inputCls} value={editando.titulo} placeholder="Curso de actualización docente 2026"
+                onChange={e => setEditando({ ...editando, titulo: e.target.value })} />
+            </Campo>
+            <Campo label="Descripción">
+              <textarea className={inputCls + " min-h-[140px]"} value={editando.descripcion}
+                placeholder={"Se informa al personal docente que…\n\nPuedes usar **negritas**, *cursivas*, listas con - y pegar ligas."}
+                onChange={e => setEditando({ ...editando, descripcion: e.target.value })} />
+            </Campo>
+            <p className="text-[11px] text-slate-400 -mt-1">Formato: **negritas**, *cursivas*, líneas que empiezan con “- ” para listas. Las direcciones web se convierten en enlaces.</p>
+            <div className="grid sm:grid-cols-3 gap-3">
+              <Campo label="Tipo de aviso">
+                <select className={inputCls} value={editando.tipo} onChange={e => setEditando({ ...editando, tipo: e.target.value })}>
+                  {TIPOS_AVISO.map(t => <option key={t}>{t}</option>)}
+                </select>
+              </Campo>
+              <Campo label="Prioridad">
+                <select className={inputCls} value={editando.prioridad} onChange={e => setEditando({ ...editando, prioridad: e.target.value })}>
+                  {PRIORIDADES.map(t => <option key={t}>{t}</option>)}
+                </select>
+              </Campo>
+              <Campo label="Fecha límite de enterado (opcional)">
+                <input type="date" className={inputCls} value={editando.fechaLimite || ""}
+                  onChange={e => setEditando({ ...editando, fechaLimite: e.target.value })} />
+              </Campo>
+            </div>
+            <Campo label="Enlace externo (opcional)">
+              <input className={inputCls} placeholder="https://…" value={editando.enlace || ""}
+                onChange={e => setEditando({ ...editando, enlace: e.target.value })} />
+            </Campo>
+            <Campo label="Archivo adjunto (opcional)">
+              <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="text-sm"
+                onChange={e => setEditando({ ...editando, _archivoNuevo: e.target.files[0] || null })} />
+              {editando.archivoNombre && !editando._archivoNuevo &&
+                <p className="text-xs text-slate-500 mt-1">Adjunto actual: {editando.archivoNombre}</p>}
+            </Campo>
+            {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
+          </div>
+          <div className="flex flex-wrap justify-end gap-2 mt-4">
+            <button className={btnSec} onClick={() => setEditando(null)}>Cancelar</button>
+            <button className={btnSec} disabled={guardando} onClick={() => guardar(false)}>
+              {guardando && <Loader2 size={14} className="animate-spin"/>}Guardar borrador
+            </button>
+            <button className={btnPrim} disabled={guardando} onClick={() => {
+              if (!editando.titulo.trim() || !editando.descripcion.trim()) { setErr("El título y la descripción son obligatorios."); return; }
+              setConfirmar(editando);
+            }}><Send size={15}/>Publicar aviso</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Confirmación de publicación */}
+      {confirmar && (
+        <Modal titulo="Confirmar publicación" onClose={() => setConfirmar(null)}>
+          <p className="text-sm text-slate-600">¿Deseas publicar este aviso? Una vez publicado será visible para todos los docentes.</p>
+          <div className="flex justify-end gap-2 mt-4">
+            <button className={btnSec} onClick={() => setConfirmar(null)}>Cancelar</button>
+            <button className={btnPrim} disabled={guardando} onClick={() => guardar(true)}>
+              {guardando && <Loader2 size={14} className="animate-spin"/>}Sí, publicar
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {siguiendo && <SeguimientoAviso db={db} aviso={siguiendo} onClose={() => setSiguiendo(null)} />}
+    </div>
+  );
+}
+
+function SeguimientoAviso({ db, aviso, onClose }) {
+  const [q, setQ] = useState("");
+  const [filtro, setFiltro] = useState("todos");
+  const s = seguimientoDe(db, aviso);
+  const filas = s.total
+    .map(d => ({ d, ac: acuseDe(db, aviso.id, d.id) }))
+    .filter(({ ac }) => filtro === "todos" || (filtro === "enterados" ? ac : !ac))
+    .filter(({ d }) => !q || d.nombre.toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => a.d.nombre.localeCompare(b.d.nombre));
+
+  const exportar = () => {
+    const filasCSV = [["Docente", "Área", "Estado", "Fecha", "Hora"]];
+    s.total.slice().sort((a, b) => a.nombre.localeCompare(b.nombre)).forEach(d => {
+      const ac = acuseDe(db, aviso.id, d.id);
+      const f = ac ? new Date(ac.fecha) : null;
+      filasCSV.push([d.nombre, d.area || "", ac ? "Enterado" : "Pendiente",
+        f ? f.toLocaleDateString("es-MX") : "", f ? f.toLocaleTimeString("es-MX") : ""]);
+    });
+    descargarCSV(`seguimiento_${aviso.titulo.slice(0, 30).replace(/\s+/g, "_")}`, filasCSV);
+  };
+
+  return (
+    <Modal titulo="Seguimiento del aviso" onClose={onClose} ancho="max-w-3xl">
+      <div className="space-y-4">
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <h3 className="font-bold">{aviso.titulo}</h3>
+            <ChipPrioridad prioridad={aviso.prioridad} />
+          </div>
+          <p className="text-xs text-slate-500 mt-1">
+            Publicado: {aviso.fechaPublicacion ? new Date(aviso.fechaPublicacion).toLocaleString("es-MX") : "—"}
+            {aviso.fechaLimite && ` · Fecha límite: ${fmtFecha(aviso.fechaLimite)}`}
+          </p>
+          {avisoVencido(aviso) && s.pendientes.length > 0 && (
+            <p className="text-xs text-rose-600 font-semibold mt-1 flex items-center gap-1.5">
+              <AlertTriangle size={13}/>{s.pendientes.length} docente(s) pendiente(s) después de la fecha límite.
+            </p>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <Stat icono={Users} label="Docentes" valor={s.total.length} />
+          <Stat icono={CheckCircle2} label="Enterados" valor={s.enterados.length} />
+          <Stat icono={Clock} label="Pendientes" valor={s.pendientes.length} color={s.pendientes.length ? "text-amber-600" : "text-slate-900"} />
+          <Stat icono={TrendingUp} label="Avance" valor={s.pct + "%"} />
+        </div>
+        <div className="w-full h-3 rounded-full bg-slate-200 overflow-hidden">
+          <div className="h-full bg-emerald-600 transition-all" style={{ width: s.pct + "%" }} />
+        </div>
+
+        <div className="flex flex-wrap gap-2 items-center">
+          <div className="relative flex-1 min-w-[160px]">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar docente…" value={q} onChange={e => setQ(e.target.value)} />
+          </div>
+          <select className={inputCls + " !mt-0 !w-auto"} value={filtro} onChange={e => setFiltro(e.target.value)}>
+            <option value="todos">Todos</option>
+            <option value="enterados">Solo enterados</option>
+            <option value="pendientes">Solo pendientes</option>
+          </select>
+          <button className={btnSec} onClick={exportar}><Download size={14}/>Exportar seguimiento</button>
+        </div>
+
+        <div className="overflow-x-auto max-h-80 overflow-y-auto">
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 bg-white">
+              <tr className="text-left text-[11px] uppercase text-slate-400 border-b border-slate-200">
+                <th className="py-2 pr-3">Docente</th><th className="py-2 pr-3">Estado</th><th className="py-2">Fecha de enterado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map(({ d, ac }) => (
+                <tr key={d.id} className="border-b border-slate-100 last:border-0">
+                  <td className="py-2 pr-3">{d.nombre}<span className="block text-[11px] text-slate-400">{d.area || "—"}</span></td>
+                  <td className="py-2 pr-3">
+                    {ac ? <span className="text-emerald-700 font-semibold text-xs">✓ Enterado</span>
+                        : <span className="text-amber-600 font-semibold text-xs">⚠ Pendiente</span>}
+                  </td>
+                  <td className="py-2 text-slate-500 text-xs">{ac ? new Date(ac.fecha).toLocaleString("es-MX") : "—"}</td>
+                </tr>
+              ))}
+              {filas.length === 0 && <tr><td colSpan={3} className="py-6 text-center text-slate-400 text-sm">Sin resultados con estos filtros.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------------- Docente ---------------- */
+
+function MisAvisos({ db, user, recargar }) {
+  const [tab, setTab] = useState("pendientes");
+  const [confirmando, setConfirmando] = useState(null);
+  const [firmando, setFirmando] = useState(false);
+  const [err, setErr] = useState("");
+
+  const mios = db.avisos.filter(a => a.estado !== "draft" && destinatariosDe(db, a).some(d => d.id === user.id));
+  const pendientes = mios.filter(a => a.estado === "published" && !acuseDe(db, a.id, user.id));
+  const atendidos = mios.filter(a => acuseDe(db, a.id, user.id));
+  const lista = tab === "pendientes" ? pendientes : atendidos;
+
+  const confirmar = async () => {
+    setFirmando(true); setErr("");
+    try {
+      // El servidor fija usuario y hora; aquí solo se envía el aviso.
+      await marcarEnterado(confirmando.id);
+      setConfirmando(null);
+      await recargar();
+    } catch (e) { setErr("No se pudo registrar el acuse: " + e.message); }
+    setFirmando(false);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Avisos y Circulares</h2>
+        <p className="text-sm text-slate-500">Comunicados del plantel. Marca cada uno como enterado cuando lo hayas leído.</p>
+      </div>
+
+      <div className="flex gap-2">
+        {[["pendientes", `Pendientes (${pendientes.length})`], ["atendidos", `Atendidos (${atendidos.length})`]].map(([k, l]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={`px-3.5 py-1.5 rounded-xl text-sm font-semibold ${tab === k ? "bg-[#1a2340] text-white" : "bg-white border border-slate-200 text-slate-600"}`}>{l}</button>
+        ))}
+      </div>
+
+      {lista.length === 0 && (
+        <Card className="p-8 text-center text-sm text-slate-400">
+          {tab === "pendientes" ? "No tienes avisos pendientes. Todo al día. ✨" : "Todavía no has confirmado ningún aviso."}
+        </Card>
+      )}
+
+      <div className="space-y-3">
+        {lista.map(a => {
+          const ac = acuseDe(db, a.id, user.id);
+          const c = COLOR_PRIORIDAD[a.prioridad] || COLOR_PRIORIDAD.Normal;
+          const vencido = avisoVencido(a) && !ac;
+          return (
+            <Card key={a.id} className={`p-5 border-l-4 ${c.borde}`}>
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <ChipPrioridad prioridad={a.prioridad} />
+                <span className="text-[11px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{a.tipo}</span>
+                {a.estado === "archived" && <span className="text-[11px] text-slate-400">· Archivado</span>}
+              </div>
+              <h3 className="font-bold text-base" style={{fontFamily:"'Archivo', sans-serif"}}>{a.titulo}</h3>
+              <p className="text-xs text-slate-400 mb-3">
+                Publicado: {a.fechaPublicacion ? new Date(a.fechaPublicacion).toLocaleDateString("es-MX", { day: "2-digit", month: "long", year: "numeric" }) : "—"}
+              </p>
+
+              <TextoAviso texto={a.descripcion} />
+
+              <div className="flex flex-wrap gap-3 mt-3">
+                {a.archivoGuardado && <AdjuntoAviso aviso={a} />}
+                {a.enlace && (
+                  <a href={a.enlace} target="_blank" rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 text-sm text-indigo-600 font-semibold hover:underline">
+                    <Link2 size={15}/>Más información
+                  </a>
+                )}
+              </div>
+
+              {a.fechaLimite && (
+                <p className={`text-xs mt-3 font-semibold ${vencido ? "text-rose-600" : "text-slate-500"}`}>
+                  {vencido ? "🔴 Fecha límite vencida: " : "Fecha límite para enterarse: "}
+                  {fmtFecha(a.fechaLimite)}
+                </p>
+              )}
+
+              <div className="mt-4 pt-3 border-t border-slate-100">
+                {ac ? (
+                  <p className="text-sm text-emerald-700 font-semibold flex items-center gap-1.5">
+                    <CheckCircle2 size={16}/>✓ Enterado · Confirmado el {new Date(ac.fecha).toLocaleString("es-MX")}
+                  </p>
+                ) : (
+                  <button className={btnPrim} onClick={() => { setConfirmando(a); setErr(""); }}>
+                    <ShieldCheck size={15}/>Marcar como enterado
+                  </button>
+                )}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {confirmando && (
+        <Modal titulo="Confirmar acuse de enterado" onClose={() => setConfirmando(null)}>
+          <p className="text-sm text-slate-600">¿Confirmas que has leído y estás enterado de este aviso?</p>
+          <p className="text-sm font-semibold mt-2">“{confirmando.titulo}”</p>
+          <p className="text-xs text-slate-400 mt-2">Se registrará la fecha y hora del servidor. El acuse no puede deshacerse.</p>
+          {err && <p className="text-sm text-rose-600 mt-2 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
+          <div className="flex justify-end gap-2 mt-4">
+            <button className={btnSec} onClick={() => setConfirmando(null)}>Cancelar</button>
+            <button className={btnPrim} disabled={firmando} onClick={confirmar}>
+              {firmando && <Loader2 size={14} className="animate-spin"/>}Sí, estoy enterado
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function AdjuntoAviso({ aviso }) {
+  const [abriendo, setAbriendo] = useState(false);
+  const abrir = async () => {
+    setAbriendo(true);
+    const f = await leerArchivo("aviso_" + aviso.id);
+    setAbriendo(false);
+    if (!f) return;
+    const bytes = atob(f.base64);
+    const arr = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    window.open(URL.createObjectURL(new Blob([arr], { type: f.mime })), "_blank");
+  };
+  return (
+    <button onClick={abrir} className="inline-flex items-center gap-1.5 text-sm text-indigo-600 font-semibold hover:underline">
+      {abriendo ? <Loader2 size={15} className="animate-spin"/> : <Paperclip size={15}/>}
+      {aviso.archivoNombre || "Archivo adjunto"}
+    </button>
   );
 }
 
