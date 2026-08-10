@@ -429,7 +429,7 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  const recargar = useCallback(async (uid) => {
+  const recargar = useCallback(async (uid, esPrimeraCarga = false) => {
     const d = await cargarTodo(uid);
     const yo = d.users.find(u => u.id === uid);
     if (!yo || (yo.rol === "docente" && !yo.activo)) {
@@ -439,13 +439,17 @@ export default function App() {
     snapRef.current = JSON.parse(JSON.stringify(d));
     setDb(d);
     setUser(yo);
+    // Al iniciar sesión, el docente aterriza en sus avisos; la
+    // administración, en su tablero. En recargas posteriores no se
+    // toca la pantalla en la que esté trabajando.
+    if (esPrimeraCarga && yo.rol === "docente") setPagina("avisos");
   }, []);
 
   useEffect(() => {
     if (!configurada || sesion === undefined) return;
     if (!sesion) { setUser(null); setDb(null); snapRef.current = null; setCargando(false); return; }
     setCargando(true); setErrCarga("");
-    recargar(sesion.user.id)
+    recargar(sesion.user.id, true)
       .catch(e => setErrCarga(e.message))
       .finally(() => setCargando(false));
   }, [sesion, recargar]);
@@ -520,10 +524,10 @@ export default function App() {
     { id: "actividad", label: "Actividad reciente", icono: Activity },
     { id: "admin", label: "Administración", icono: Settings },
   ] : [
+    { id: "avisos", label: "Avisos", icono: Megaphone, badge: avisosPendientes(db, user).length },
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "subir", label: "Subir constancia", icono: Upload },
     { id: "cursos", label: "Mis cursos", icono: BookOpen },
-    { id: "avisos", label: "Avisos", icono: Megaphone, badge: avisosPendientes(db, user).length },
     { id: "expediente", label: "Mi perfil académico", icono: GraduationCap },
     ...(db.config.rankingPublico ? [{ id: "ranking", label: "Ranking", icono: Trophy }] : []),
     { id: "logros", label: "Logros", icono: Award },
@@ -1352,6 +1356,10 @@ function Logros({ db, user }) {
    AVISOS Y CIRCULARES
    ================================================================ */
 
+const esImagenAdjunta = (aviso) =>
+  (aviso.archivoTipo || "").startsWith("image/") ||
+  /\.(jpe?g|png|webp|gif)$/i.test(aviso.archivoNombre || "");
+
 function ChipPrioridad({ prioridad }) {
   const c = COLOR_PRIORIDAD[prioridad] || COLOR_PRIORIDAD.Normal;
   return <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${c.chip}`}>{c.punto} {prioridad.toUpperCase()}</span>;
@@ -1408,11 +1416,11 @@ function Avisos({ db, user, mutar }) {
   });
 
   const subirAdjunto = async (aviso) => {
-    if (!aviso._archivoNuevo) return { nombre: aviso.archivoNombre, guardado: aviso.archivoGuardado };
+    if (!aviso._archivoNuevo) return { nombre: aviso.archivoNombre, guardado: aviso.archivoGuardado, tipo: aviso.archivoTipo };
     const f = aviso._archivoNuevo;
     const b64 = await leerComoBase64(f);
     const r = await guardarArchivo("aviso_" + aviso.id, b64, f.type, f.name);
-    return { nombre: f.name, guardado: r.guardado };
+    return { nombre: f.name, guardado: r.guardado, tipo: f.type };
   };
 
   const guardar = async (publicar) => {
@@ -1426,6 +1434,7 @@ function Avisos({ db, user, mutar }) {
         const { _archivoNuevo, ...limpio } = editando;
         const base = {
           ...limpio, archivoNombre: adj.nombre, archivoGuardado: adj.guardado,
+          archivoTipo: adj.tipo || limpio.archivoTipo || "",
           estado: publicar ? "published" : "draft",
           actualizadoEn: ahora(),
         };
@@ -1563,9 +1572,13 @@ function Avisos({ db, user, mutar }) {
               <input className={inputCls} placeholder="https://…" value={editando.enlace || ""}
                 onChange={e => setEditando({ ...editando, enlace: e.target.value })} />
             </Campo>
-            <Campo label="Archivo adjunto (opcional)">
-              <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="text-sm"
+            <Campo label="Archivo adjunto (opcional): PDF o imagen">
+              <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.gif" className="text-sm"
                 onChange={e => setEditando({ ...editando, _archivoNuevo: e.target.files[0] || null })} />
+              <p className="text-[11px] text-slate-400 mt-1">
+                Las imágenes (cartel, invitación, infografía) se muestran directamente dentro del aviso;
+                los PDF se abren al tocarlos.
+              </p>
               {editando.archivoNombre && !editando._archivoNuevo &&
                 <p className="text-xs text-slate-500 mt-1">Adjunto actual: {editando.archivoNombre}</p>}
             </Campo>
@@ -1755,8 +1768,10 @@ function MisAvisos({ db, user, recargar }) {
 
               <TextoAviso texto={a.descripcion} />
 
+              {a.archivoGuardado && esImagenAdjunta(a) && <ImagenAviso aviso={a} />}
+
               <div className="flex flex-wrap gap-3 mt-3">
-                {a.archivoGuardado && <AdjuntoAviso aviso={a} />}
+                {a.archivoGuardado && !esImagenAdjunta(a) && <AdjuntoAviso aviso={a} />}
                 {a.enlace && (
                   <a href={a.enlace} target="_blank" rel="noreferrer"
                     className="inline-flex items-center gap-1.5 text-sm text-indigo-600 font-semibold hover:underline">
@@ -1803,6 +1818,37 @@ function MisAvisos({ db, user, recargar }) {
         </Modal>
       )}
     </div>
+  );
+}
+
+function ImagenAviso({ aviso }) {
+  const [url, setUrl] = useState(null);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    let vivo = true, creada = null;
+    (async () => {
+      const f = await leerArchivo("aviso_" + aviso.id);
+      if (!f || !vivo) { if (vivo) setError(true); return; }
+      const bytes = atob(f.base64);
+      const arr = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+      creada = URL.createObjectURL(new Blob([arr], { type: f.mime }));
+      setUrl(creada);
+    })();
+    return () => { vivo = false; if (creada) URL.revokeObjectURL(creada); };
+  }, [aviso.id]);
+
+  if (error) return <AdjuntoAviso aviso={aviso} />;
+  if (!url) return (
+    <div className="mt-3 h-40 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 text-sm gap-2">
+      <Loader2 size={16} className="animate-spin" /> Cargando imagen…
+    </div>
+  );
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="block mt-3" title="Abrir en tamaño completo">
+      <img src={url} alt={aviso.archivoNombre || "Imagen del aviso"}
+        className="max-h-96 w-auto rounded-xl border border-slate-200 hover:opacity-95 transition" />
+    </a>
   );
 }
 
