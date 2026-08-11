@@ -415,6 +415,7 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [sesion, setSesion] = useState(undefined); // undefined = aún no se sabe; null = sin sesión; string = id del usuario
   const ultimaCarga = useRef(0);
+  const cargadaPara = useRef(null); // id de usuario cuyos datos ya están cargados
   const [pagina, setPagina] = useState("dashboard");
   const [paginaCtx, setPaginaCtx] = useState(null); // p.ej. id de docente a abrir
   const [cargando, setCargando] = useState(true);
@@ -456,10 +457,18 @@ export default function App() {
 
   useEffect(() => {
     if (!configurada || sesion === undefined) return;
-    if (!sesion) { setUser(null); setDb(null); snapRef.current = null; setCargando(false); return; }
+    if (!sesion) {
+      cargadaPara.current = null;
+      setUser(null); setDb(null); snapRef.current = null; setCargando(false);
+      return;
+    }
+    // Si los datos de este mismo usuario ya están en pantalla, no se
+    // vuelve a cargar: evita reinicios al renovarse la sesión.
+    if (cargadaPara.current === sesion) return;
+    cargadaPara.current = sesion;
     setCargando(true); setErrCarga("");
     recargar(sesion, true)
-      .catch(e => setErrCarga(e.message))
+      .catch(e => { cargadaPara.current = null; setErrCarga(e.message); })
       .finally(() => { setCargando(false); ultimaCarga.current = Date.now(); });
   }, [sesion, recargar]);
 
@@ -506,7 +515,7 @@ export default function App() {
     </div>
   );
 
-  if (cargando || sesion === undefined) return (
+  if (!db && (cargando || sesion === undefined)) return (
     <div className="min-h-screen flex items-center justify-center bg-[#1a2340] text-white gap-3">
       <Loader2 className="animate-spin" /> Cargando sistema…
     </div>
@@ -554,6 +563,11 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#f2f4f8]" style={{fontFamily:"'Inter', sans-serif"}}>
+      {cargando && (
+        <div className="fixed top-2 right-3 z-[60] text-[11px] text-slate-500 bg-white/90 border border-slate-200 rounded-full px-2.5 py-1 flex items-center gap-1.5 shadow-sm">
+          <Loader2 size={11} className="animate-spin" /> Actualizando…
+        </div>
+      )}
       {/* Barra superior */}
       <header className="sticky top-0 z-40 bg-[#1a2340] text-white">
         <div className="flex items-center gap-3 px-4 py-2.5">
