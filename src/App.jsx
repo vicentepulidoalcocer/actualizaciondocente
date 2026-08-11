@@ -283,8 +283,8 @@ const leerComoBase64 = (file) => new Promise((res, rej) => {
    COMPONENTES BASE DE INTERFAZ
    ================================================================ */
 
-const Card = ({ children, className = "" }) => (
-  <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm ${className}`}>{children}</div>
+const Card = ({ children, className = "", ...resto }) => (
+  <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm ${className}`} {...resto}>{children}</div>
 );
 
 const Badge = ({ estado, mapa = ESTADOS_CERT }) => {
@@ -323,7 +323,7 @@ const Progreso = ({ actual, meta, semaforo }) => {
 };
 
 const Modal = ({ titulo, onClose, children, ancho = "max-w-2xl" }) => (
-  <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 p-4 overflow-y-auto" onClick={onClose}>
+  <div data-formulario-abierto className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 p-4 overflow-y-auto" onClick={onClose}>
     <div className={`bg-white rounded-2xl shadow-xl w-full ${ancho} my-8`} onClick={e => e.stopPropagation()}>
       <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
         <h3 className="font-bold text-lg" style={{fontFamily:"'Archivo', sans-serif"}}>{titulo}</h3>
@@ -390,8 +390,9 @@ function Login() {
             </button>
           </form>
           <p className="mt-4 text-[11px] text-slate-400 leading-snug">
-            Las cuentas las crea la administración escolar. Si olvidaste tu contraseña,
-            solicita a la administración que te asigne una nueva.
+            Las cuentas las crea la administración escolar. Puedes cambiar tu contraseña
+            desde “Mi cuenta” una vez que entres. Si la olvidaste, solicita a la
+            administración que te asigne una nueva.
           </p>
         </Card>
         <div className="flex items-end justify-center mt-4">
@@ -412,7 +413,8 @@ function Login() {
 export default function App() {
   const [db, setDb] = useState(null);
   const [user, setUser] = useState(null);
-  const [sesion, setSesion] = useState(undefined); // undefined = aún no se sabe
+  const [sesion, setSesion] = useState(undefined); // undefined = aún no se sabe; null = sin sesión; string = id del usuario
+  const ultimaCarga = useRef(0);
   const [pagina, setPagina] = useState("dashboard");
   const [paginaCtx, setPaginaCtx] = useState(null); // p.ej. id de docente a abrir
   const [cargando, setCargando] = useState(true);
@@ -424,8 +426,15 @@ export default function App() {
 
   useEffect(() => {
     if (!configurada) return;
-    supabase.auth.getSession().then(({ data }) => setSesion(data.session ?? null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_ev, s) => setSesion(s ?? null));
+    supabase.auth.getSession().then(({ data }) => setSesion(data.session?.user?.id ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_ev, s) => {
+      // Solo interesa QUIÉN está conectado, no el token: así una renovación
+      // de sesión no vuelve a montar la pantalla ni borra lo que se escribe.
+      setSesion(prev => {
+        const id = s?.user?.id ?? null;
+        return prev === id ? prev : id;
+      });
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -449,17 +458,22 @@ export default function App() {
     if (!configurada || sesion === undefined) return;
     if (!sesion) { setUser(null); setDb(null); snapRef.current = null; setCargando(false); return; }
     setCargando(true); setErrCarga("");
-    recargar(sesion.user.id, true)
+    recargar(sesion, true)
       .catch(e => setErrCarga(e.message))
-      .finally(() => setCargando(false));
+      .finally(() => { setCargando(false); ultimaCarga.current = Date.now(); });
   }, [sesion, recargar]);
 
-  // Refresca datos al volver a la pestaña (para ver cambios de otros usuarios)
+  // Refresca datos al volver a la pestaña, para ver los cambios de otros
+  // usuarios. Nunca muestra la pantalla de carga ni desmonta nada: los
+  // formularios abiertos conservan lo que se haya escrito. Además se
+  // omite si hay un formulario en pantalla o si se recargó hace poco.
   useEffect(() => {
     const alVolver = () => {
-      if (document.visibilityState === "visible" && sesion?.user) {
-        recargar(sesion.user.id).catch(() => {});
-      }
+      if (document.visibilityState !== "visible" || !sesion) return;
+      if (document.querySelector("[data-formulario-abierto]")) return;
+      if (Date.now() - ultimaCarga.current < 15000) return;
+      ultimaCarga.current = Date.now();
+      recargar(sesion).catch(() => {});
     };
     document.addEventListener("visibilitychange", alVolver);
     return () => document.removeEventListener("visibilitychange", alVolver);
@@ -531,6 +545,7 @@ export default function App() {
     { id: "expediente", label: "Mi perfil académico", icono: GraduationCap },
     ...(db.config.rankingPublico ? [{ id: "ranking", label: "Ranking", icono: Trophy }] : []),
     { id: "logros", label: "Logros", icono: Award },
+    { id: "cuenta", label: "Mi cuenta", icono: User },
   ];
 
   const irA = (p, ctx = null) => { setPagina(p); setPaginaCtx(ctx); setMenuAbierto(false); setBusqueda(""); };
@@ -603,6 +618,7 @@ export default function App() {
           {pagina === "expediente" && <PerfilAcademico db={db} user={user} docenteId={user.id} mutar={mutar} editable />}
           {pagina === "ranking" && <Ranking db={db} user={user} />}
           {pagina === "logros" && <Logros db={db} user={user} />}
+          {pagina === "cuenta" && <MiCuenta user={user} />}
           {pagina === "avisos" && (esAdmin
             ? <Avisos db={db} user={user} mutar={mutar} />
             : <MisAvisos db={db} user={user} recargar={() => recargar(user.id)} />)}
@@ -1108,7 +1124,7 @@ function SubirConstancia({ db, user, mutar, irA }) {
       )}
 
       {fase === "revisar" && cert && (
-        <Card className="p-5 space-y-4">
+        <Card className="p-5 space-y-4" data-formulario-abierto>
           <div className="flex items-center gap-2 text-sm">
             <FileText size={16} className="text-slate-400" />
             <span className="font-medium">{cert.archivoNombre}</span>
@@ -1348,6 +1364,90 @@ function Logros({ db, user }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/* ================================================================
+   MI CUENTA (administrador y docente)
+   ================================================================ */
+
+function MiCuenta({ user, soloTarjeta = false }) {
+  const [passActual, setPassActual] = useState("");
+  const [passNueva, setPassNueva] = useState("");
+  const [passRepetir, setPassRepetir] = useState("");
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  const [guardando, setGuardando] = useState(false);
+
+  const cambiar = async () => {
+    setMsg(""); setErr("");
+    if (passNueva.length < 6) { setErr("La nueva contraseña debe tener al menos 6 caracteres."); return; }
+    if (passNueva !== passRepetir) { setErr("Las contraseñas nuevas no coinciden."); return; }
+    if (passNueva === passActual) { setErr("La nueva contraseña debe ser distinta de la actual."); return; }
+    setGuardando(true);
+    // Se comprueba la contraseña actual reautenticando antes de cambiarla
+    const { error: e1 } = await supabase.auth.signInWithPassword({ email: user.email, password: passActual });
+    if (e1) { setErr("La contraseña actual no coincide."); setGuardando(false); return; }
+    const { error: e2 } = await supabase.auth.updateUser({ password: passNueva });
+    setGuardando(false);
+    if (e2) { setErr("No se pudo actualizar: " + e2.message); return; }
+    setPassActual(""); setPassNueva(""); setPassRepetir("");
+    setMsg("Contraseña actualizada. Úsala la próxima vez que inicies sesión.");
+  };
+
+  const tarjeta = (
+    <Card className="p-5 space-y-3">
+      <div>
+        <h3 className="font-bold text-sm">Cambiar mi contraseña</h3>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Tu cuenta: <b>{user.email}</b>. Nadie más puede ver tu contraseña.
+        </p>
+      </div>
+      <Campo label="Contraseña actual">
+        <input className={inputCls} type="password" autoComplete="current-password"
+          value={passActual} onChange={e => setPassActual(e.target.value)} />
+      </Campo>
+      <div className="grid sm:grid-cols-2 gap-3">
+        <Campo label="Nueva contraseña">
+          <input className={inputCls} type="password" autoComplete="new-password"
+            value={passNueva} onChange={e => setPassNueva(e.target.value)} />
+        </Campo>
+        <Campo label="Repetir nueva contraseña">
+          <input className={inputCls} type="password" autoComplete="new-password"
+            value={passRepetir} onChange={e => setPassRepetir(e.target.value)} />
+        </Campo>
+      </div>
+      <p className="text-[11px] text-slate-400">Mínimo 6 caracteres. Evita usar tu nombre o fechas fáciles de adivinar.</p>
+      {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
+      {msg && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2">{msg}</p>}
+      <button className={btnSec} disabled={guardando} onClick={cambiar}>
+        {guardando && <Loader2 size={14} className="animate-spin"/>}Cambiar contraseña
+      </button>
+    </Card>
+  );
+
+  if (soloTarjeta) return tarjeta;
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <div>
+        <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Mi cuenta</h2>
+        <p className="text-sm text-slate-500">Datos de acceso al sistema.</p>
+      </div>
+      <Card className="p-5">
+        <h3 className="font-bold text-sm mb-2">Mis datos</h3>
+        <div className="grid sm:grid-cols-2 gap-y-2 text-sm">
+          <div><span className="text-slate-500">Nombre: </span>{user.nombre}</div>
+          <div><span className="text-slate-500">Correo: </span>{user.email}</div>
+          <div><span className="text-slate-500">Área: </span>{user.area || "—"}</div>
+          <div><span className="text-slate-500">Asignaturas: </span>{user.asignaturas || "—"}</div>
+        </div>
+        <p className="text-[11px] text-slate-400 mt-3">
+          Si algún dato es incorrecto, solicita a la administración escolar que lo corrija.
+        </p>
+      </Card>
+      {tarjeta}
     </div>
   );
 }
@@ -2554,8 +2654,6 @@ function Administracion({ db, user, mutar }) {
   const [verde, setVerde] = useState(cfg.semVerde);
   const [amarillo, setAmarillo] = useState(cfg.semAmarillo);
   const [nuevoCiclo, setNuevoCiclo] = useState("");
-  const [passActual, setPassActual] = useState("");
-  const [passNueva, setPassNueva] = useState("");
   const [msg, setMsg] = useState("");
   const docentes = db.users.filter(u => u.rol === "docente");
 
@@ -2569,16 +2667,6 @@ function Administracion({ db, user, mutar }) {
     if (!/^\d{4}-\d{4}$/.test(nuevoCiclo.trim())) { setMsg("Escribe el ciclo con formato 2026-2027."); return; }
     mutar(d => { if (!d.config.ciclos.includes(nuevoCiclo.trim())) d.config.ciclos.push(nuevoCiclo.trim()); });
     setNuevoCiclo("");
-  };
-
-  const cambiarPass = async () => {
-    if (passNueva.length < 6) { setMsg("La nueva contraseña debe tener al menos 6 caracteres."); return; }
-    // Verifica la contraseña actual reautenticando y luego la actualiza
-    const { error: e1 } = await supabase.auth.signInWithPassword({ email: user.email, password: passActual });
-    if (e1) { setMsg("La contraseña actual no coincide."); return; }
-    const { error: e2 } = await supabase.auth.updateUser({ password: passNueva });
-    if (e2) { setMsg("No se pudo actualizar: " + e2.message); return; }
-    setPassActual(""); setPassNueva(""); setMsg("Contraseña actualizada.");
   };
 
   return (
@@ -2655,14 +2743,7 @@ function Administracion({ db, user, mutar }) {
         </label>
       </Card>
 
-      <Card className="p-5 space-y-3">
-        <h3 className="font-bold text-sm">Mi cuenta</h3>
-        <div className="grid sm:grid-cols-2 gap-3">
-          <Campo label="Contraseña actual"><input className={inputCls} type="password" value={passActual} onChange={e => setPassActual(e.target.value)} /></Campo>
-          <Campo label="Nueva contraseña"><input className={inputCls} type="password" value={passNueva} onChange={e => setPassNueva(e.target.value)} /></Campo>
-        </div>
-        <button className={btnSec} onClick={cambiarPass}>Cambiar contraseña</button>
-      </Card>
+      <MiCuenta user={user} soloTarjeta />
     </div>
   );
 }
