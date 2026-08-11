@@ -545,6 +545,7 @@ export default function App() {
     { id: "reportes", label: "Reportes", icono: FileText },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "actividad", label: "Actividad reciente", icono: Activity },
+    { id: "respaldo", label: "Respaldo", icono: Download },
     { id: "admin", label: "Administración", icono: Settings },
   ] : [
     { id: "avisos", label: "Avisos", icono: Megaphone, badge: avisosPendientes(db, user).length },
@@ -642,6 +643,7 @@ export default function App() {
           {pagina === "reportes" && esAdmin && <Reportes db={db} />}
           {pagina === "perfil_inst" && esAdmin && <PerfilInstitucional db={db} />}
           {pagina === "actividad" && esAdmin && <ActividadReciente db={db} />}
+          {pagina === "respaldo" && esAdmin && <Respaldo db={db} user={user} />}
           {pagina === "admin" && esAdmin && <Administracion db={db} user={user} mutar={mutar} />}
         </main>
       </div>
@@ -1462,6 +1464,290 @@ function MiCuenta({ user, soloTarjeta = false }) {
         </p>
       </Card>
       {tarjeta}
+    </div>
+  );
+}
+
+/* ================================================================
+   RESPALDO (administrador)
+   Descarga todo el acervo en un solo archivo ZIP: los documentos
+   originales con nombres legibles, organizados por docente, más los
+   índices en CSV. Todo ocurre en el navegador; nada se envía a
+   ningún servidor externo.
+   ================================================================ */
+
+// Deja un texto apto para nombre de archivo en cualquier sistema
+function nombreSeguro(txt, max = 60) {
+  return (txt || "sin_nombre")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")   // quita acentos
+    .replace(/[^a-zA-Z0-9 _-]/g, "")                     // quita signos
+    .trim().replace(/\s+/g, "_").slice(0, max) || "sin_nombre";
+}
+
+const csvTexto = (filas) => {
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  return "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
+};
+
+function Respaldo({ db, user }) {
+  const [estado, setEstado] = useState("listo"); // listo | trabajando | terminado | error
+  const [progreso, setProgreso] = useState({ hechos: 0, total: 0, actual: "" });
+  const [resultado, setResultado] = useState(null);
+  const [err, setErr] = useState("");
+  const [incluirArchivos, setIncluirArchivos] = useState(true);
+
+  const docentes = db.users.filter(u => u.rol === "docente");
+  const nombreDe = (id) => docentes.find(d => d.id === id)?.nombre || "Docente";
+
+  // Todo lo que tiene documento adjunto, con su ruta dentro del ZIP
+  const inventario = () => {
+    const items = [];
+    db.certs.filter(c => c.archivoGuardado && !c._publico).forEach(c => {
+      const d = nombreSeguro(nombreDe(c.docenteId), 40);
+      items.push({
+        clave: c.id,
+        ruta: `Docentes/${d}/Constancias/${nombreSeguro(c.datos.curso || "constancia", 50)}__${c.ciclo || "sin_ciclo"}`,
+      });
+    });
+    db.grados.filter(g => g.archivoGuardado).forEach(g => {
+      const d = nombreSeguro(nombreDe(g.docenteId), 40);
+      items.push({
+        clave: g.id,
+        ruta: `Docentes/${d}/Grados_academicos/${nombreSeguro(g.nivel || "grado", 30)}__${nombreSeguro(g.datos?.programa || g.programa || "titulo", 40)}`,
+      });
+    });
+    db.comp.filter(c => c.archivoGuardado).forEach(c => {
+      const d = nombreSeguro(nombreDe(c.docenteId), 40);
+      items.push({
+        clave: c.id,
+        ruta: `Docentes/${d}/Formacion_complementaria/${nombreSeguro(c.nombre || c.datos?.nombre || "documento", 50)}`,
+      });
+    });
+    db.avisos.filter(a => a.archivoGuardado).forEach(a => {
+      items.push({
+        clave: "aviso_" + a.id,
+        ruta: `Avisos/${nombreSeguro(a.titulo, 50)}`,
+      });
+    });
+    return items;
+  };
+
+  const totalArchivos = inventario().length;
+
+  const generar = async () => {
+    setEstado("trabajando"); setErr(""); setResultado(null);
+    try {
+      const { default: JSZip } = await import("jszip");
+      const zip = new JSZip();
+      const hoy = new Date();
+      const sello = hoy.toISOString().slice(0, 10);
+
+      /* ---- Índices en CSV ---- */
+      const fCerts = [["Docente", "Área", "Curso", "Institución", "Horas", "Categoría", "Modalidad",
+                       "Fecha inicio", "Fecha término", "Fecha emisión", "Folio", "Ciclo", "Estado",
+                       "Validada por", "Fecha de validación", "Archivo adjunto"]];
+      db.certs.filter(c => !c._publico).forEach(c => {
+        const d = docentes.find(x => x.id === c.docenteId);
+        const val = (c.historial || []).filter(h => /valid/i.test(h.accion)).slice(-1)[0];
+        fCerts.push([nombreDe(c.docenteId), d?.area || "", c.datos.curso, c.datos.institucion,
+          c.datos.horas, c.datos.categoria, c.datos.modalidad, c.datos.fecha_inicio,
+          c.datos.fecha_termino, c.datos.fecha_emision, c.datos.folio, c.ciclo,
+          ESTADOS_CERT[c.estado]?.txt || c.estado, val?.por || "", val ? val.fecha : "",
+          c.archivoGuardado ? "Sí" : "No"]);
+      });
+      zip.file(`Indices/constancias_${sello}.csv`, csvTexto(fCerts));
+
+      const fGrados = [["Docente", "Nivel", "Programa", "Institución", "Campus", "País",
+                        "Año de titulación", "Cédula", "Número de título", "Estado"]];
+      db.grados.forEach(g => fGrados.push([nombreDe(g.docenteId), g.nivel,
+        g.datos?.programa || "", g.datos?.institucion || "", g.datos?.campus || "",
+        g.datos?.pais || "", g.datos?.fecha_expedicion || "", g.datos?.cedula || "",
+        g.datos?.num_titulo || "", g.estado]));
+      zip.file(`Indices/grados_academicos_${sello}.csv`, csvTexto(fGrados));
+
+      const fComp = [["Docente", "Tipo", "Nombre", "Institución", "Fecha", "Duración", "Estado"]];
+      db.comp.forEach(c => fComp.push([nombreDe(c.docenteId), c.tipo, c.nombre,
+        c.institucion, c.fecha, c.duracion, c.estado]));
+      zip.file(`Indices/formacion_complementaria_${sello}.csv`, csvTexto(fComp));
+
+      const fDoc = [["Nombre", "Correo", "Área", "Asignaturas", "Estado", "Expediente %"]];
+      docentes.forEach(d => fDoc.push([d.nombre, d.email, d.area || "", d.asignaturas || "",
+        d.activo ? "Activo" : "Inactivo", completitudExpediente(db, d.id).pct + "%"]));
+      zip.file(`Indices/docentes_${sello}.csv`, csvTexto(fDoc));
+
+      const fAvisos = [["Título", "Tipo", "Prioridad", "Estado", "Publicado",
+                        "Fecha límite", "Enterados", "Total destinatarios"]];
+      db.avisos.forEach(a => {
+        const s = seguimientoDe(db, a);
+        fAvisos.push([a.titulo, a.tipo, a.prioridad, ESTADO_AVISO[a.estado],
+          a.fechaPublicacion || "", a.fechaLimite || "", s.enterados.length, s.total.length]);
+      });
+      zip.file(`Indices/avisos_${sello}.csv`, csvTexto(fAvisos));
+
+      const fAcuses = [["Aviso", "Docente", "Estado", "Fecha y hora del acuse"]];
+      db.avisos.filter(a => a.estado !== "draft").forEach(a => {
+        destinatariosDe(db, a).forEach(d => {
+          const ac = acuseDe(db, a.id, d.id);
+          fAcuses.push([a.titulo, d.nombre, ac ? "Enterado" : "Pendiente",
+            ac ? new Date(ac.fecha).toLocaleString("es-MX") : ""]);
+        });
+      });
+      zip.file(`Indices/acuses_de_enterado_${sello}.csv`, csvTexto(fAcuses));
+
+      /* ---- Documentos originales ---- */
+      let fallidos = 0, guardados = 0;
+      if (incluirArchivos) {
+        const items = inventario();
+        setProgreso({ hechos: 0, total: items.length, actual: "" });
+        for (let i = 0; i < items.length; i++) {
+          const it = items[i];
+          setProgreso({ hechos: i, total: items.length, actual: it.ruta.split("/").pop() });
+          try {
+            const f = await leerArchivo(it.clave);
+            if (!f) { fallidos++; continue; }
+            const ext = (f.nombre && f.nombre.includes(".")) ? f.nombre.split(".").pop().toLowerCase()
+              : (f.mime || "").includes("pdf") ? "pdf"
+              : (f.mime || "").includes("png") ? "png" : "jpg";
+            zip.file(`${it.ruta}.${ext}`, f.base64, { base64: true });
+            guardados++;
+          } catch { fallidos++; }
+        }
+        setProgreso({ hechos: items.length, total: items.length, actual: "" });
+      }
+
+      /* ---- Nota explicativa ---- */
+      zip.file("LEEME.txt",
+`RESPALDO DEL SISTEMA
+Departamento de Formación Docente · CBTA No. 291
+
+Generado el: ${hoy.toLocaleString("es-MX")}
+Generado por: ${user.nombre}
+
+CONTENIDO
+- Indices/ .............. Tablas en formato CSV (se abren con Excel).
+- Docentes/ ............. Documentos originales, en una carpeta por docente:
+                          constancias de cursos, títulos y grados académicos,
+                          y formación complementaria.
+- Avisos/ ............... Archivos adjuntos de las circulares publicadas.
+
+RESUMEN
+Docentes registrados: ${docentes.length}
+Constancias: ${db.certs.filter(c => !c._publico).length}
+Grados académicos: ${db.grados.length}
+Formación complementaria: ${db.comp.length}
+Avisos: ${db.avisos.length}
+Documentos incluidos: ${guardados}${fallidos ? ` (no se pudieron recuperar ${fallidos})` : ""}
+
+NOTA
+Este archivo es una copia de seguridad. Consérvalo en un lugar distinto
+de la computadora de uso diario (por ejemplo, un disco externo o una
+carpeta en la nube del plantel). Conviene generar un respaldo al cierre
+de cada ciclo escolar.
+`);
+
+      const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `respaldo_formacion_docente_${sello}.zip`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+
+      setResultado({ guardados, fallidos, peso: (blob.size / 1048576).toFixed(1) });
+      setEstado("terminado");
+    } catch (e) {
+      setErr(e.message || "No se pudo generar el respaldo.");
+      setEstado("error");
+    }
+  };
+
+  const pct = progreso.total ? Math.round(100 * progreso.hechos / progreso.total) : 0;
+
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <div>
+        <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Respaldo del sistema</h2>
+        <p className="text-sm text-slate-500">
+          Descarga todo el acervo en un solo archivo ZIP: documentos originales organizados por
+          docente e índices en Excel. Se recomienda hacerlo al cierre de cada ciclo escolar.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Stat icono={Users} label="Docentes" valor={docentes.length} />
+        <Stat icono={FileCheck} label="Constancias" valor={db.certs.filter(c => !c._publico).length} />
+        <Stat icono={GraduationCap} label="Grados y complementaria" valor={db.grados.length + db.comp.length} />
+        <Stat icono={FolderOpen} label="Documentos adjuntos" valor={totalArchivos} />
+      </div>
+
+      <Card className="p-5 space-y-4">
+        <div>
+          <h3 className="font-bold text-sm mb-2">Qué incluye el respaldo</h3>
+          <ul className="text-sm text-slate-600 space-y-1">
+            <li>• <b>Índices en CSV</b>: constancias, grados, formación complementaria, docentes, avisos y acuses de enterado.</li>
+            <li>• <b>Documentos originales</b> con nombres legibles, en una carpeta por docente.</li>
+            <li>• <b>Nota explicativa</b> con la fecha del respaldo y el resumen del contenido.</li>
+          </ul>
+        </div>
+
+        <label className="flex items-start gap-3 text-sm bg-slate-50 rounded-xl p-3">
+          <input type="checkbox" className="mt-0.5" checked={incluirArchivos}
+            onChange={e => setIncluirArchivos(e.target.checked)} disabled={estado === "trabajando"} />
+          <span>
+            Incluir los {totalArchivos} documentos originales (PDF e imágenes).
+            <span className="block text-xs text-slate-500 mt-0.5">
+              Si lo desmarcas, el respaldo solo trae los índices en Excel: se genera en segundos y pesa muy poco.
+            </span>
+          </span>
+        </label>
+
+        {estado === "trabajando" && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-xs text-slate-500">
+              <span className="flex items-center gap-1.5"><Loader2 size={13} className="animate-spin"/>
+                {progreso.total ? `Recuperando documentos… ${progreso.hechos} de ${progreso.total}` : "Preparando índices…"}
+              </span>
+              <span>{pct}%</span>
+            </div>
+            <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+              <div className="h-full bg-[#E8871E] transition-all" style={{ width: pct + "%" }} />
+            </div>
+            {progreso.actual && <p className="text-[11px] text-slate-400 truncate">{progreso.actual}</p>}
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+              No cierres esta pestaña hasta que termine. El archivo se descargará solo.
+            </p>
+          </div>
+        )}
+
+        {estado === "terminado" && resultado && (
+          <div className="text-sm bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl p-3">
+            <b>Respaldo descargado.</b> {resultado.guardados} documento(s) incluidos · {resultado.peso} MB.
+            {resultado.fallidos > 0 && (
+              <span className="block text-amber-700 mt-1">
+                {resultado.fallidos} documento(s) no se pudieron recuperar; sus datos sí están en los índices.
+              </span>
+            )}
+            <span className="block text-xs mt-1">Guárdalo fuera de esta computadora: disco externo o nube del plantel.</span>
+          </div>
+        )}
+
+        {estado === "error" && (
+          <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>
+        )}
+
+        <button className={btnPrim} disabled={estado === "trabajando"} onClick={generar}>
+          {estado === "trabajando" ? <Loader2 size={15} className="animate-spin"/> : <Download size={15}/>}
+          {estado === "trabajando" ? "Generando respaldo…" : "Generar y descargar respaldo"}
+        </button>
+      </Card>
+
+      <Card className="p-5">
+        <h3 className="font-bold text-sm mb-2">Recomendaciones</h3>
+        <div className="text-sm text-slate-600 space-y-2">
+          <p>Genera un respaldo <b>al cierre de cada ciclo escolar</b>, en julio, y consérvalo en un lugar distinto de la computadora de uso diario.</p>
+          <p>Este archivo también sirve para entregar el expediente completo de un docente: basta con abrir el ZIP y tomar su carpeta.</p>
+          <p className="text-xs text-slate-400">Con muchos documentos el proceso puede tardar varios minutos, porque cada archivo se descarga uno por uno desde el almacenamiento.</p>
+        </div>
+      </Card>
     </div>
   );
 }
