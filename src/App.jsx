@@ -76,13 +76,23 @@ const COLOR_PRIORIDAD = {
 };
 const ESTADO_AVISO = { draft: "Borrador", published: "Publicado", archived: "Archivado" };
 
+/* Las insignias cubren las dos áreas del trabajo docente: la capacitación
+   y el cumplimiento de planeaciones, planes de trabajo e informes. */
 const LOGROS_DEF = [
-  { clave: "primer_curso", nombre: "Primer curso registrado", icono: "🎓", desc: "Tu primera constancia validada" },
-  { clave: "h20", nombre: "20 horas acumuladas", icono: "⏱️", desc: "20 horas de capacitación validadas" },
-  { clave: "h50", nombre: "50 horas acumuladas", icono: "🔥", desc: "50 horas de capacitación validadas" },
-  { clave: "h100", nombre: "100 horas acumuladas", icono: "💎", desc: "100 horas de capacitación validadas" },
-  { clave: "meta", nombre: "Meta anual alcanzada", icono: "🏁", desc: "Alcanzaste tu meta del ciclo" },
-  { clave: "top3", nombre: "Top 3 del ranking", icono: "🏆", desc: "Entre los tres primeros lugares" },
+  // --- Capacitación ---
+  { clave: "primer_curso", nombre: "Primer curso registrado", icono: "🎓", area: "Capacitación", desc: "Tu primera constancia validada" },
+  { clave: "h20", nombre: "20 horas acumuladas", icono: "⏱️", area: "Capacitación", desc: "20 horas de capacitación validadas" },
+  { clave: "h50", nombre: "50 horas acumuladas", icono: "🔥", area: "Capacitación", desc: "50 horas de capacitación validadas" },
+  { clave: "h100", nombre: "100 horas acumuladas", icono: "💎", area: "Capacitación", desc: "100 horas de capacitación validadas" },
+  { clave: "meta", nombre: "Meta anual alcanzada", icono: "🏁", area: "Capacitación", desc: "Alcanzaste tu meta del ciclo" },
+  { clave: "top3", nombre: "Top 3 en capacitación", icono: "🏆", area: "Capacitación", desc: "Entre los tres primeros lugares en horas" },
+  // --- Planeaciones, planes de trabajo e informes ---
+  { clave: "primera_entrega", nombre: "Primera entrega", icono: "📄", area: "Planeaciones", desc: "Subiste tu primera planeación, plan o informe" },
+  { clave: "avance50", nombre: "Media asignación cubierta", icono: "📈", area: "Planeaciones", desc: "50% de tus entregas del semestre" },
+  { clave: "planeaciones_completas", nombre: "Planeaciones completas", icono: "📚", area: "Planeaciones", desc: "Todas las planeaciones que te corresponden" },
+  { clave: "comisiones_completas", nombre: "Comisiones al día", icono: "🗂️", area: "Planeaciones", desc: "Planes de trabajo e informes de tus comisiones" },
+  { clave: "entrega_total", nombre: "Asignación completa", icono: "✅", area: "Planeaciones", desc: "100% de tus entregas del semestre" },
+  { clave: "puntual", nombre: "Entrega anticipada", icono: "⚡", area: "Planeaciones", desc: "Completaste tus entregas durante el primer mes del semestre" },
 ];
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -196,6 +206,42 @@ function otorgarLogros(db, docenteId, cicloRef) {
   if (h >= metaDe(db, docenteId)) dar("meta");
   const top3 = rankingDe(db, ciclo).slice(0, 3).map(r => r.id);
   if (top3.includes(docenteId) && h > 0) dar("top3");
+
+  /* --- Insignias de planeaciones, planes de trabajo e informes ---
+     Se calculan sobre la asignación del semestre en curso. */
+  const asig = asignacionDe(db, docenteId, ciclo, periodoDeFecha());
+  if (!asig) return;
+  const entregasSem = db.entregas.filter(e => e.docenteId === docenteId
+    && e.ciclo === ciclo && (e.periodo || "ago-ene") === (asig.periodo || "ago-ene"));
+  if (entregasSem.length >= 1) dar("primera_entrega");
+
+  const av = avanceDe(db, asig);
+  if (av.requeridas > 0) {
+    if (av.entregadas >= Math.ceil(av.requeridas / 2)) dar("avance50");
+    if (av.entregadas >= av.requeridas && !av.indeterminado) {
+      dar("entrega_total");
+      // Anticipada: completó todo dentro del primer mes del semestre
+      const inicio = new Date((asig.periodo || "ago-ene") === "feb-jul"
+        ? `${ciclo.split("-")[1]}-02-01` : `${ciclo.split("-")[0]}-08-01`);
+      const ultima = entregasSem.map(e => new Date(e.fecha)).sort((a, b) => b - a)[0];
+      if (ultima && (ultima - inicio) / 86400000 <= 31) dar("puntual");
+    }
+  }
+
+  // Por bloques: planeaciones (grupo y módulos) y comisiones (planes e informes)
+  const encargos = encargosDe(db, asig);
+  const cubierto = (tipos, filtro) => {
+    const items = encargos.filter(filtro);
+    if (!items.length) return false;
+    return items.every(e => tipos.every(t => {
+      const n = e.requisitos[t];
+      if (n === null) return false;   // requisito sin definir: no cuenta
+      if (!n) return true;
+      return entregasDe(db, docenteId, ciclo, e.clave, t, asig.periodo || "ago-ene").length >= n;
+    }));
+  };
+  if (cubierto(["planeacion"], e => e.tipo === "asignatura" || e.tipo === "modulo")) dar("planeaciones_completas");
+  if (cubierto(["plan", "informe"], e => e.tipo === "comision")) dar("comisiones_completas");
 }
 
 function notificar(db, userId, texto) {
@@ -406,6 +452,13 @@ function emparejarDocente(db, nombreExtraido) {
 }
 
 const NOMBRE_TIPO_ENTREGA = { planeacion: "Planeación", plan: "Plan de trabajo", informe: "Informe" };
+const PLURAL_TIPO_ENTREGA = { planeacion: "Planeaciones", plan: "Planes de trabajo", informe: "Informes" };
+// Devuelve singular o plural según la cantidad
+const tipoEntrega = (t, n) => (n === 1 ? NOMBRE_TIPO_ENTREGA[t] : PLURAL_TIPO_ENTREGA[t]) || t;
+// "1 planeación" / "8 planeaciones"
+const nPlaneaciones = (n) => `${n} ${Number(n) === 1 ? "planeación" : "planeaciones"}`;
+// Concordancia para palabras con acento que lo pierden en plural
+const nAsignaciones = (n) => `${n} ${Number(n) === 1 ? "asignación" : "asignaciones"}`;
 
 /* ---------------- Avisos y circulares ---------------------------- */
 
@@ -775,11 +828,10 @@ export default function App() {
   ] : [
     { id: "avisos", label: "Avisos", icono: Megaphone, badge: avisosPendientes(db, user).length },
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
-    { id: "subir", label: "Subir constancia", icono: Upload },
-    { id: "cursos", label: "Mis cursos", icono: BookOpen },
-    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
     { id: "mi_asignacion", label: "Mi asignación", icono: FolderOpen, badge: pendientesEntrega(db, user.id) },
+    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
+    { id: "cursos", label: "Mis cursos", icono: BookOpen },
     { id: "expediente", label: "Mi perfil académico", icono: GraduationCap },
     ...(db.config.rankingPublico ? [{ id: "ranking", label: "Ranking general", icono: Trophy }] : []),
     { id: "logros", label: "Logros", icono: Award },
@@ -1888,22 +1940,40 @@ function Logros({ db, user }) {
           {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
         </select>
       </div>
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {LOGROS_DEF.map(l => {
-          const ganado = mios.find(m => m.clave === claveLogro(l.clave, ciclo));
-          return (
-            <Card key={l.clave} className={`p-4 flex items-center gap-3 ${ganado ? "border-[#E8871E] bg-amber-50/60" : "opacity-55"}`}>
-              <span className="text-3xl">{l.icono}</span>
-              <div>
-                <div className="font-bold text-sm">{l.nombre}</div>
-                <div className="text-xs text-slate-500">{l.desc}</div>
-                {ganado ? <div className="text-[11px] text-[#E8871E] font-bold mt-0.5">Obtenida el {fmtFecha(ganado.fecha.slice(0,10))}</div>
-                        : <div className="text-[11px] text-slate-400 mt-0.5">Aún por conseguir</div>}
-              </div>
-            </Card>
-          );
-        })}
-      </div>
+      {["Capacitación", "Planeaciones"].map(area => {
+        const del = LOGROS_DEF.filter(l => l.area === area);
+        const ganadas = del.filter(l => mios.some(m => m.clave === claveLogro(l.clave, ciclo))).length;
+        return (
+          <div key={area} className="space-y-2">
+            <div className="flex items-baseline gap-2">
+              <h3 className="font-bold text-sm">
+                {area === "Capacitación" ? "Capacitación y formación" : "Planeaciones, planes de trabajo e informes"}
+              </h3>
+              <span className="text-xs text-slate-400">{ganadas} de {del.length}</span>
+            </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {del.map(l => {
+                const ganado = mios.find(m => m.clave === claveLogro(l.clave, ciclo));
+                return (
+                  <Card key={l.clave} className={`p-4 flex items-center gap-3 ${ganado ? "border-[#E8871E] bg-amber-50/60" : "opacity-55"}`}>
+                    <span className="text-3xl">{l.icono}</span>
+                    <div>
+                      <div className="font-bold text-sm">{l.nombre}</div>
+                      <div className="text-xs text-slate-500">{l.desc}</div>
+                      {ganado ? <div className="text-[11px] text-[#E8871E] font-bold mt-0.5">Obtenida el {fmtFecha(ganado.fecha.slice(0,10))}</div>
+                              : <div className="text-[11px] text-slate-400 mt-0.5">Aún por conseguir</div>}
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+      <p className="text-[11px] text-slate-400">
+        Las insignias se renuevan cada ciclo escolar. Las de planeaciones se calculan sobre la
+        asignación del semestre en curso.
+      </p>
     </div>
   );
 }
@@ -3095,7 +3165,7 @@ function ProgramasEstudio({ db, user, mutar }) {
                   const sin = a.numPlaneaciones == null || a.numPlaneaciones === "";
                   return (
                     <span key={i} className={`text-xs px-2.5 py-1 rounded-full border ${sin ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-slate-50 border-slate-200 text-slate-700"}`}>
-                      {a.nombre} · {sin ? "⚠ sin definir" : `${a.numPlaneaciones} planeación(es)`}
+                      {a.nombre} · {sin ? "⚠ sin definir" : nPlaneaciones(a.numPlaneaciones)}
                     </span>
                   );
                 })}
@@ -3186,7 +3256,7 @@ function ProgramasDocente({ db }) {
           <div className="mt-2 flex flex-wrap gap-1.5">
             {asignaturasDe(p).map((a, i) => (
               <span key={i} className="text-xs px-2.5 py-1 rounded-full bg-slate-50 border border-slate-200 text-slate-700">
-                {a.nombre}{a.numPlaneaciones != null && a.numPlaneaciones !== "" && ` · ${a.numPlaneaciones} planeación(es)`}
+                {a.nombre}{a.numPlaneaciones != null && a.numPlaneaciones !== "" && ` · ${nPlaneaciones(a.numPlaneaciones)}`}
               </span>
             ))}
           </div>
@@ -3231,7 +3301,7 @@ function DashboardAcademico({ db, irA, compacto = false }) {
       req += n;
       ent += Math.min(entregasDe(db, f.asig.docenteId, cicloSel, e.clave, t, periodoSel).length, n);
     }));
-    return { nombre: NOMBRE_TIPO_ENTREGA[t] + "es", requeridas: req, entregadas: ent,
+    return { nombre: PLURAL_TIPO_ENTREGA[t], requeridas: req, entregadas: ent,
       pendientes: Math.max(req - ent, 0), pct: req ? Math.round(100 * ent / req) : 0 };
   }).filter(x => x.requeridas > 0);
 
@@ -3310,7 +3380,7 @@ function DashboardAcademico({ db, irA, compacto = false }) {
 
       {(sinVinculo > 0 || conPendPrograma > 0) && (
         <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1">
-          {sinVinculo > 0 && <p>⚠ <b>{sinVinculo}</b> asignación(es) sin cuenta vinculada: esos docentes no pueden ver ni subir sus entregas. Corrígelo en <button className="underline font-semibold" onClick={() => irA("asignaciones")}>Asignaciones</button>.</p>}
+          {sinVinculo > 0 && <p>⚠ <b>{sinVinculo}</b> {sinVinculo === 1 ? "asignación" : "asignaciones"} sin cuenta vinculada: esos docentes no pueden ver ni subir sus entregas. Corrígelo en <button className="underline font-semibold" onClick={() => irA("asignaciones")}>Asignaciones</button>.</p>}
           {conPendPrograma > 0 && <p>⚠ <b>{conPendPrograma}</b> docente(s) con asignaturas sin programa en el repositorio: su requisito no se puede calcular. Súbelos en <button className="underline font-semibold" onClick={() => irA("programas")}>Programas de Estudio</button>.</p>}
         </div>
       )}
@@ -3622,7 +3692,7 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
             <select className={inputCls + " !mt-0 !w-auto"} value={periodoSel} onChange={e => setPeriodoSel(e.target.value)}>
               {PERIODOS.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
             </select>
-            <span className="text-xs text-slate-400 ml-auto">{delCiclo.length} asignación(es) en este semestre</span>
+            <span className="text-xs text-slate-400 ml-auto">{nAsignaciones(delCiclo.length)} en este semestre</span>
           </Card>
           <Card className="p-4">
             {delCiclo.length === 0 && <p className="text-sm text-slate-400 py-8 text-center">No hay asignaciones cargadas en este ciclo.</p>}
@@ -3705,7 +3775,7 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose }) {
                   const ent = asig.docenteId ? entregasDe(db, asig.docenteId, asig.ciclo, e.clave, t, asig.periodo || "ago-ene") : [];
                   return (
                     <div key={t} className="flex items-center gap-2 text-sm">
-                      <span className="w-32 text-slate-500">{NOMBRE_TIPO_ENTREGA[t]}{n !== 1 ? "es" : ""}:</span>
+                      <span className="w-32 text-slate-500">{tipoEntrega(t, n)}:</span>
                       <span className={`font-semibold ${n !== null && ent.length >= n ? "text-emerald-700" : ""}`}>
                         {ent.length} de {n === null ? "?" : n}
                       </span>
@@ -3777,6 +3847,7 @@ function MiAsignacion({ db, user, mutar }) {
         });
         d.users.filter(u => esRolAcademico(u.rol) && u.rol !== "admin" && u.activo).forEach(j =>
           notificar(d, j.id, `📥 ${user.nombre} subió ${NOMBRE_TIPO_ENTREGA[tipo].toLowerCase()} de “${encargo.actividad}”.`));
+        otorgarLogros(d, user.id, asig.ciclo);
       });
     } catch (e) { setErr(e.message); }
     setSubiendo(null);
@@ -3865,7 +3936,7 @@ function MiAsignacion({ db, user, mutar }) {
                 return (
                   <div key={t} className="border border-slate-100 rounded-xl p-3">
                     <div className="flex items-center justify-between text-sm">
-                      <span className="font-medium">{NOMBRE_TIPO_ENTREGA[t]}{(n ?? 2) !== 1 ? "es" : ""}</span>
+                      <span className="font-medium">{tipoEntrega(t, n ?? 2)}</span>
                       <span className={`text-xs font-bold ${n !== null && ent.length >= n ? "text-emerald-700" : "text-slate-500"}`}>
                         {ent.length} de {n === null ? "?" : n} {n !== null && ent.length >= n && "✓"}
                       </span>
