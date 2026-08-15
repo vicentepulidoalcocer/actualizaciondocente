@@ -769,6 +769,7 @@ export default function App() {
   ] : user.rol === "jefe_academico" ? [
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
+    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
     { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
@@ -875,7 +876,7 @@ export default function App() {
           {pagina === "avisos" && (esRolComunicador(user.rol)
             ? <Avisos db={db} user={user} mutar={mutar} />
             : <MisAvisos db={db} user={user} recargar={() => recargar(user.id)} />)}
-          {pagina === "calendario" && <CalendarioAcademico db={db} user={user} mutar={mutar} puedeEditar={esRolValidador(user.rol)} />}
+          {pagina === "calendario" && <CalendarioAcademico db={db} user={user} mutar={mutar} puedeEditar={esRolAcademico(user.rol)} />}
           {pagina === "programas" && (esRolAcademico(user.rol)
             ? <ProgramasEstudio db={db} user={user} mutar={mutar} />
             : <ProgramasDocente db={db} />)}
