@@ -65,13 +65,6 @@ const esRolAcademico = (r) => r === "admin" || r === "jefe_academico";
 const esRolComunicador = (r) => r !== "docente";
 
 /* ---- Programas de estudio y asignaciones ---- */
-const CATEGORIAS_PROGRAMA = [
-  ["asignatura", "Asignaturas / UAC"],
-  ["modulo", "Módulos profesionales"],
-  ["liquidacion", "Liquidación de progresiones"],
-  ["autoplaneada", "Modalidad autoplaneada"],
-];
-const nombreCategoria = (c) => (CATEGORIAS_PROGRAMA.find(x => x[0] === c) || ["", c])[1];
 
 /* ---- Avisos y circulares ---- */
 const TIPOS_AVISO = ["Circular", "Curso", "Reunión", "Información general", "Actividad", "Importante", "Urgente"];
@@ -291,8 +284,10 @@ function encargosDe(db, asig) {
         requisitos: { planeacion: 0, plan: 1, informe: 3 } };
     }
     const prog = buscarPrograma(db, e.actividad);
+    const num = prog && prog.numPlaneaciones != null && prog.numPlaneaciones !== ""
+      ? Number(prog.numPlaneaciones) : null;
     return { ...e, tipo, programa: prog,
-      requisitos: { planeacion: prog ? (Number(prog.numPlaneaciones) || 0) : null, plan: 0, informe: 0 } };
+      requisitos: { planeacion: num, plan: 0, informe: 0 } };
   }).sort((a, b) => a.actividad.localeCompare(b.actividad));
 }
 
@@ -403,7 +398,7 @@ function imprimirReporte(titulo, html) {
     th,td{border:1px solid #cbd2e0;padding:6px 10px;text-align:left}
     th{background:#eef1f7}.pie{margin-top:24px;font-size:11px;color:#667}
   </style></head><body><h1>${titulo}</h1>${html}
-  <p class="pie">Departamento de Formación Docente · CBTA No. 291 · Generado el ${new Date().toLocaleString("es-MX")}</p>
+  <p class="pie">Mi portal CBTA 291 · Generado el ${new Date().toLocaleString("es-MX")}</p>
   <script>window.print()</script></body></html>`);
   w.document.close();
 }
@@ -509,7 +504,7 @@ function Login() {
       <div className="w-full max-w-md">
         <div className="text-center mb-6">
           <img src={LOGO} alt="CBTA No. 291" className="w-24 h-24 mx-auto mb-3 rounded-full bg-white p-1 shadow-lg" />
-          <h1 className="text-white text-2xl font-bold leading-tight" style={{fontFamily:"'Archivo', sans-serif"}}>Departamento de<br />Formación Docente</h1>
+          <h1 className="text-white text-2xl font-bold leading-tight" style={{fontFamily:"'Archivo', sans-serif"}}>Mi portal<br />CBTA 291</h1>
           <p className="text-slate-300 text-sm mt-1">Seguimiento de capacitación y expediente académico</p>
         </div>
         <Card className="p-6">
@@ -587,7 +582,7 @@ export default function App() {
     setUser(yo);
     // Al iniciar sesión, cada rol aterriza en su pantalla de trabajo;
     // en recargas posteriores no se toca la pantalla en la que esté.
-    if (esPrimeraCarga && (yo.rol === "docente" || yo.rol === "jefe_academico")) setPagina("avisos");
+    if (esPrimeraCarga && yo.rol === "docente") setPagina("avisos");
   }, []);
 
   useEffect(() => {
@@ -697,6 +692,7 @@ export default function App() {
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "admin", label: "Metas y ciclos", icono: Settings },
   ] : user.rol === "jefe_academico" ? [
+    { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
@@ -711,6 +707,8 @@ export default function App() {
     ...(db.config.rankingPublico ? [{ id: "ranking", label: "Ranking", icono: Trophy }] : []),
     { id: "logros", label: "Logros", icono: Award },
   ];
+
+  useEffect(() => { document.title = "Mi portal CBTA 291"; }, []);
 
   const irA = (p, ctx = null) => { setPagina(p); setPaginaCtx(ctx); setMenuAbierto(false); setBusqueda(""); };
 
@@ -729,7 +727,7 @@ export default function App() {
           <button className="lg:hidden p-1.5 rounded-lg hover:bg-white/10" onClick={() => setMenuAbierto(v => !v)}><Menu size={20} /></button>
           <div className="flex items-center gap-2 font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>
             <img src={LOGO} alt="CBTA 291" className="w-9 h-9 rounded-full bg-white p-0.5" />
-            <span className="hidden sm:inline leading-tight text-[13px]">Departamento de<br />Formación Docente</span>
+            <span className="hidden sm:inline leading-tight text-[13px]">Mi portal<br />CBTA 291</span>
           </div>
           <div className="flex-1 max-w-md mx-auto relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -779,9 +777,12 @@ export default function App() {
 
         {/* Contenido */}
         <main className="flex-1 p-4 lg:p-6 max-w-7xl mx-auto w-full">
-          {pagina === "dashboard" && (esRolValidador(user.rol)
-            ? <DashboardAdmin db={db} irA={irA} />
-            : <DashboardDocente db={db} user={user} irA={irA} />)}
+          {pagina === "dashboard" && (user.rol === "jefe_academico"
+            ? <DashboardAcademico db={db} irA={irA} />
+            : esRolValidador(user.rol)
+              ? <DashboardAdmin db={db} irA={irA} />
+              : <DashboardDocente db={db} user={user} irA={irA} />)}
+          {pagina === "panel_entregas" && esRolAcademico(user.rol) && <DashboardAcademico db={db} irA={irA} />}
           {pagina === "subir" && <SubirConstancia db={db} user={user} mutar={mutar} irA={irA} />}
           {pagina === "cursos" && <MisCursos db={db} user={user} mutar={mutar} />}
           {pagina === "expediente" && <PerfilAcademico db={db} user={user} docenteId={user.id} mutar={mutar} editable />}
@@ -793,7 +794,7 @@ export default function App() {
           {pagina === "programas" && (esRolAcademico(user.rol)
             ? <ProgramasEstudio db={db} user={user} mutar={mutar} />
             : <ProgramasDocente db={db} />)}
-          {pagina === "asignaciones" && esRolAcademico(user.rol) && <Asignaciones db={db} user={user} mutar={mutar} />}
+          {pagina === "asignaciones" && esRolAcademico(user.rol) && <Asignaciones db={db} user={user} mutar={mutar} irAPanel={() => irA(user.rol === "jefe_academico" ? "dashboard" : "panel_entregas")} />}
           {pagina === "mi_asignacion" && user.rol === "docente" && <MiAsignacion db={db} user={user} mutar={mutar} />}
           {pagina === "validaciones" && esRolValidador(user.rol) && <Validaciones db={db} user={user} mutar={mutar} />}
           {pagina === "docentes" && esRolValidador(user.rol) && <Docentes db={db} mutar={mutar} irA={irA} esAdmin={esAdmin} />}
@@ -1690,7 +1691,7 @@ function Respaldo({ db, user }) {
     db.programas.filter(p => p.archivoGuardado).forEach(p => {
       items.push({
         clave: "prog_" + p.id,
-        ruta: `Programas_de_estudio/${nombreSeguro(nombreCategoria(p.categoria), 35)}/${nombreSeguro(p.nombre, 50)}`,
+        ruta: `Programas_de_estudio/${nombreSeguro(p.nombre, 60)}`,
       });
     });
     db.entregas.forEach(e => {
@@ -1794,7 +1795,7 @@ function Respaldo({ db, user }) {
       /* ---- Nota explicativa ---- */
       zip.file("LEEME.txt",
 `RESPALDO DEL SISTEMA
-Departamento de Formación Docente · CBTA No. 291
+Mi portal CBTA 291
 
 Generado el: ${hoy.toLocaleString("es-MX")}
 Generado por: ${user.nombre}
@@ -2093,62 +2094,67 @@ function DescargarProgramaBtn({ programa, texto = false }) {
 
 // Vista del jefe académico y del administrador: administra el repositorio
 function ProgramasEstudio({ db, user, mutar }) {
+  const [cola, setCola] = useState(null);        // subida masiva en proceso
+  const [resumen, setResumen] = useState(null);  // resultado de la última subida
   const [editando, setEditando] = useState(null);
-  const [faseIA, setFaseIA] = useState("");
-  const [err, setErr] = useState("");
   const [guardando, setGuardando] = useState(false);
+  const [err, setErr] = useState("");
   const [q, setQ] = useState("");
-  const [fCat, setFCat] = useState("todas");
 
   const lista = db.programas
-    .filter(p => fCat === "todas" || p.categoria === fCat)
     .filter(p => !q || normTexto(p.nombre).includes(normTexto(q)))
     .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
+  const incompletos = db.programas.filter(p => !p.nombre || p.numPlaneaciones == null || p.numPlaneaciones === "").length;
 
-  const elegirArchivo = async (file) => {
-    if (!file) return;
-    const id = uid();
-    const nuevo = { id, nombre: "", categoria: "asignatura", semestre: "", numPlaneaciones: "",
-      archivoNombre: file.name, archivoGuardado: false, creadoEn: ahora(), _archivo: file };
-    setEditando(nuevo); setErr("");
-    // La IA propone nombre y número de propósitos/progresiones; todo es editable
-    try {
-      setFaseIA("leyendo");
-      const b64 = await leerComoBase64(file);
-      const datos = await extraerConIA({ base64: b64, mime: file.type || "application/pdf", tipo: "programa" });
-      setEditando(e => e && e.id === id ? {
-        ...e,
-        nombre: datos.nombre || e.nombre,
-        semestre: datos.semestre || e.semestre,
-        numPlaneaciones: datos.num_planeaciones ?? e.numPlaneaciones,
-      } : e);
-      setFaseIA("listo");
-    } catch {
-      setFaseIA("fallo"); // captura manual, sin bloquear
+  /* Subida masiva: se pueden seleccionar TODOS los PDF de una vez.
+     Cada archivo se procesa y se guarda de inmediato (IA → almacenamiento →
+     registro), para no acumular cientos de MB en la memoria del navegador. */
+  const subirLote = async (files) => {
+    const archivos = [...files].filter(f => f.name.toLowerCase().endsWith(".pdf"));
+    if (!archivos.length) return;
+    setResumen(null); setErr("");
+    setCola({ total: archivos.length, hechos: 0, actual: archivos[0].name });
+    let ok = 0, revisar = 0, fallidos = [];
+    for (let i = 0; i < archivos.length; i++) {
+      const f = archivos[i];
+      setCola({ total: archivos.length, hechos: i, actual: f.name });
+      try {
+        const b64 = await leerComoBase64(f);
+        if (b64.length > MAX_FILE_B64) { fallidos.push(f.name + " (supera ~7.5 MB)"); continue; }
+        // La IA lee nombre y número de propósitos/progresiones
+        let nombre = "", num = null;
+        try {
+          const d = await extraerConIA({ base64: b64, mime: f.type || "application/pdf", tipo: "programa" });
+          nombre = d.nombre || "";
+          num = d.num_planeaciones ?? null;
+        } catch { /* si la IA falla, queda para captura manual */ }
+        const id = uid();
+        const r = await guardarArchivo("prog_" + id, b64, f.type || "application/pdf", f.name);
+        if (!r.guardado) { fallidos.push(f.name + " (no se pudo guardar)"); continue; }
+        const pendiente = !nombre || num == null;
+        await mutar(d => {
+          d.programas.push({ id, nombre: nombre || f.name.replace(/\.pdf$/i, ""),
+            numPlaneaciones: num, archivoNombre: f.name, archivoGuardado: true,
+            revisar: pendiente, creadoEn: ahora() });
+        });
+        ok++; if (pendiente) revisar++;
+      } catch (e) { fallidos.push(f.name + " (" + e.message + ")"); }
     }
+    setCola(null);
+    setResumen({ ok, revisar, fallidos });
   };
 
-  const guardar = async () => {
+  const guardarEdicion = async () => {
     const e = editando;
     if (!e.nombre.trim()) { setErr("El nombre del programa es obligatorio."); return; }
-    if (e.numPlaneaciones === "" || isNaN(Number(e.numPlaneaciones))) {
-      setErr("Indica el número de planeaciones (propósitos o progresiones del programa)."); return;
-    }
     setGuardando(true); setErr("");
     try {
-      let guardado = e.archivoGuardado;
-      if (e._archivo) {
-        const b64 = await leerComoBase64(e._archivo);
-        const r = await guardarArchivo("prog_" + e.id, b64, e._archivo.type || "application/pdf", e._archivo.name);
-        guardado = r.guardado;
-        if (!guardado) { setErr("El PDF supera el límite de almacenamiento (~7.5 MB). Comprímelo e inténtalo de nuevo."); setGuardando(false); return; }
-      }
       await mutar(d => {
-        const { _archivo, ...limpio } = e;
-        const base = { ...limpio, numPlaneaciones: Number(e.numPlaneaciones), archivoGuardado: guardado, actualizadoEn: ahora() };
-        const i = d.programas.findIndex(x => x.id === base.id);
-        if (i >= 0) d.programas[i] = { ...d.programas[i], ...base };
-        else d.programas.push(base);
+        const i = d.programas.findIndex(x => x.id === e.id);
+        if (i >= 0) d.programas[i] = { ...d.programas[i], nombre: e.nombre.trim(),
+          numPlaneaciones: e.numPlaneaciones === "" ? null : Number(e.numPlaneaciones),
+          revisar: e.numPlaneaciones === "" || e.numPlaneaciones == null,
+          actualizadoEn: ahora() };
       });
       setEditando(null);
     } catch (er) { setErr(er.message); }
@@ -2167,93 +2173,101 @@ function ProgramasEstudio({ db, user, mutar }) {
         <div>
           <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Programas de Estudio</h2>
           <p className="text-sm text-slate-500">
-            Repositorio oficial del plantel. El número de propósitos o progresiones de cada
-            programa define cuántas planeaciones entregará el docente que imparta esa asignatura.
+            Repositorio oficial del plantel. La IA lee cada PDF y captura el nombre y el número de
+            propósitos o progresiones — de ese número salen las planeaciones que entregará el docente.
           </p>
         </div>
-        <label className={btnPrim + " cursor-pointer"}>
-          <Plus size={15}/>Subir programa
-          <input type="file" accept=".pdf" className="hidden" onChange={e => { elegirArchivo(e.target.files[0]); e.target.value = ""; }} />
+        <label className={btnPrim + " cursor-pointer" + (cola ? " opacity-50 pointer-events-none" : "")}>
+          <Upload size={15}/>Subir programas
+          <input type="file" accept=".pdf" multiple className="hidden"
+            onChange={e => { subirLote(e.target.files); e.target.value = ""; }} />
         </label>
       </div>
 
-      <Card className="p-3 flex flex-wrap gap-2 items-center">
-        <div className="relative flex-1 min-w-[180px]">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar programa…" value={q} onChange={e => setQ(e.target.value)} />
-        </div>
-        <select className={inputCls + " !mt-0 !w-auto"} value={fCat} onChange={e => setFCat(e.target.value)}>
-          <option value="todas">Todas las categorías</option>
-          {CATEGORIAS_PROGRAMA.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
-        </select>
-      </Card>
-
-      {CATEGORIAS_PROGRAMA.filter(([v]) => fCat === "todas" || fCat === v).map(([v, n]) => {
-        const de = lista.filter(p => p.categoria === v);
-        if (!de.length) return null;
-        return (
-          <Card key={v} className="p-4">
-            <h3 className="font-bold text-sm mb-2">{n} <span className="text-slate-400 font-normal">· {de.length}</span></h3>
-            {de.map(p => (
-              <div key={p.id} className="flex flex-wrap items-center gap-3 py-2.5 border-b border-slate-100 last:border-0">
-                <div className="flex-1 min-w-[200px]">
-                  <div className="font-medium text-sm">{p.nombre}</div>
-                  <div className="text-xs text-slate-500">
-                    {p.semestre && `Semestre ${p.semestre} · `}
-                    <b>{p.numPlaneaciones}</b> planeación(es)
-                    {!p.archivoGuardado && <span className="text-amber-600"> · sin PDF</span>}
-                  </div>
-                </div>
-                <DescargarProgramaBtn programa={p} />
-                <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar"
-                  onClick={() => { setEditando({ ...p, _archivo: null }); setFaseIA(""); setErr(""); }}><Pencil size={15}/></button>
-                <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500" title="Eliminar"
-                  onClick={() => eliminar(p)}><Trash2 size={15}/></button>
-              </div>
-            ))}
-          </Card>
-        );
-      })}
-      {lista.length === 0 && (
-        <Card className="p-8 text-center text-sm text-slate-400">
-          Aún no hay programas en el repositorio. Sube el primero con “Subir programa”.
+      {cola && (
+        <Card className="p-4 space-y-2" data-formulario-abierto>
+          <div className="flex items-center justify-between text-sm">
+            <span className="flex items-center gap-1.5 font-semibold">
+              <Loader2 size={14} className="animate-spin"/>Procesando {cola.hechos + 1} de {cola.total}…
+            </span>
+            <span className="text-slate-500">{Math.round(100 * cola.hechos / cola.total)}%</span>
+          </div>
+          <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+            <div className="h-full bg-[#E8871E] transition-all" style={{ width: (100 * cola.hechos / cola.total) + "%" }} />
+          </div>
+          <p className="text-[11px] text-slate-400 truncate">{cola.actual}</p>
+          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+            Cada programa se lee con IA y se guarda de inmediato. No cierres esta pestaña;
+            puedes dejarla trabajando en segundo plano.
+          </p>
         </Card>
       )}
 
+      {resumen && (
+        <div className="text-sm bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl p-3">
+          <b>{resumen.ok} programa(s) subidos.</b>
+          {resumen.revisar > 0 && <span className="block text-amber-700 mt-1">⚠ {resumen.revisar} necesitan revisión: la IA no pudo leer el nombre o el número de planeaciones. Complétalos con el lápiz.</span>}
+          {resumen.fallidos.length > 0 && <span className="block text-rose-600 mt-1">No se subieron: {resumen.fallidos.join("; ")}</span>}
+        </div>
+      )}
+
+      {incompletos > 0 && !resumen && (
+        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+          ⚠ Hay {incompletos} programa(s) sin número de planeaciones definido. Los docentes que impartan
+          esas asignaturas verán su requisito como pendiente hasta que lo captures.
+        </p>
+      )}
+
+      <Card className="p-3">
+        <div className="relative">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar programa…" value={q} onChange={e => setQ(e.target.value)} />
+        </div>
+      </Card>
+
+      <Card className="p-4">
+        <h3 className="font-bold text-sm mb-2">Repositorio <span className="text-slate-400 font-normal">· {lista.length} programa(s)</span></h3>
+        {lista.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">Aún no hay programas. Selecciona todos los PDF de una vez con “Subir programas”.</p>}
+        {lista.map(p => {
+          const pendiente = p.numPlaneaciones == null || p.numPlaneaciones === "";
+          return (
+            <div key={p.id} className="flex flex-wrap items-center gap-3 py-2.5 border-b border-slate-100 last:border-0">
+              <div className="flex-1 min-w-[200px]">
+                <div className="font-medium text-sm">{p.nombre} {pendiente && <span className="text-[10px] font-bold text-amber-600">⚠ REVISAR</span>}</div>
+                <div className="text-xs text-slate-500">
+                  {pendiente ? "Planeaciones sin definir" : <><b>{p.numPlaneaciones}</b> planeación(es)</>}
+                  {!p.archivoGuardado && <span className="text-amber-600"> · sin PDF</span>}
+                </div>
+              </div>
+              <DescargarProgramaBtn programa={p} />
+              <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar"
+                onClick={() => { setEditando({ id: p.id, nombre: p.nombre || "", numPlaneaciones: p.numPlaneaciones ?? "" }); setErr(""); }}><Pencil size={15}/></button>
+              <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500" title="Eliminar"
+                onClick={() => eliminar(p)}><Trash2 size={15}/></button>
+            </div>
+          );
+        })}
+      </Card>
+
       {editando && (
-        <Modal titulo={db.programas.some(p => p.id === editando.id) ? "Editar programa" : "Nuevo programa de estudio"} onClose={() => setEditando(null)}>
+        <Modal titulo="Editar programa" onClose={() => setEditando(null)}>
           <div className="space-y-3">
-            <p className="text-xs text-slate-500 flex items-center gap-1.5">
-              <FileText size={13}/>{editando.archivoNombre || "Sin archivo"}
-              {faseIA === "leyendo" && <span className="text-indigo-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin"/>La IA está leyendo el programa…</span>}
-              {faseIA === "fallo" && <span className="text-amber-600">La IA no pudo leerlo; captura los datos manualmente.</span>}
-            </p>
             <Campo label="Nombre de la asignatura / UAC / módulo">
               <input className={inputCls} value={editando.nombre} onChange={e => setEditando({ ...editando, nombre: e.target.value })} />
             </Campo>
-            <div className="grid sm:grid-cols-3 gap-3">
-              <Campo label="Categoría">
-                <select className={inputCls} value={editando.categoria} onChange={e => setEditando({ ...editando, categoria: e.target.value })}>
-                  {CATEGORIAS_PROGRAMA.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
-                </select>
-              </Campo>
-              <Campo label="Semestre (opcional)">
-                <input className={inputCls} value={editando.semestre || ""} onChange={e => setEditando({ ...editando, semestre: e.target.value })} />
-              </Campo>
-              <Campo label="Núm. de planeaciones">
-                <input type="number" min="0" className={inputCls} value={editando.numPlaneaciones}
-                  onChange={e => setEditando({ ...editando, numPlaneaciones: e.target.value })} />
-              </Campo>
-            </div>
+            <Campo label="Número de planeaciones (propósitos o progresiones del programa)">
+              <input type="number" min="0" className={inputCls} value={editando.numPlaneaciones}
+                onChange={e => setEditando({ ...editando, numPlaneaciones: e.target.value })} />
+            </Campo>
             <p className="text-[11px] text-slate-400">
-              El número de planeaciones es el total de <b>propósitos o progresiones de aprendizaje</b> del
-              programa: una planeación por cada uno. Verifícalo aunque la IA lo haya propuesto.
+              El nombre debe coincidir con el que aparece en las asignaciones para que el sistema
+              los relacione automáticamente.
             </p>
             {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
           </div>
           <div className="flex justify-end gap-2 mt-4">
             <button className={btnSec} onClick={() => setEditando(null)}>Cancelar</button>
-            <button className={btnPrim} disabled={guardando || faseIA === "leyendo"} onClick={guardar}>
+            <button className={btnPrim} disabled={guardando} onClick={guardarEdicion}>
               {guardando && <Loader2 size={14} className="animate-spin"/>}Guardar
             </button>
           </div>
@@ -2266,9 +2280,7 @@ function ProgramasEstudio({ db, user, mutar }) {
 // Vista del docente: consulta y descarga
 function ProgramasDocente({ db }) {
   const [q, setQ] = useState("");
-  const [fCat, setFCat] = useState("todas");
   const lista = db.programas
-    .filter(p => fCat === "todas" || p.categoria === fCat)
     .filter(p => !q || normTexto(p.nombre).includes(normTexto(q)))
     .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
   return (
@@ -2277,36 +2289,134 @@ function ProgramasDocente({ db }) {
         <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Programas de Estudio</h2>
         <p className="text-sm text-slate-500">Repositorio oficial del plantel. Consulta y descarga los programas vigentes.</p>
       </div>
-      <Card className="p-3 flex flex-wrap gap-2 items-center">
-        <div className="relative flex-1 min-w-[180px]">
+      <Card className="p-3">
+        <div className="relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar programa…" value={q} onChange={e => setQ(e.target.value)} />
         </div>
-        <select className={inputCls + " !mt-0 !w-auto"} value={fCat} onChange={e => setFCat(e.target.value)}>
-          <option value="todas">Todas las categorías</option>
-          {CATEGORIAS_PROGRAMA.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
-        </select>
       </Card>
-      {CATEGORIAS_PROGRAMA.filter(([v]) => fCat === "todas" || fCat === v).map(([v, n]) => {
-        const de = lista.filter(p => p.categoria === v);
-        if (!de.length) return null;
-        return (
-          <Card key={v} className="p-4">
-            <h3 className="font-bold text-sm mb-2">{n}</h3>
-            <div className="grid sm:grid-cols-2 gap-2">
-              {de.map(p => (
-                <div key={p.id} className="border border-slate-200 rounded-xl p-3">
-                  <div className="font-medium text-sm">{p.nombre}</div>
-                  <div className="text-xs text-slate-500 mb-2">{p.semestre && `Semestre ${p.semestre} · `}{p.numPlaneaciones} planeación(es)</div>
-                  {p.archivoGuardado ? <DescargarProgramaBtn programa={p} texto />
-                    : <span className="text-xs text-slate-400">PDF no disponible</span>}
-                </div>
-              ))}
-            </div>
+      <div className="grid sm:grid-cols-2 gap-2">
+        {lista.map(p => (
+          <Card key={p.id} className="p-3">
+            <div className="font-medium text-sm">{p.nombre}</div>
+            <div className="text-xs text-slate-500 mb-2">{p.numPlaneaciones != null && p.numPlaneaciones !== "" ? `${p.numPlaneaciones} planeación(es)` : "Planeaciones por definir"}</div>
+            {p.archivoGuardado ? <DescargarProgramaBtn programa={p} texto />
+              : <span className="text-xs text-slate-400">PDF no disponible</span>}
           </Card>
-        );
-      })}
+        ))}
+      </div>
       {lista.length === 0 && <Card className="p-8 text-center text-sm text-slate-400">Aún no hay programas publicados.</Card>}
+    </div>
+  );
+}
+
+/* ================================================================
+   DASHBOARD ACADÉMICO (jefe académico y administrador)
+   Panorama del cumplimiento de planeaciones, planes e informes.
+   ================================================================ */
+
+function DashboardAcademico({ db, irA }) {
+  const [cicloSel, setCicloSel] = useState(db.config.cicloActual);
+  const delCiclo = db.asignaciones.filter(a => a.ciclo === cicloSel);
+
+  const filas = delCiclo.map(a => {
+    const av = avanceDe(db, a);
+    const encargos = encargosDe(db, a);
+    return { asig: a, av, encargos,
+      sinPrograma: encargos.filter(e => e.tipo === "asignatura" && (!e.programa || e.requisitos.planeacion === null)).length };
+  }).sort((x, y) => x.av.pct - y.av.pct);
+
+  const totReq = filas.reduce((s, f) => s + f.av.requeridas, 0);
+  const totEnt = filas.reduce((s, f) => s + f.av.entregadas, 0);
+  const pctGlobal = totReq ? Math.round(100 * totEnt / totReq) : 0;
+  const alCien = filas.filter(f => f.av.requeridas > 0 && f.av.entregadas >= f.av.requeridas).length;
+  const sinVinculo = delCiclo.filter(a => !a.docenteId).length;
+  const conPendPrograma = filas.filter(f => f.sinPrograma > 0).length;
+
+  const exportarResumen = () => {
+    const filasCSV = [["Docente", "Ciclo", "Actividades", "Horas", "Entregas requeridas", "Entregas recibidas", "% de avance", "Requisitos por definir"]];
+    filas.forEach(f => filasCSV.push([
+      f.asig.nombreExtraido, cicloSel, f.encargos.length, f.asig.totalHoras ?? "",
+      f.av.requeridas, f.av.entregadas, f.av.pct + "%",
+      f.sinPrograma > 0 ? `${f.sinPrograma} asignatura(s) sin programa` : "",
+    ]));
+    descargarCSV(`cumplimiento_planeaciones_${cicloSel}`, filasCSV);
+  };
+
+  const exportarDetalle = () => {
+    const filasCSV = [["Docente", "Actividad", "Tipo", "Grupos", "Horas", "Tipo de entrega", "Requeridas", "Recibidas", "Archivos recibidos"]];
+    filas.forEach(f => f.encargos.forEach(e => {
+      [["planeacion", e.requisitos.planeacion], ["plan", e.requisitos.plan], ["informe", e.requisitos.informe]]
+        .filter(([, n]) => n === null || n > 0)
+        .forEach(([t, n]) => {
+          const ent = f.asig.docenteId ? entregasDe(db, f.asig.docenteId, cicloSel, e.clave, t) : [];
+          filasCSV.push([
+            f.asig.nombreExtraido, e.actividad,
+            e.tipo === "modulo" ? "Módulo profesional" : e.tipo === "comision" ? "Comisión / cargo" : "Frente a grupo",
+            [...new Set(e.grupos)].join(" "), e.horas,
+            NOMBRE_TIPO_ENTREGA[t], n === null ? "Por definir" : n, ent.length,
+            ent.map(x => x.titulo).join(" | "),
+          ]);
+        });
+    }));
+    descargarCSV(`detalle_entregas_${cicloSel}`, filasCSV);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Cumplimiento de planeaciones</h2>
+          <p className="text-sm text-slate-500">Avance de entregas de planeaciones, planes de trabajo e informes.</p>
+        </div>
+        <select className={inputCls + " !mt-0 !w-auto"} value={cicloSel} onChange={e => setCicloSel(e.target.value)}>
+          {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+        </select>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Stat icono={Users} label="Docentes con asignación" valor={delCiclo.length} />
+        <Stat icono={FileCheck} label="Entregas recibidas" valor={`${totEnt}/${totReq}`} />
+        <Stat icono={TrendingUp} label="Avance global" valor={pctGlobal + "%"} />
+        <Stat icono={Award} label="Docentes al 100%" valor={alCien} />
+      </div>
+
+      {(sinVinculo > 0 || conPendPrograma > 0) && (
+        <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1">
+          {sinVinculo > 0 && <p>⚠ <b>{sinVinculo}</b> asignación(es) sin cuenta vinculada: esos docentes no pueden ver ni subir sus entregas. Corrígelo en <button className="underline font-semibold" onClick={() => irA("asignaciones")}>Asignaciones</button>.</p>}
+          {conPendPrograma > 0 && <p>⚠ <b>{conPendPrograma}</b> docente(s) tienen asignaturas sin programa en el repositorio (o sin número de planeaciones): su requisito aún no se puede calcular. Súbelos en <button className="underline font-semibold" onClick={() => irA("programas")}>Programas de Estudio</button>.</p>}
+        </div>
+      )}
+
+      <Card className="p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <h3 className="font-bold text-sm">Avance por docente</h3>
+          <div className="flex gap-2">
+            <button className={btnSec + " !px-3 !py-1.5"} onClick={exportarResumen}><Download size={13}/>Resumen CSV</button>
+            <button className={btnSec + " !px-3 !py-1.5"} onClick={exportarDetalle}><Download size={13}/>Detalle CSV</button>
+          </div>
+        </div>
+        {filas.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">No hay asignaciones cargadas en este ciclo.</p>}
+        {filas.map(f => (
+          <div key={f.asig.id} className="flex flex-wrap items-center gap-3 py-2.5 border-b border-slate-100 last:border-0">
+            <div className="flex-1 min-w-[200px]">
+              <div className="text-sm font-medium">{f.asig.nombreExtraido}
+                {!f.asig.docenteId && <span className="text-[10px] font-bold text-amber-600 ml-1">⚠ SIN CUENTA</span>}
+              </div>
+              <div className="text-xs text-slate-500">
+                {f.encargos.length} actividades · {f.av.entregadas} de {f.av.requeridas} entregas
+                {f.sinPrograma > 0 && <span className="text-amber-600"> · {f.sinPrograma} sin programa</span>}
+              </div>
+            </div>
+            <div className="w-32">
+              <div className="flex justify-between text-[11px] text-slate-500 mb-0.5"><span>{f.av.pct}%</span></div>
+              <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
+                <div className={`h-full ${f.av.pct >= 100 ? "bg-emerald-600" : f.av.pct >= 60 ? "bg-[#E8871E]" : "bg-rose-500"}`} style={{ width: Math.min(f.av.pct, 100) + "%" }} />
+              </div>
+            </div>
+          </div>
+        ))}
+      </Card>
     </div>
   );
 }
@@ -2315,7 +2425,7 @@ function ProgramasDocente({ db }) {
    ASIGNACIONES (jefe académico y administrador)
    ================================================================ */
 
-function Asignaciones({ db, user, mutar }) {
+function Asignaciones({ db, user, mutar, irAPanel }) {
   const [fase, setFase] = useState("lista"); // lista | subiendo | ia | revisar
   const [progreso, setProgreso] = useState(0);
   const [extraidos, setExtraidos] = useState(null); // [{nombre, items, total_horas, docenteId}]
@@ -2397,10 +2507,13 @@ function Asignaciones({ db, user, mutar }) {
           </p>
         </div>
         {fase === "lista" && (
+          <div className="flex gap-2">
+            <button className={btnSec} onClick={() => irAPanel && irAPanel()}><TrendingUp size={15}/>Panel de cumplimiento</button>
           <label className={btnPrim + " cursor-pointer"}>
             <Upload size={15}/>Subir PDF de asignaciones
             <input type="file" accept=".pdf" className="hidden" onChange={e => { procesar(e.target.files[0]); e.target.value = ""; }} />
           </label>
+          </div>
         )}
       </div>
 
