@@ -708,8 +708,6 @@ export default function App() {
     { id: "logros", label: "Logros", icono: Award },
   ];
 
-  useEffect(() => { document.title = "Mi portal CBTA 291"; }, []);
-
   const irA = (p, ctx = null) => { setPagina(p); setPaginaCtx(ctx); setMenuAbierto(false); setBusqueda(""); };
 
   const marcarLeidas = () => mutar(d => { d.notifs.forEach(n => { if (n.userId === user.id) n.leida = true; }); });
