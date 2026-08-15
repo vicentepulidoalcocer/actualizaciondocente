@@ -49,6 +49,30 @@ const ESTADOS_GRADO = {
 
 const NIVELES = ["Licenciatura", "Maestría", "Doctorado"];
 
+/* ---- Roles ----
+   admin           → administrador general
+   jefe_formacion  → Jefe del Depto. de Formación Docente
+   jefe_academico  → Jefe del Depto. Académico y de Competencias Docentes
+   docente         → personal docente */
+const NOMBRE_ROL = {
+  admin: "Administración general",
+  jefe_formacion: "Jefe de Formación Docente",
+  jefe_academico: "Jefe Académico y de Competencias",
+  docente: "Docente",
+};
+const esRolValidador = (r) => r === "admin" || r === "jefe_formacion";
+const esRolAcademico = (r) => r === "admin" || r === "jefe_academico";
+const esRolComunicador = (r) => r !== "docente";
+
+/* ---- Programas de estudio y asignaciones ---- */
+const CATEGORIAS_PROGRAMA = [
+  ["asignatura", "Asignaturas / UAC"],
+  ["modulo", "Módulos profesionales"],
+  ["liquidacion", "Liquidación de progresiones"],
+  ["autoplaneada", "Modalidad autoplaneada"],
+];
+const nombreCategoria = (c) => (CATEGORIAS_PROGRAMA.find(x => x[0] === c) || ["", c])[1];
+
 /* ---- Avisos y circulares ---- */
 const TIPOS_AVISO = ["Circular", "Curso", "Reunión", "Información general", "Actividad", "Importante", "Urgente"];
 const PRIORIDADES = ["Normal", "Importante", "Urgente"];
@@ -207,6 +231,118 @@ function ciclosDisponibles(db) {
   db.certs.forEach(c => c.ciclo && set.add(c.ciclo));
   return [...set].sort().reverse();
 }
+
+/* ---------------- Programas, asignaciones y entregas ------------- */
+
+// Normaliza texto para comparar nombres (sin acentos, mayúsculas, sin signos)
+const normTexto = (t) => (t || "")
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  .toUpperCase().replace(/[^A-Z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+
+/* Clasifica cada renglón de la asignación:
+   - "modulo": módulos profesionales → 3 planeaciones por semestre
+   - "comision": tutoría, orientación educativa, activación física, becas,
+     cargos y comisiones → 1 plan de trabajo + 3 informes
+   - "asignatura": frente a grupo → tantas planeaciones como propósitos o
+     progresiones tenga su programa de estudio */
+const PALABRAS_COMISION = /(TUTOR|ORIENTACION EDUCATIVA|ACTIVACION FISICA|PARAESCOLAR|BECA|YO NO ABAND|DIRECCION|SUBDIRECCION|DEPARTAMENTO|COORDINAD|ENCARGAD|AUXILIAR|SECRETARI|RECURSOS HUMANOS|PROMOCION Y DIFUSION|PROYECTOS|PRESIDENTE DE ACADEMIA|OFICINA|VINCULACION|CENTRO DE COMPUTO|FORMACION SOCIOEMOCIONAL)/;
+
+function clasificarActividad(nombre) {
+  const n = normTexto(nombre);
+  if (/MODULO/.test(n)) return "modulo";
+  if (PALABRAS_COMISION.test(n)) return "comision";
+  return "asignatura";
+}
+
+// Busca en el repositorio el programa que corresponde a una actividad
+function buscarPrograma(db, actividad) {
+  const n = normTexto(actividad);
+  if (!n) return null;
+  let mejor = null, mejorLen = 0;
+  for (const p of db.programas) {
+    const pn = normTexto(p.nombre);
+    if (!pn) continue;
+    if (pn === n) return p;
+    if ((n.includes(pn) || pn.includes(n)) && pn.length > mejorLen) { mejor = p; mejorLen = pn.length; }
+  }
+  return mejor;
+}
+
+/* Agrupa los renglones de una asignación por actividad y calcula qué debe
+   entregar el docente por cada encargo. */
+function encargosDe(db, asig) {
+  const mapa = new Map();
+  (asig?.items || []).forEach(it => {
+    const clave = normTexto(it.actividad);
+    if (!clave || /^RECESO/.test(clave)) return;
+    const e = mapa.get(clave) || { clave, actividad: it.actividad, grupos: [], horas: 0 };
+    if (it.grupo) e.grupos.push(it.grupo);
+    e.horas += Number(it.horas) || 0;
+    mapa.set(clave, e);
+  });
+  return [...mapa.values()].map(e => {
+    const tipo = clasificarActividad(e.actividad);
+    if (tipo === "modulo") {
+      return { ...e, tipo, programa: buscarPrograma(db, e.actividad),
+        requisitos: { planeacion: 3, plan: 0, informe: 0 } };
+    }
+    if (tipo === "comision") {
+      return { ...e, tipo, programa: null,
+        requisitos: { planeacion: 0, plan: 1, informe: 3 } };
+    }
+    const prog = buscarPrograma(db, e.actividad);
+    return { ...e, tipo, programa: prog,
+      requisitos: { planeacion: prog ? (Number(prog.numPlaneaciones) || 0) : null, plan: 0, informe: 0 } };
+  }).sort((a, b) => a.actividad.localeCompare(b.actividad));
+}
+
+// Entregas del docente para un encargo y tipo dados
+const entregasDe = (db, docenteId, ciclo, clave, tipo) =>
+  db.entregas.filter(e => e.docenteId === docenteId && e.ciclo === ciclo
+    && e.encargoClave === clave && e.tipo === tipo);
+
+// Avance total de un docente sobre su asignación de un ciclo
+function avanceDe(db, asig) {
+  if (!asig) return { requeridas: 0, entregadas: 0, pct: 0, indeterminado: false };
+  let req = 0, ent = 0, indeterminado = false;
+  for (const e of encargosDe(db, asig)) {
+    for (const t of ["planeacion", "plan", "informe"]) {
+      const n = e.requisitos[t];
+      if (n === null) { indeterminado = true; continue; }
+      req += n;
+      ent += Math.min(entregasDe(db, asig.docenteId, asig.ciclo, e.clave, t).length, n);
+    }
+  }
+  return { requeridas: req, entregadas: ent, pct: req ? Math.round(100 * ent / req) : 0, indeterminado };
+}
+
+// La asignación vigente de un docente (la del ciclo más reciente)
+const asignacionDe = (db, docenteId) =>
+  db.asignaciones.filter(a => a.docenteId === docenteId)
+    .sort((a, b) => (b.ciclo || "").localeCompare(a.ciclo || ""))[0] || null;
+
+// Entregas que le faltan al docente (para la insignia del menú)
+function pendientesEntrega(db, docenteId) {
+  const asig = asignacionDe(db, docenteId);
+  if (!asig) return 0;
+  const av = avanceDe(db, asig);
+  return Math.max(av.requeridas - av.entregadas, 0);
+}
+
+// Empareja el nombre extraído del PDF con una cuenta de docente
+function emparejarDocente(db, nombreExtraido) {
+  const n = normTexto(nombreExtraido);
+  let mejor = null, mejorPunt = 0;
+  for (const d of db.users.filter(u => u.rol === "docente")) {
+    const palabras = normTexto(d.nombre).split(" ").filter(w => w.length > 2);
+    if (!palabras.length) continue;
+    const punt = palabras.filter(w => n.includes(w)).length / palabras.length;
+    if (punt > mejorPunt) { mejorPunt = punt; mejor = d; }
+  }
+  return mejorPunt >= 0.6 ? mejor : null;
+}
+
+const NOMBRE_TIPO_ENTREGA = { planeacion: "Planeación", plan: "Plan de trabajo", informe: "Informe" };
 
 /* ---------------- Avisos y circulares ---------------------------- */
 
@@ -449,10 +585,9 @@ export default function App() {
     snapRef.current = JSON.parse(JSON.stringify(d));
     setDb(d);
     setUser(yo);
-    // Al iniciar sesión, el docente aterriza en sus avisos; la
-    // administración, en su tablero. En recargas posteriores no se
-    // toca la pantalla en la que esté trabajando.
-    if (esPrimeraCarga && yo.rol === "docente") setPagina("avisos");
+    // Al iniciar sesión, cada rol aterriza en su pantalla de trabajo;
+    // en recargas posteriores no se toca la pantalla en la que esté.
+    if (esPrimeraCarga && (yo.rol === "docente" || yo.rol === "jefe_academico")) setPagina("avisos");
   }, []);
 
   useEffect(() => {
@@ -536,26 +671,45 @@ export default function App() {
   const misNotifs = db.notifs.filter(n => n.userId === user.id);
   const noLeidas = misNotifs.filter(n => !n.leida).length;
 
-  const nav = esAdmin ? [
+  const pendValidacion = db.certs.filter(c => c.estado === "pendiente_validacion").length
+    + db.grados.filter(g => g.estado === "pendiente").length
+    + db.comp.filter(x => x.estado === "pendiente").length;
+
+  const nav = user.rol === "admin" ? [
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
-    { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: db.certs.filter(c => c.estado === "pendiente_validacion").length + db.grados.filter(g => g.estado === "pendiente").length + db.comp.filter(x => x.estado === "pendiente").length },
+    { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: pendValidacion },
     { id: "docentes", label: "Docentes", icono: Users },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
+    { id: "programas", label: "Programas de Estudio", icono: BookOpen },
+    { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
     { id: "ranking", label: "Ranking", icono: Trophy },
     { id: "reportes", label: "Reportes", icono: FileText },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "actividad", label: "Actividad reciente", icono: Activity },
     { id: "respaldo", label: "Respaldo", icono: Download },
     { id: "admin", label: "Administración", icono: Settings },
+  ] : user.rol === "jefe_formacion" ? [
+    { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
+    { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: pendValidacion },
+    { id: "docentes", label: "Expedientes docentes", icono: Users },
+    { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
+    { id: "reportes", label: "Reportes", icono: FileText },
+    { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
+    { id: "admin", label: "Metas y ciclos", icono: Settings },
+  ] : user.rol === "jefe_academico" ? [
+    { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
+    { id: "programas", label: "Programas de Estudio", icono: BookOpen },
+    { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
   ] : [
     { id: "avisos", label: "Avisos", icono: Megaphone, badge: avisosPendientes(db, user).length },
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "subir", label: "Subir constancia", icono: Upload },
     { id: "cursos", label: "Mis cursos", icono: BookOpen },
+    { id: "mi_asignacion", label: "Mi asignación", icono: FolderOpen, badge: pendientesEntrega(db, user.id) },
+    { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "expediente", label: "Mi perfil académico", icono: GraduationCap },
     ...(db.config.rankingPublico ? [{ id: "ranking", label: "Ranking", icono: Trophy }] : []),
     { id: "logros", label: "Logros", icono: Award },
-    { id: "cuenta", label: "Mi cuenta", icono: User },
   ];
 
   const irA = (p, ctx = null) => { setPagina(p); setPaginaCtx(ctx); setMenuAbierto(false); setBusqueda(""); };
@@ -590,7 +744,7 @@ export default function App() {
           </button>
           <div className="hidden md:block text-right leading-tight">
             <div className="text-sm font-semibold">{user.nombre}</div>
-            <div className="text-[11px] text-slate-300">{esAdmin ? "Administrador" : user.area || "Docente"}</div>
+            <div className="text-[11px] text-slate-300">{user.rol === "docente" ? (user.area || "Docente") : NOMBRE_ROL[user.rol]}</div>
           </div>
           <button className="p-2 rounded-lg hover:bg-white/10" title="Cerrar sesión" onClick={() => supabase.auth.signOut()}><LogOut size={18} /></button>
         </div>
@@ -625,7 +779,7 @@ export default function App() {
 
         {/* Contenido */}
         <main className="flex-1 p-4 lg:p-6 max-w-7xl mx-auto w-full">
-          {pagina === "dashboard" && (esAdmin
+          {pagina === "dashboard" && (esRolValidador(user.rol)
             ? <DashboardAdmin db={db} irA={irA} />
             : <DashboardDocente db={db} user={user} irA={irA} />)}
           {pagina === "subir" && <SubirConstancia db={db} user={user} mutar={mutar} irA={irA} />}
@@ -633,18 +787,22 @@ export default function App() {
           {pagina === "expediente" && <PerfilAcademico db={db} user={user} docenteId={user.id} mutar={mutar} editable />}
           {pagina === "ranking" && <Ranking db={db} user={user} />}
           {pagina === "logros" && <Logros db={db} user={user} />}
-          {pagina === "cuenta" && <MiCuenta user={user} />}
-          {pagina === "avisos" && (esAdmin
+          {pagina === "avisos" && (esRolComunicador(user.rol)
             ? <Avisos db={db} user={user} mutar={mutar} />
             : <MisAvisos db={db} user={user} recargar={() => recargar(user.id)} />)}
-          {pagina === "validaciones" && esAdmin && <Validaciones db={db} user={user} mutar={mutar} />}
-          {pagina === "docentes" && esAdmin && <Docentes db={db} mutar={mutar} irA={irA} />}
-          {pagina === "expediente_docente" && esAdmin && <ExpedienteIntegral db={db} docenteId={paginaCtx} mutar={mutar} user={user} volver={() => irA("docentes")} />}
-          {pagina === "reportes" && esAdmin && <Reportes db={db} />}
-          {pagina === "perfil_inst" && esAdmin && <PerfilInstitucional db={db} />}
+          {pagina === "programas" && (esRolAcademico(user.rol)
+            ? <ProgramasEstudio db={db} user={user} mutar={mutar} />
+            : <ProgramasDocente db={db} />)}
+          {pagina === "asignaciones" && esRolAcademico(user.rol) && <Asignaciones db={db} user={user} mutar={mutar} />}
+          {pagina === "mi_asignacion" && user.rol === "docente" && <MiAsignacion db={db} user={user} mutar={mutar} />}
+          {pagina === "validaciones" && esRolValidador(user.rol) && <Validaciones db={db} user={user} mutar={mutar} />}
+          {pagina === "docentes" && esRolValidador(user.rol) && <Docentes db={db} mutar={mutar} irA={irA} esAdmin={esAdmin} />}
+          {pagina === "expediente_docente" && esRolValidador(user.rol) && <ExpedienteIntegral db={db} docenteId={paginaCtx} mutar={mutar} user={user} volver={() => irA("docentes")} />}
+          {pagina === "reportes" && esRolValidador(user.rol) && <Reportes db={db} />}
+          {pagina === "perfil_inst" && esRolValidador(user.rol) && <PerfilInstitucional db={db} />}
           {pagina === "actividad" && esAdmin && <ActividadReciente db={db} />}
           {pagina === "respaldo" && esAdmin && <Respaldo db={db} user={user} />}
-          {pagina === "admin" && esAdmin && <Administracion db={db} user={user} mutar={mutar} />}
+          {pagina === "admin" && esRolValidador(user.rol) && <Administracion db={db} user={user} mutar={mutar} esAdmin={esAdmin} />}
         </main>
       </div>
     </div>
@@ -1090,7 +1248,7 @@ function SubirConstancia({ db, user, mutar, irA }) {
       c.historial.push({ fecha: ahora(), accion: "Enviada a validación por el docente" + (dup ? " · marcada como posible duplicado" : ""), por: user.nombre });
       d.certs.unshift(c);
       registrarActividad(d, `${user.nombre} subió una nueva constancia: “${c.datos.curso}”.`);
-      d.users.filter(u => u.rol === "admin").forEach(a =>
+      d.users.filter(u => esRolValidador(u.rol) && u.activo).forEach(a =>
         notificar(d, a.id, `📄 ${user.nombre} envió la constancia “${c.datos.curso}” a validación.${dup ? " ⚠️ Posible duplicado." : ""}`));
     });
     setFase("enviado");
@@ -1234,7 +1392,7 @@ function MisCursos({ db, user, mutar }) {
       c.estado = "pendiente_validacion";
       c.dupFlag = !!detectarDuplicado(d, c);
       c.historial.push({ fecha: ahora(), accion: "Datos corregidos por el docente y reenviados a validación", por: user.nombre });
-      d.users.filter(u => u.rol === "admin").forEach(a => notificar(d, a.id, `✏️ ${user.nombre} corrigió la constancia “${c.datos.curso}”.`));
+      d.users.filter(u => esRolValidador(u.rol) && u.activo).forEach(a => notificar(d, a.id, `✏️ ${user.nombre} corrigió la constancia “${c.datos.curso}”.`));
     });
     setEditando(null);
   };
@@ -1529,6 +1687,19 @@ function Respaldo({ db, user }) {
         ruta: `Avisos/${nombreSeguro(a.titulo, 50)}`,
       });
     });
+    db.programas.filter(p => p.archivoGuardado).forEach(p => {
+      items.push({
+        clave: "prog_" + p.id,
+        ruta: `Programas_de_estudio/${nombreSeguro(nombreCategoria(p.categoria), 35)}/${nombreSeguro(p.nombre, 50)}`,
+      });
+    });
+    db.entregas.forEach(e => {
+      const d = nombreSeguro(nombreDe(e.docenteId), 40);
+      items.push({
+        clave: "ent_" + e.id,
+        ruta: `Docentes/${d}/Planeaciones_y_planes/${nombreSeguro(e.actividad, 40)}__${e.tipo}__${nombreSeguro(e.titulo, 30)}`,
+      });
+    });
     return items;
   };
 
@@ -1593,6 +1764,11 @@ function Respaldo({ db, user }) {
         });
       });
       zip.file(`Indices/acuses_de_enterado_${sello}.csv`, csvTexto(fAcuses));
+
+      const fEnt = [["Docente", "Ciclo", "Actividad", "Tipo", "Archivo", "Fecha de entrega"]];
+      db.entregas.forEach(e => fEnt.push([nombreDe(e.docenteId), e.ciclo, e.actividad,
+        NOMBRE_TIPO_ENTREGA[e.tipo] || e.tipo, e.titulo, e.fecha ? new Date(e.fecha).toLocaleString("es-MX") : ""]));
+      zip.file(`Indices/entregas_planeaciones_${sello}.csv`, csvTexto(fEnt));
 
       /* ---- Documentos originales ---- */
       let fallidos = 0, guardados = 0;
@@ -1748,6 +1924,818 @@ de cada ciclo escolar.
           <p className="text-xs text-slate-400">Con muchos documentos el proceso puede tardar varios minutos, porque cada archivo se descarga uno por uno desde el almacenamiento.</p>
         </div>
       </Card>
+    </div>
+  );
+}
+
+/* ================================================================
+   JEFES DE DEPARTAMENTO (solo el administrador general)
+   Cuentas rotativas: cuando cambia la persona, se crea una cuenta
+   nueva con su correo y contraseña, y la anterior se desactiva en
+   el mismo paso — el jefe saliente pierde el acceso de inmediato.
+   ================================================================ */
+
+function JefesDepartamento({ db, mutar }) {
+  const [form, setForm] = useState(null); // { rol, nombre, email, pass }
+  const [guardando, setGuardando] = useState(false);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const ROLES_JEFE = [
+    ["jefe_formacion", "Jefe del Depto. de Formación Docente",
+      "Avisos, validaciones, expedientes, metas, ciclos, perfil institucional y reportes."],
+    ["jefe_academico", "Jefe del Depto. Académico y de Competencias Docentes",
+      "Avisos, Programas de Estudio y Asignaciones (planeaciones, planes e informes)."],
+  ];
+
+  const actualDe = (rol) => db.users.find(u => u.rol === rol && u.activo);
+
+  const reemplazar = async () => {
+    const f = form;
+    if (!f.nombre.trim() || !f.email.trim() || (f.pass || "").length < 6) {
+      setErr("Completa nombre, correo y una contraseña de al menos 6 caracteres."); return;
+    }
+    setGuardando(true); setErr("");
+    try {
+      const anterior = actualDe(f.rol);
+      const creado = await crearDocente({
+        email: f.email.trim(), password: f.pass, nombre: f.nombre.trim(), rol: f.rol,
+      });
+      await mutar(d => {
+        // Desactivar al jefe anterior: pierde el acceso de inmediato
+        if (anterior) {
+          const u = d.users.find(x => x.id === anterior.id);
+          if (u) u.activo = false;
+        }
+        if (!d.users.some(x => x.id === creado.id)) {
+          d.users.push({ id: creado.id, nombre: f.nombre.trim(), email: f.email.trim(),
+            rol: f.rol, activo: true, creadoEn: ahora() });
+        }
+        registrarActividad(d, `Cambio de titular: ${NOMBRE_ROL[f.rol]} → ${f.nombre.trim()}.`);
+      });
+      setMsg(`Cuenta creada para ${f.nombre.trim()}.${anterior ? ` La cuenta anterior (${anterior.nombre}) quedó desactivada.` : ""}`);
+      setForm(null);
+    } catch (e) { setErr(e.message); }
+    setGuardando(false);
+  };
+
+  const restablecer = async (jefe) => {
+    const nueva = window.prompt(`Nueva contraseña para ${jefe.nombre} (mínimo 6 caracteres):`);
+    if (nueva === null) return;
+    if (nueva.length < 6) { alert("Debe tener al menos 6 caracteres."); return; }
+    try {
+      await restablecerPassword({ id: jefe.id, password: nueva });
+      alert("Contraseña actualizada. Compártela con la persona de forma segura.");
+    } catch (e) { alert("No se pudo actualizar: " + e.message); }
+  };
+
+  return (
+    <Card className="p-5 space-y-4">
+      <div>
+        <h3 className="font-bold text-sm">Jefes de departamento</h3>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Cuentas con permisos parciales que puedes renovar cuando cambie la persona en el cargo.
+          Al registrar un nuevo titular, la cuenta del anterior se desactiva automáticamente.
+        </p>
+      </div>
+
+      {ROLES_JEFE.map(([rol, titulo, alcance]) => {
+        const actual = actualDe(rol);
+        return (
+          <div key={rol} className="border border-slate-200 rounded-xl p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex-1 min-w-[220px]">
+                <div className="font-semibold text-sm">{titulo}</div>
+                <div className="text-xs text-slate-500 mt-0.5">{alcance}</div>
+                <div className="text-xs mt-1.5">
+                  {actual ? (
+                    <span className="text-slate-700">Titular actual: <b>{actual.nombre}</b> · {actual.email}</span>
+                  ) : (
+                    <span className="text-amber-600 font-semibold">Sin titular asignado</span>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                {actual && <button className={btnSec + " !px-3 !py-1.5"} onClick={() => restablecer(actual)}>Restablecer contraseña</button>}
+                <button className={btnPrim + " !px-3 !py-1.5"} onClick={() => { setForm({ rol, nombre: "", email: "", pass: "" }); setErr(""); setMsg(""); }}>
+                  {actual ? "Cambiar titular" : "Asignar titular"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {msg && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2">{msg}</p>}
+
+      {form && (
+        <Modal titulo={`Nuevo titular · ${NOMBRE_ROL[form.rol]}`} onClose={() => setForm(null)}>
+          <div className="space-y-3">
+            {actualDe(form.rol) && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                Al guardar, la cuenta de <b>{actualDe(form.rol).nombre}</b> se desactivará y dejará de tener acceso.
+              </p>
+            )}
+            <Campo label="Nombre completo">
+              <input className={inputCls} value={form.nombre} onChange={e => setForm({ ...form, nombre: e.target.value })} />
+            </Campo>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Campo label="Correo de acceso">
+                <input className={inputCls} value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} />
+              </Campo>
+              <Campo label="Contraseña inicial">
+                <input className={inputCls} value={form.pass} onChange={e => setForm({ ...form, pass: e.target.value })} />
+              </Campo>
+            </div>
+            {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <button className={btnSec} onClick={() => setForm(null)}>Cancelar</button>
+            <button className={btnPrim} disabled={guardando} onClick={reemplazar}>
+              {guardando && <Loader2 size={14} className="animate-spin"/>}Guardar titular
+            </button>
+          </div>
+        </Modal>
+      )}
+    </Card>
+  );
+}
+
+/* ================================================================
+   PROGRAMAS DE ESTUDIO (repositorio)
+   ================================================================ */
+
+function DescargarProgramaBtn({ programa, texto = false }) {
+  const [abriendo, setAbriendo] = useState(false);
+  const abrir = async () => {
+    setAbriendo(true);
+    const f = await leerArchivo("prog_" + programa.id);
+    setAbriendo(false);
+    if (!f) { alert("El archivo de este programa no está disponible."); return; }
+    const bytes = atob(f.base64);
+    const arr = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([arr], { type: f.mime }));
+    if (texto) { const a = document.createElement("a"); a.href = url; a.download = f.nombre || (programa.nombre + ".pdf"); a.click(); }
+    else window.open(url, "_blank");
+  };
+  if (texto) return (
+    <button onClick={abrir} className="inline-flex items-center gap-1.5 text-sm text-indigo-600 font-semibold hover:underline">
+      {abriendo ? <Loader2 size={14} className="animate-spin"/> : <Download size={14}/>}Descargar PDF
+    </button>
+  );
+  return (
+    <button onClick={abrir} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Ver programa">
+      {abriendo ? <Loader2 size={15} className="animate-spin"/> : <Eye size={15}/>}
+    </button>
+  );
+}
+
+// Vista del jefe académico y del administrador: administra el repositorio
+function ProgramasEstudio({ db, user, mutar }) {
+  const [editando, setEditando] = useState(null);
+  const [faseIA, setFaseIA] = useState("");
+  const [err, setErr] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const [q, setQ] = useState("");
+  const [fCat, setFCat] = useState("todas");
+
+  const lista = db.programas
+    .filter(p => fCat === "todas" || p.categoria === fCat)
+    .filter(p => !q || normTexto(p.nombre).includes(normTexto(q)))
+    .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
+
+  const elegirArchivo = async (file) => {
+    if (!file) return;
+    const id = uid();
+    const nuevo = { id, nombre: "", categoria: "asignatura", semestre: "", numPlaneaciones: "",
+      archivoNombre: file.name, archivoGuardado: false, creadoEn: ahora(), _archivo: file };
+    setEditando(nuevo); setErr("");
+    // La IA propone nombre y número de propósitos/progresiones; todo es editable
+    try {
+      setFaseIA("leyendo");
+      const b64 = await leerComoBase64(file);
+      const datos = await extraerConIA({ base64: b64, mime: file.type || "application/pdf", tipo: "programa" });
+      setEditando(e => e && e.id === id ? {
+        ...e,
+        nombre: datos.nombre || e.nombre,
+        semestre: datos.semestre || e.semestre,
+        numPlaneaciones: datos.num_planeaciones ?? e.numPlaneaciones,
+      } : e);
+      setFaseIA("listo");
+    } catch {
+      setFaseIA("fallo"); // captura manual, sin bloquear
+    }
+  };
+
+  const guardar = async () => {
+    const e = editando;
+    if (!e.nombre.trim()) { setErr("El nombre del programa es obligatorio."); return; }
+    if (e.numPlaneaciones === "" || isNaN(Number(e.numPlaneaciones))) {
+      setErr("Indica el número de planeaciones (propósitos o progresiones del programa)."); return;
+    }
+    setGuardando(true); setErr("");
+    try {
+      let guardado = e.archivoGuardado;
+      if (e._archivo) {
+        const b64 = await leerComoBase64(e._archivo);
+        const r = await guardarArchivo("prog_" + e.id, b64, e._archivo.type || "application/pdf", e._archivo.name);
+        guardado = r.guardado;
+        if (!guardado) { setErr("El PDF supera el límite de almacenamiento (~7.5 MB). Comprímelo e inténtalo de nuevo."); setGuardando(false); return; }
+      }
+      await mutar(d => {
+        const { _archivo, ...limpio } = e;
+        const base = { ...limpio, numPlaneaciones: Number(e.numPlaneaciones), archivoGuardado: guardado, actualizadoEn: ahora() };
+        const i = d.programas.findIndex(x => x.id === base.id);
+        if (i >= 0) d.programas[i] = { ...d.programas[i], ...base };
+        else d.programas.push(base);
+      });
+      setEditando(null);
+    } catch (er) { setErr(er.message); }
+    setGuardando(false);
+  };
+
+  const eliminar = async (p) => {
+    if (!window.confirm(`¿Eliminar el programa “${p.nombre}”?\n\nLas asignaciones que dependan de él quedarán marcadas como “sin programa”.`)) return;
+    await mutar(d => { d.programas = d.programas.filter(x => x.id !== p.id); });
+    await eliminarArchivo("prog_" + p.id);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Programas de Estudio</h2>
+          <p className="text-sm text-slate-500">
+            Repositorio oficial del plantel. El número de propósitos o progresiones de cada
+            programa define cuántas planeaciones entregará el docente que imparta esa asignatura.
+          </p>
+        </div>
+        <label className={btnPrim + " cursor-pointer"}>
+          <Plus size={15}/>Subir programa
+          <input type="file" accept=".pdf" className="hidden" onChange={e => { elegirArchivo(e.target.files[0]); e.target.value = ""; }} />
+        </label>
+      </div>
+
+      <Card className="p-3 flex flex-wrap gap-2 items-center">
+        <div className="relative flex-1 min-w-[180px]">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar programa…" value={q} onChange={e => setQ(e.target.value)} />
+        </div>
+        <select className={inputCls + " !mt-0 !w-auto"} value={fCat} onChange={e => setFCat(e.target.value)}>
+          <option value="todas">Todas las categorías</option>
+          {CATEGORIAS_PROGRAMA.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
+        </select>
+      </Card>
+
+      {CATEGORIAS_PROGRAMA.filter(([v]) => fCat === "todas" || fCat === v).map(([v, n]) => {
+        const de = lista.filter(p => p.categoria === v);
+        if (!de.length) return null;
+        return (
+          <Card key={v} className="p-4">
+            <h3 className="font-bold text-sm mb-2">{n} <span className="text-slate-400 font-normal">· {de.length}</span></h3>
+            {de.map(p => (
+              <div key={p.id} className="flex flex-wrap items-center gap-3 py-2.5 border-b border-slate-100 last:border-0">
+                <div className="flex-1 min-w-[200px]">
+                  <div className="font-medium text-sm">{p.nombre}</div>
+                  <div className="text-xs text-slate-500">
+                    {p.semestre && `Semestre ${p.semestre} · `}
+                    <b>{p.numPlaneaciones}</b> planeación(es)
+                    {!p.archivoGuardado && <span className="text-amber-600"> · sin PDF</span>}
+                  </div>
+                </div>
+                <DescargarProgramaBtn programa={p} />
+                <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar"
+                  onClick={() => { setEditando({ ...p, _archivo: null }); setFaseIA(""); setErr(""); }}><Pencil size={15}/></button>
+                <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500" title="Eliminar"
+                  onClick={() => eliminar(p)}><Trash2 size={15}/></button>
+              </div>
+            ))}
+          </Card>
+        );
+      })}
+      {lista.length === 0 && (
+        <Card className="p-8 text-center text-sm text-slate-400">
+          Aún no hay programas en el repositorio. Sube el primero con “Subir programa”.
+        </Card>
+      )}
+
+      {editando && (
+        <Modal titulo={db.programas.some(p => p.id === editando.id) ? "Editar programa" : "Nuevo programa de estudio"} onClose={() => setEditando(null)}>
+          <div className="space-y-3">
+            <p className="text-xs text-slate-500 flex items-center gap-1.5">
+              <FileText size={13}/>{editando.archivoNombre || "Sin archivo"}
+              {faseIA === "leyendo" && <span className="text-indigo-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin"/>La IA está leyendo el programa…</span>}
+              {faseIA === "fallo" && <span className="text-amber-600">La IA no pudo leerlo; captura los datos manualmente.</span>}
+            </p>
+            <Campo label="Nombre de la asignatura / UAC / módulo">
+              <input className={inputCls} value={editando.nombre} onChange={e => setEditando({ ...editando, nombre: e.target.value })} />
+            </Campo>
+            <div className="grid sm:grid-cols-3 gap-3">
+              <Campo label="Categoría">
+                <select className={inputCls} value={editando.categoria} onChange={e => setEditando({ ...editando, categoria: e.target.value })}>
+                  {CATEGORIAS_PROGRAMA.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
+                </select>
+              </Campo>
+              <Campo label="Semestre (opcional)">
+                <input className={inputCls} value={editando.semestre || ""} onChange={e => setEditando({ ...editando, semestre: e.target.value })} />
+              </Campo>
+              <Campo label="Núm. de planeaciones">
+                <input type="number" min="0" className={inputCls} value={editando.numPlaneaciones}
+                  onChange={e => setEditando({ ...editando, numPlaneaciones: e.target.value })} />
+              </Campo>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              El número de planeaciones es el total de <b>propósitos o progresiones de aprendizaje</b> del
+              programa: una planeación por cada uno. Verifícalo aunque la IA lo haya propuesto.
+            </p>
+            {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <button className={btnSec} onClick={() => setEditando(null)}>Cancelar</button>
+            <button className={btnPrim} disabled={guardando || faseIA === "leyendo"} onClick={guardar}>
+              {guardando && <Loader2 size={14} className="animate-spin"/>}Guardar
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// Vista del docente: consulta y descarga
+function ProgramasDocente({ db }) {
+  const [q, setQ] = useState("");
+  const [fCat, setFCat] = useState("todas");
+  const lista = db.programas
+    .filter(p => fCat === "todas" || p.categoria === fCat)
+    .filter(p => !q || normTexto(p.nombre).includes(normTexto(q)))
+    .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Programas de Estudio</h2>
+        <p className="text-sm text-slate-500">Repositorio oficial del plantel. Consulta y descarga los programas vigentes.</p>
+      </div>
+      <Card className="p-3 flex flex-wrap gap-2 items-center">
+        <div className="relative flex-1 min-w-[180px]">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar programa…" value={q} onChange={e => setQ(e.target.value)} />
+        </div>
+        <select className={inputCls + " !mt-0 !w-auto"} value={fCat} onChange={e => setFCat(e.target.value)}>
+          <option value="todas">Todas las categorías</option>
+          {CATEGORIAS_PROGRAMA.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
+        </select>
+      </Card>
+      {CATEGORIAS_PROGRAMA.filter(([v]) => fCat === "todas" || fCat === v).map(([v, n]) => {
+        const de = lista.filter(p => p.categoria === v);
+        if (!de.length) return null;
+        return (
+          <Card key={v} className="p-4">
+            <h3 className="font-bold text-sm mb-2">{n}</h3>
+            <div className="grid sm:grid-cols-2 gap-2">
+              {de.map(p => (
+                <div key={p.id} className="border border-slate-200 rounded-xl p-3">
+                  <div className="font-medium text-sm">{p.nombre}</div>
+                  <div className="text-xs text-slate-500 mb-2">{p.semestre && `Semestre ${p.semestre} · `}{p.numPlaneaciones} planeación(es)</div>
+                  {p.archivoGuardado ? <DescargarProgramaBtn programa={p} texto />
+                    : <span className="text-xs text-slate-400">PDF no disponible</span>}
+                </div>
+              ))}
+            </div>
+          </Card>
+        );
+      })}
+      {lista.length === 0 && <Card className="p-8 text-center text-sm text-slate-400">Aún no hay programas publicados.</Card>}
+    </div>
+  );
+}
+
+/* ================================================================
+   ASIGNACIONES (jefe académico y administrador)
+   ================================================================ */
+
+function Asignaciones({ db, user, mutar }) {
+  const [fase, setFase] = useState("lista"); // lista | subiendo | ia | revisar
+  const [progreso, setProgreso] = useState(0);
+  const [extraidos, setExtraidos] = useState(null); // [{nombre, items, total_horas, docenteId}]
+  const [loteArchivo, setLoteArchivo] = useState(null);
+  const [cicloSel, setCicloSel] = useState(db.config.cicloActual);
+  const [err, setErr] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const [detalle, setDetalle] = useState(null); // asignación abierta
+
+  const docentes = db.users.filter(u => u.rol === "docente" && u.activo);
+  const delCiclo = db.asignaciones.filter(a => a.ciclo === cicloSel);
+
+  const procesar = async (file) => {
+    if (!file) return;
+    setErr("");
+    const b64 = await leerComoBase64(file);
+    if (b64.length > MAX_FILE_B64) { setErr("El PDF supera el límite (~7.5 MB). Divídelo o comprímelo."); return; }
+    setLoteArchivo({ file, b64 });
+    setFase("ia"); setProgreso(30);
+    const timer = setInterval(() => setProgreso(p => Math.min(p + 4, 92)), 700);
+    try {
+      const r = await extraerConIA({ base64: b64, mime: file.type || "application/pdf", tipo: "asignaciones" });
+      clearInterval(timer); setProgreso(100);
+      const lista = (r.docentes || []).map(d => ({
+        nombre: d.nombre || "", titulo: d.titulo || "",
+        items: (d.items || []).filter(i => i.actividad),
+        totalHoras: d.total_horas ?? null,
+        docenteId: emparejarDocente(db, d.nombre)?.id || "",
+      }));
+      if (!lista.length) { setErr("La IA no encontró docentes en el documento. Verifica que sea el PDF de asignaciones."); setFase("lista"); return; }
+      setExtraidos(lista); setFase("revisar");
+    } catch (e) {
+      clearInterval(timer);
+      setErr("No se pudo leer el documento: " + e.message); setFase("lista");
+    }
+  };
+
+  const confirmar = async () => {
+    const sinMatch = extraidos.filter(x => !x.docenteId).length;
+    if (sinMatch && !window.confirm(`${sinMatch} docente(s) del PDF no quedaron vinculados a una cuenta y no podrán ver su asignación. ¿Guardar de todos modos?`)) return;
+    setGuardando(true); setErr("");
+    try {
+      const loteId = uid();
+      await guardarArchivo("asig_" + loteId, loteArchivo.b64, loteArchivo.file.type || "application/pdf", loteArchivo.file.name);
+      await mutar(d => {
+        for (const x of extraidos) {
+          // Si el docente ya tenía asignación en este ciclo, se reemplaza
+          d.asignaciones = d.asignaciones.filter(a => !(a.ciclo === cicloSel && a.docenteId && a.docenteId === x.docenteId));
+          d.asignaciones.push({
+            id: uid(), loteId, ciclo: cicloSel,
+            docenteId: x.docenteId || null,
+            nombreExtraido: (x.titulo ? x.titulo + " " : "") + x.nombre,
+            items: x.items, totalHoras: x.totalHoras,
+            creadoEn: ahora(), creadoPor: user.nombre,
+          });
+          if (x.docenteId) notificar(d, x.docenteId,
+            `📋 Ya está disponible tu asignación del ciclo ${cicloSel}. Revisa en “Mi asignación” qué planeaciones, planes e informes te corresponden.`);
+        }
+        registrarActividad(d, `Se cargaron asignaciones del ciclo ${cicloSel} (${extraidos.length} docentes).`);
+      });
+      setFase("lista"); setExtraidos(null); setLoteArchivo(null);
+    } catch (e) { setErr(e.message); }
+    setGuardando(false);
+  };
+
+  const eliminarAsig = async (a) => {
+    if (!window.confirm(`¿Eliminar la asignación de ${a.nombreExtraido}? Las entregas ya subidas se conservan.`)) return;
+    await mutar(d => { d.asignaciones = d.asignaciones.filter(x => x.id !== a.id); });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Asignaciones</h2>
+          <p className="text-sm text-slate-500">
+            Sube el PDF de asignaciones del semestre; la IA extrae cada docente con sus actividades y
+            horas, y el sistema calcula qué debe entregar cada quien según los programas de estudio.
+          </p>
+        </div>
+        {fase === "lista" && (
+          <label className={btnPrim + " cursor-pointer"}>
+            <Upload size={15}/>Subir PDF de asignaciones
+            <input type="file" accept=".pdf" className="hidden" onChange={e => { procesar(e.target.files[0]); e.target.value = ""; }} />
+          </label>
+        )}
+      </div>
+
+      {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
+
+      {fase === "ia" && (
+        <Card className="p-6 text-center space-y-3">
+          <Loader2 className="animate-spin mx-auto text-[#E8871E]" size={28} />
+          <p className="text-sm font-semibold">La IA está leyendo el documento…</p>
+          <p className="text-xs text-slate-500">Extrae cada docente, sus actividades y horas. Con muchos docentes puede tardar un par de minutos.</p>
+          <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden max-w-md mx-auto">
+            <div className="h-full bg-[#E8871E] transition-all" style={{ width: progreso + "%" }} />
+          </div>
+        </Card>
+      )}
+
+      {fase === "revisar" && extraidos && (
+        <Card className="p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-bold text-sm">Revisa lo extraído · {extraidos.length} docente(s)</h3>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-slate-500">Ciclo:</span>
+              <select className={inputCls + " !mt-0 !w-auto"} value={cicloSel} onChange={e => setCicloSel(e.target.value)}>
+                {ciclosDisponibles(db).map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          </div>
+          <p className="text-xs text-slate-500">
+            Verifica que cada docente del PDF esté vinculado a su cuenta. Los datos con ⚠ requieren tu atención.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-[11px] uppercase text-slate-400 border-b border-slate-200">
+                <th className="py-2 pr-3">Docente en el PDF</th><th className="py-2 pr-3">Cuenta vinculada</th>
+                <th className="py-2 pr-3">Actividades</th><th className="py-2">Horas</th>
+              </tr></thead>
+              <tbody>
+                {extraidos.map((x, i) => (
+                  <tr key={i} className="border-b border-slate-100 last:border-0">
+                    <td className="py-2 pr-3 font-medium">{x.titulo && <span className="text-slate-400">{x.titulo} </span>}{x.nombre}</td>
+                    <td className="py-2 pr-3">
+                      <select className={inputCls + " !mt-0"} value={x.docenteId}
+                        onChange={e => setExtraidos(list => list.map((y, j) => j === i ? { ...y, docenteId: e.target.value } : y))}>
+                        <option value="">⚠ Sin vincular</option>
+                        {docentes.map(d => <option key={d.id} value={d.id}>{d.nombre}</option>)}
+                      </select>
+                    </td>
+                    <td className="py-2 pr-3 text-slate-500">{x.items.length}</td>
+                    <td className="py-2 font-semibold">{x.totalHoras ?? "⚠"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button className={btnSec} onClick={() => { setFase("lista"); setExtraidos(null); }}>Cancelar</button>
+            <button className={btnPrim} disabled={guardando} onClick={confirmar}>
+              {guardando && <Loader2 size={14} className="animate-spin"/>}Guardar asignaciones
+            </button>
+          </div>
+        </Card>
+      )}
+
+      {fase === "lista" && (
+        <>
+          <Card className="p-3 flex flex-wrap gap-2 items-center">
+            <span className="text-sm text-slate-500">Ciclo:</span>
+            <select className={inputCls + " !mt-0 !w-auto"} value={cicloSel} onChange={e => setCicloSel(e.target.value)}>
+              {ciclosDisponibles(db).map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <span className="text-xs text-slate-400 ml-auto">{delCiclo.length} asignación(es) en este ciclo</span>
+          </Card>
+          <Card className="p-4">
+            {delCiclo.length === 0 && <p className="text-sm text-slate-400 py-8 text-center">No hay asignaciones cargadas en este ciclo.</p>}
+            {delCiclo.sort((a, b) => a.nombreExtraido.localeCompare(b.nombreExtraido)).map(a => {
+              const av = avanceDe(db, a);
+              return (
+                <div key={a.id} className="flex flex-wrap items-center gap-3 py-3 border-b border-slate-100 last:border-0">
+                  <div className="flex-1 min-w-[200px]">
+                    <div className="font-medium text-sm">{a.nombreExtraido}</div>
+                    <div className="text-xs text-slate-500">
+                      {a.docenteId ? (docentes.find(d => d.id === a.docenteId)?.nombre || "Cuenta desactivada")
+                        : <span className="text-amber-600 font-semibold">⚠ Sin cuenta vinculada</span>}
+                      {" · "}{(a.items || []).length} actividades · {a.totalHoras ?? "—"} h
+                    </div>
+                  </div>
+                  <div className="text-center min-w-[110px]">
+                    <div className="text-xs font-bold">{av.entregadas}/{av.requeridas}{av.indeterminado && " ⚠"}</div>
+                    <div className="w-24 h-1.5 rounded-full bg-slate-200 overflow-hidden mx-auto mt-1">
+                      <div className={`h-full ${av.pct >= 100 ? "bg-emerald-600" : "bg-[#E8871E]"}`} style={{ width: av.pct + "%" }} />
+                    </div>
+                  </div>
+                  <button className={btnSec + " !px-3 !py-1.5"} onClick={() => setDetalle(a)}>Ver detalle</button>
+                  <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500" title="Eliminar" onClick={() => eliminarAsig(a)}><Trash2 size={15}/></button>
+                </div>
+              );
+            })}
+          </Card>
+        </>
+      )}
+
+      {detalle && <DetalleAsignacion db={db} asig={detalle} docentes={docentes} mutar={mutar} onClose={() => setDetalle(null)} />}
+    </div>
+  );
+}
+
+function DetalleAsignacion({ db, asig, docentes, mutar, onClose }) {
+  const encargos = encargosDe(db, asig);
+  const cambiarVinculo = (id) => mutar(d => {
+    const a = d.asignaciones.find(x => x.id === asig.id);
+    if (a) a.docenteId = id || null;
+  });
+  return (
+    <Modal titulo={`Asignación · ${asig.nombreExtraido}`} onClose={onClose} ancho="max-w-3xl">
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <span className="text-slate-500">Ciclo {asig.ciclo} · {asig.totalHoras ?? "—"} horas totales</span>
+          <div className="flex items-center gap-2 ml-auto">
+            <span className="text-xs text-slate-500">Cuenta:</span>
+            <select className={inputCls + " !mt-0 !w-auto"} value={asig.docenteId || ""} onChange={e => cambiarVinculo(e.target.value)}>
+              <option value="">Sin vincular</option>
+              {docentes.map(d => <option key={d.id} value={d.id}>{d.nombre}</option>)}
+            </select>
+          </div>
+        </div>
+        {encargos.map(e => {
+          const filas = [
+            ["planeacion", e.requisitos.planeacion],
+            ["plan", e.requisitos.plan],
+            ["informe", e.requisitos.informe],
+          ].filter(([, n]) => n === null || n > 0);
+          return (
+            <Card key={e.clave} className="p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold text-sm">{e.actividad}</span>
+                <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                  {e.tipo === "modulo" ? "Módulo profesional" : e.tipo === "comision" ? "Comisión / cargo" : "Frente a grupo"}
+                </span>
+                {e.grupos.length > 0 && <span className="text-xs text-slate-400">{[...new Set(e.grupos)].join(", ")}</span>}
+                <span className="text-xs text-slate-400 ml-auto">{e.horas} h</span>
+              </div>
+              {e.tipo === "asignatura" && !e.programa && (
+                <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2 mt-2">
+                  ⚠ No hay programa de estudio que coincida con esta asignatura: no se puede calcular cuántas
+                  planeaciones corresponden. Súbelo en Programas de Estudio (el nombre debe coincidir).
+                </p>
+              )}
+              {e.programa && <p className="text-[11px] text-slate-400 mt-1">Programa: {e.programa.nombre}</p>}
+              <div className="mt-2 space-y-1">
+                {filas.map(([t, n]) => {
+                  const ent = asig.docenteId ? entregasDe(db, asig.docenteId, asig.ciclo, e.clave, t) : [];
+                  return (
+                    <div key={t} className="flex items-center gap-2 text-sm">
+                      <span className="w-32 text-slate-500">{NOMBRE_TIPO_ENTREGA[t]}{n !== 1 ? "es" : ""}:</span>
+                      <span className={`font-semibold ${n !== null && ent.length >= n ? "text-emerald-700" : ""}`}>
+                        {ent.length} de {n === null ? "?" : n}
+                      </span>
+                      {ent.map(x => <VerEntregaBtn key={x.id} entrega={x} />)}
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </Modal>
+  );
+}
+
+function VerEntregaBtn({ entrega }) {
+  const [abriendo, setAbriendo] = useState(false);
+  const abrir = async () => {
+    setAbriendo(true);
+    const f = await leerArchivo("ent_" + entrega.id);
+    setAbriendo(false);
+    if (!f) return;
+    const bytes = atob(f.base64);
+    const arr = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    window.open(URL.createObjectURL(new Blob([arr], { type: f.mime })), "_blank");
+  };
+  return (
+    <button onClick={abrir} title={`${entrega.titulo || "Entrega"} · ${fmtFecha((entrega.fecha || "").slice(0,10))}`}
+      className="p-1 rounded hover:bg-slate-100 text-slate-400">
+      {abriendo ? <Loader2 size={13} className="animate-spin"/> : <Eye size={13}/>}
+    </button>
+  );
+}
+
+/* ================================================================
+   MI ASIGNACIÓN (docente)
+   ================================================================ */
+
+function MiAsignacion({ db, user, mutar }) {
+  const misAsigs = db.asignaciones.filter(a => a.docenteId === user.id)
+    .sort((a, b) => (b.ciclo || "").localeCompare(a.ciclo || ""));
+  const [cicloSel, setCicloSel] = useState(misAsigs[0]?.ciclo || db.config.cicloActual);
+  const asig = misAsigs.find(a => a.ciclo === cicloSel) || null;
+  const [subiendo, setSubiendo] = useState(null); // clave del slot en proceso
+  const [err, setErr] = useState("");
+
+  const subir = async (encargo, tipo, file) => {
+    if (!file) return;
+    setErr("");
+    const slot = encargo.clave + "|" + tipo;
+    setSubiendo(slot);
+    try {
+      const b64 = await leerComoBase64(file);
+      if (b64.length > MAX_FILE_B64) { setErr("El archivo supera el límite (~7.5 MB)."); setSubiendo(null); return; }
+      const id = uid();
+      const r = await guardarArchivo("ent_" + id, b64, file.type || "application/pdf", file.name);
+      if (!r.guardado) { setErr("No se pudo guardar el archivo. Inténtalo de nuevo."); setSubiendo(null); return; }
+      await mutar(d => {
+        d.entregas.push({
+          id, docenteId: user.id, ciclo: asig.ciclo, encargoClave: encargo.clave,
+          actividad: encargo.actividad, tipo, titulo: file.name,
+          estado: "entregada", fecha: ahora(),
+        });
+        d.users.filter(u => esRolAcademico(u.rol) && u.rol !== "admin" && u.activo).forEach(j =>
+          notificar(d, j.id, `📥 ${user.nombre} subió ${NOMBRE_TIPO_ENTREGA[tipo].toLowerCase()} de “${encargo.actividad}”.`));
+      });
+    } catch (e) { setErr(e.message); }
+    setSubiendo(null);
+  };
+
+  const quitar = async (entrega) => {
+    if (!window.confirm(`¿Quitar “${entrega.titulo}”? Podrás subir otro archivo en su lugar.`)) return;
+    await mutar(d => { d.entregas = d.entregas.filter(x => x.id !== entrega.id); });
+    await eliminarArchivo("ent_" + entrega.id);
+  };
+
+  if (!misAsigs.length) return (
+    <div className="space-y-4">
+      <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Mi asignación</h2>
+      <Card className="p-8 text-center text-sm text-slate-400">
+        Aún no tienes una asignación cargada. Cuando el Departamento Académico la publique, aparecerá aquí
+        junto con las planeaciones, planes de trabajo e informes que te corresponden.
+      </Card>
+    </div>
+  );
+
+  const av = asig ? avanceDe(db, asig) : null;
+  const encargos = asig ? encargosDe(db, asig) : [];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Mi asignación</h2>
+          <p className="text-sm text-slate-500">{asig ? `${asig.totalHoras ?? "—"} horas · ${encargos.length} actividades` : "Sin asignación en este ciclo"}</p>
+        </div>
+        <select className={inputCls + " !mt-0 !w-auto"} value={cicloSel} onChange={e => setCicloSel(e.target.value)}>
+          {[...new Set([...misAsigs.map(a => a.ciclo), db.config.cicloActual])].sort().reverse()
+            .map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+        </select>
+      </div>
+
+      {av && (
+        <Card className="p-4">
+          <div className="flex items-center justify-between text-sm mb-1.5">
+            <span className="font-semibold">Avance de entregas</span>
+            <span className="text-slate-500">{av.entregadas} de {av.requeridas}{av.indeterminado ? " (+ pendientes por definir)" : ""}</span>
+          </div>
+          <div className="w-full h-2.5 rounded-full bg-slate-200 overflow-hidden">
+            <div className={`h-full transition-all ${av.pct >= 100 ? "bg-emerald-600" : "bg-[#E8871E]"}`} style={{ width: av.pct + "%" }} />
+          </div>
+        </Card>
+      )}
+
+      {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
+
+      {encargos.map(e => {
+        const filas = [
+          ["planeacion", e.requisitos.planeacion],
+          ["plan", e.requisitos.plan],
+          ["informe", e.requisitos.informe],
+        ].filter(([, n]) => n === null || n > 0);
+        return (
+          <Card key={e.clave} className="p-4">
+            <div className="flex flex-wrap items-center gap-2 mb-1">
+              <span className="font-semibold text-sm">{e.actividad}</span>
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                {e.tipo === "modulo" ? "Módulo profesional" : e.tipo === "comision" ? "Comisión / cargo" : "Frente a grupo"}
+              </span>
+              {e.grupos.length > 0 && <span className="text-xs text-slate-400">{[...new Set(e.grupos)].join(", ")}</span>}
+            </div>
+            {e.programa && (
+              <p className="text-[11px] text-slate-400 mb-1 flex items-center gap-2">
+                Programa: {e.programa.nombre} <DescargarProgramaBtn programa={e.programa} texto />
+              </p>
+            )}
+            {e.tipo === "asignatura" && !e.programa && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2 mb-2">
+                El programa de esta asignatura aún no está en el repositorio; cuando el Departamento
+                Académico lo suba, aquí verás cuántas planeaciones te corresponden.
+              </p>
+            )}
+            <div className="space-y-2 mt-2">
+              {filas.map(([t, n]) => {
+                const ent = entregasDe(db, user.id, asig.ciclo, e.clave, t);
+                const faltan = n === null ? 0 : Math.max(n - ent.length, 0);
+                const slot = e.clave + "|" + t;
+                return (
+                  <div key={t} className="border border-slate-100 rounded-xl p-3">
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="font-medium">{NOMBRE_TIPO_ENTREGA[t]}{(n ?? 2) !== 1 ? "es" : ""}</span>
+                      <span className={`text-xs font-bold ${n !== null && ent.length >= n ? "text-emerald-700" : "text-slate-500"}`}>
+                        {ent.length} de {n === null ? "?" : n} {n !== null && ent.length >= n && "✓"}
+                      </span>
+                    </div>
+                    {ent.map(x => (
+                      <div key={x.id} className="flex items-center gap-2 text-xs text-slate-600 mt-1.5">
+                        <FileText size={13} className="text-slate-400 shrink-0"/>
+                        <span className="truncate flex-1">{x.titulo}</span>
+                        <span className="text-slate-400 shrink-0">{fmtFecha((x.fecha || "").slice(0,10))}</span>
+                        <VerEntregaBtn entrega={x} />
+                        <button className="p-1 rounded hover:bg-rose-50 text-rose-400" title="Quitar y volver a subir" onClick={() => quitar(x)}><Trash2 size={13}/></button>
+                      </div>
+                    ))}
+                    {faltan > 0 && (
+                      <label className={`mt-2 inline-flex items-center gap-1.5 text-xs font-semibold cursor-pointer px-3 py-1.5 rounded-lg border ${subiendo === slot ? "text-slate-400 border-slate-200" : "text-[#1a2340] border-slate-300 hover:bg-slate-50"}`}>
+                        {subiendo === slot ? <Loader2 size={13} className="animate-spin"/> : <Upload size={13}/>}
+                        Subir {NOMBRE_TIPO_ENTREGA[t].toLowerCase()} ({faltan} pendiente{faltan > 1 ? "s" : ""})
+                        <input type="file" accept=".pdf,.doc,.docx" className="hidden" disabled={!!subiendo}
+                          onChange={ev => { subir(e, t, ev.target.files[0]); ev.target.value = ""; }} />
+                      </label>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        );
+      })}
     </div>
   );
 }
@@ -2445,7 +3433,7 @@ function Validaciones({ db, user, mutar }) {
    GESTIÓN DE DOCENTES (administrador)
    ================================================================ */
 
-function Docentes({ db, mutar, irA }) {
+function Docentes({ db, mutar, irA, esAdmin = true }) {
   const [editando, setEditando] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [errAlta, setErrAlta] = useState("");
@@ -2489,8 +3477,8 @@ function Docentes({ db, mutar, irA }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Docentes</h2>
-        <button className={btnPrim} onClick={() => setEditando({ nombre: "", email: "", area: "", asignaturas: "", nuevaPass: "" })}><Plus size={15}/>Agregar docente</button>
+        <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>{esAdmin ? "Docentes" : "Expedientes docentes"}</h2>
+        {esAdmin && <button className={btnPrim} onClick={() => setEditando({ nombre: "", email: "", area: "", asignaturas: "", nuevaPass: "" })}><Plus size={15}/>Agregar docente</button>}
       </div>
       <Card className="p-4">
         {docentes.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">Todavía no hay docentes. Agrega al primero: la contraseña inicial por defecto es <code>docente123</code>.</p>}
@@ -2504,11 +3492,13 @@ function Docentes({ db, mutar, irA }) {
                 <div className="text-xs text-slate-500 truncate">{u.email} · {u.area || "Sin área"} · Expediente {exp.pct}%</div>
               </div>
               <button className={btnSec + " !px-3 !py-1.5"} onClick={() => irA("expediente_docente", u.id)}><FolderOpen size={14}/>Expediente</button>
-              <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar" onClick={() => setEditando({ ...u, nuevaPass: "" })}><Pencil size={15}/></button>
-              <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title={u.activo ? "Desactivar" : "Reactivar"}
-                onClick={() => mutar(d => { const x = d.users.find(y => y.id === u.id); x.activo = !x.activo; })}>
-                {u.activo ? <XCircle size={15}/> : <CheckCircle2 size={15}/>}
-              </button>
+              {esAdmin && <>
+                <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar" onClick={() => setEditando({ ...u, nuevaPass: "" })}><Pencil size={15}/></button>
+                <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title={u.activo ? "Desactivar" : "Reactivar"}
+                  onClick={() => mutar(d => { const x = d.users.find(y => y.id === u.id); x.activo = !x.activo; })}>
+                  {u.activo ? <XCircle size={15}/> : <CheckCircle2 size={15}/>}
+                </button>
+              </>}
             </div>
           );
         })}
@@ -2581,7 +3571,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
       d.grados = d.grados.filter(g => !(g.docenteId === docenteId && g.nivel === form.nivel)); // reemplaza registro previo
       d.grados.push({ id: form.id, docenteId, nivel: form.nivel, datos: form.datos, archivoGuardado: form.archivoGuardado,
         archivoNombre: form.archivoNombre, estado: "pendiente", cargadoEn: ahora(), motivoRechazo: null });
-      d.users.filter(u => u.rol === "admin").forEach(a => notificar(d, a.id, `🎓 ${docente.nombre} cargó su ${form.nivel} para validación.`));
+      d.users.filter(u => esRolValidador(u.rol) && u.activo).forEach(a => notificar(d, a.id, `🎓 ${docente.nombre} cargó su ${form.nivel} para validación.`));
       registrarActividad(d, `${docente.nombre} registró su ${form.nivel}.`);
     });
     setForm(null); setSubiendo(null);
@@ -2593,7 +3583,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
       d.comp.push({ id: form.id, docenteId, tipo: form.tipo, nombre: form.nombre, institucion: form.institucion,
         fecha: form.fecha || null, duracion: form.duracion || null, archivoGuardado: form.archivoGuardado,
         archivoNombre: form.archivoNombre, estado: "pendiente", cargadoEn: ahora() });
-      d.users.filter(u => u.rol === "admin").forEach(a => notificar(d, a.id, `📜 ${docente.nombre} registró formación complementaria: ${form.nombre}.`));
+      d.users.filter(u => esRolValidador(u.rol) && u.activo).forEach(a => notificar(d, a.id, `📜 ${docente.nombre} registró formación complementaria: ${form.nombre}.`));
     });
     setForm(null); setSubiendo(null); setErr("");
   };
@@ -2948,7 +3938,7 @@ function ActividadReciente({ db }) {
    ADMINISTRACIÓN Y CONFIGURACIÓN
    ================================================================ */
 
-function Administracion({ db, user, mutar }) {
+function Administracion({ db, user, mutar, esAdmin = true }) {
   const cfg = db.config;
   const [meta, setMeta] = useState(cfg.metaAnual);
   const [verde, setVerde] = useState(cfg.semVerde);
@@ -3031,17 +4021,21 @@ function Administracion({ db, user, mutar }) {
         )}
       </Card>
 
-      <Card className="p-5 space-y-3">
-        <h3 className="font-bold text-sm">Visibilidad y reglas</h3>
-        <label className="flex items-center gap-3 text-sm">
-          <input type="checkbox" checked={cfg.rankingPublico} onChange={e => mutar(d => { d.config.rankingPublico = e.target.checked; })} />
-          Mostrar el ranking públicamente a los docentes
-        </label>
-        <label className="flex items-center gap-3 text-sm">
-          <input type="checkbox" checked={cfg.perfilObligatorio} onChange={e => mutar(d => { d.config.perfilObligatorio = e.target.checked; })} />
-          Perfil académico obligatorio antes de registrar capacitaciones
-        </label>
-      </Card>
+      {esAdmin && (
+        <Card className="p-5 space-y-3">
+          <h3 className="font-bold text-sm">Visibilidad y reglas</h3>
+          <label className="flex items-center gap-3 text-sm">
+            <input type="checkbox" checked={cfg.rankingPublico} onChange={e => mutar(d => { d.config.rankingPublico = e.target.checked; })} />
+            Mostrar el ranking públicamente a los docentes
+          </label>
+          <label className="flex items-center gap-3 text-sm">
+            <input type="checkbox" checked={cfg.perfilObligatorio} onChange={e => mutar(d => { d.config.perfilObligatorio = e.target.checked; })} />
+            Perfil académico obligatorio antes de registrar capacitaciones
+          </label>
+        </Card>
+      )}
+
+      {esAdmin && <JefesDepartamento db={db} mutar={mutar} />}
 
       <MiCuenta user={user} soloTarjeta />
     </div>
