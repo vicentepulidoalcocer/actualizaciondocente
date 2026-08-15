@@ -5,7 +5,7 @@ import {
   AlertTriangle, ChevronRight, Users, Target, TrendingUp, FileCheck,
   Download, Filter, Plus, Pencil, Trash2, Eye, Medal, Star, Loader2,
   FolderOpen, User, Activity, ShieldCheck, Menu, X, Megaphone,
-  Paperclip, Link2, Archive, Send
+  Paperclip, Link2, Archive, Send, Sparkles
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie,
@@ -2397,14 +2397,14 @@ function ProgramasEstudio({ db, user, mutar }) {
     const archivos = [...files].filter(f => f.name.toLowerCase().endsWith(".pdf"));
     if (!archivos.length) return;
     setResumen(null); setErr("");
-    let ok = 0, asigs = 0, revisar = 0, fallidos = [];
+    let ok = 0, asigs = 0, revisar = 0, fallidos = [], motivos = [], funcionVieja = false;
     for (let i = 0; i < archivos.length; i++) {
       const f = archivos[i];
       setCola({ total: archivos.length, hechos: i, actual: f.name });
       try {
         const b64 = await leerComoBase64(f);
         if (b64.length > MAX_FILE_B64) { fallidos.push(f.name + " (supera ~7.5 MB)"); continue; }
-        let nombrePrograma = "", asignaturas = [];
+        let nombrePrograma = "", asignaturas = [], motivo = "";
         try {
           const d = await extraerConIA({ base64: b64, mime: f.type || "application/pdf", tipo: "programa" });
           nombrePrograma = d.programa || "";
@@ -2414,7 +2414,17 @@ function ProgramasEstudio({ db, user, mutar }) {
             base: a.base || null,
             semestre: a.semestre || "",
           }));
-        } catch { /* si la IA falla, queda para captura manual */ }
+          /* Compatibilidad: si la función Edge todavía es la versión
+             anterior, responde con un solo {nombre, num_planeaciones}.
+             Se aprovecha el dato y se avisa que falta actualizarla. */
+          if (!asignaturas.length && d.nombre) {
+            asignaturas = [{ nombre: d.nombre, numPlaneaciones: d.num_planeaciones ?? null, base: null, semestre: d.semestre || "" }];
+            nombrePrograma = nombrePrograma || d.nombre;
+            motivo = "funcion_vieja";
+          } else if (!asignaturas.length) {
+            motivo = "La IA respondió sin asignaturas";
+          }
+        } catch (e) { motivo = e.message || "Error del servicio de IA"; }
         const id = uid();
         const r = await guardarArchivo("prog_" + id, b64, f.type || "application/pdf", f.name);
         if (!r.guardado) { fallidos.push(f.name + " (no se pudo guardar)"); continue; }
@@ -2426,10 +2436,43 @@ function ProgramasEstudio({ db, user, mutar }) {
         });
         ok++; asigs += asignaturas.length;
         revisar += asignaturas.filter(a => a.numPlaneaciones == null).length + (asignaturas.length ? 0 : 1);
+        if (motivo === "funcion_vieja") funcionVieja = true;
+        else if (motivo) motivos.push(f.name + ": " + motivo);
       } catch (e) { fallidos.push(f.name + " (" + e.message + ")"); }
     }
     setCola(null);
-    setResumen({ ok, asigs, revisar, fallidos });
+    setResumen({ ok, asigs, revisar, fallidos, motivos, funcionVieja });
+  };
+
+  const [reintentando, setReintentando] = useState(null);
+
+  /* Reintenta la lectura con IA usando el PDF que ya está guardado,
+     sin necesidad de volver a subirlo. */
+  const reintentar = async (p) => {
+    setReintentando(p.id); setErr("");
+    try {
+      const f = await leerArchivo("prog_" + p.id);
+      if (!f) { setErr("El PDF de este programa ya no está disponible."); setReintentando(null); return; }
+      const d = await extraerConIA({ base64: f.base64, mime: f.mime || "application/pdf", tipo: "programa" });
+      let asigs = (d.asignaturas || []).filter(a => a && a.nombre).map(a => ({
+        nombre: a.nombre, numPlaneaciones: a.num_planeaciones ?? null,
+        base: a.base || null, semestre: a.semestre || "",
+      }));
+      if (!asigs.length && d.nombre) {
+        asigs = [{ nombre: d.nombre, numPlaneaciones: d.num_planeaciones ?? null, base: null, semestre: "" }];
+        setErr("La función “extraer” de Supabase aún responde con el formato anterior: solo detecta una asignatura por documento. Actualízala para leer todas.");
+      } else if (!asigs.length) {
+        setErr("La IA leyó el documento pero no identificó asignaturas. Agrégalas manualmente con el lápiz.");
+      }
+      if (asigs.length) {
+        await mutar(dd => {
+          const i = dd.programas.findIndex(x => x.id === p.id);
+          if (i >= 0) dd.programas[i] = { ...dd.programas[i],
+            nombre: d.programa || dd.programas[i].nombre, asignaturas: asigs, actualizadoEn: ahora() };
+        });
+      }
+    } catch (e) { setErr("No se pudo leer: " + e.message); }
+    setReintentando(null);
   };
 
   const abrirEdicion = (p) => {
@@ -2503,10 +2546,22 @@ function ProgramasEstudio({ db, user, mutar }) {
         </Card>
       )}
 
+      {err && <p className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-3 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0"/>{err}</p>}
+
       {resumen && (
         <div className="text-sm bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl p-3">
           <b>{resumen.ok} programa(s) subidos</b> con {resumen.asigs} asignatura(s) detectada(s).
           {resumen.revisar > 0 && <span className="block text-amber-700 mt-1">⚠ {resumen.revisar} asignatura(s) sin número de planeaciones: complétalas con el lápiz.</span>}
+          {resumen.funcionVieja && (
+            <span className="block text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2 mt-2">
+              <b>La función “extraer” de Supabase no está actualizada.</b> Está respondiendo con el
+              formato anterior (una sola asignatura por documento). Actualízala en Supabase →
+              Edge Functions → extraer → Deploy, y vuelve a subir estos programas.
+            </span>
+          )}
+          {resumen.motivos?.length > 0 && (
+            <span className="block text-amber-700 mt-1 text-xs">Detalle: {resumen.motivos.join(" · ")}</span>
+          )}
           {resumen.fallidos.length > 0 && <span className="block text-rose-600 mt-1">No se subieron: {resumen.fallidos.join("; ")}</span>}
         </div>
       )}
@@ -2536,6 +2591,10 @@ function ProgramasEstudio({ db, user, mutar }) {
                 </div>
               </div>
               <DescargarProgramaBtn programa={p} />
+              <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Reintentar lectura con IA"
+                disabled={reintentando === p.id} onClick={() => reintentar(p)}>
+                {reintentando === p.id ? <Loader2 size={15} className="animate-spin"/> : <Sparkles size={15}/>}
+              </button>
               <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar asignaturas"
                 onClick={() => abrirEdicion(p)}><Pencil size={15}/></button>
               <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500" title="Eliminar"
@@ -2543,7 +2602,7 @@ function ProgramasEstudio({ db, user, mutar }) {
             </div>
             {asigs.length === 0 ? (
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2 mt-2">
-                ⚠ La IA no detectó asignaturas en este PDF. Agrégalas manualmente con el lápiz.
+                ⚠ Sin asignaturas detectadas. Usa ✨ para reintentar la lectura con IA, o el lápiz para agregarlas a mano.
               </p>
             ) : (
               <div className="mt-2 flex flex-wrap gap-1.5">
