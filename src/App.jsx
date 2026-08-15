@@ -5,7 +5,7 @@ import {
   AlertTriangle, ChevronRight, Users, Target, TrendingUp, FileCheck,
   Download, Filter, Plus, Pencil, Trash2, Eye, Medal, Star, Loader2,
   FolderOpen, User, Activity, ShieldCheck, Menu, X, Megaphone,
-  Paperclip, Link2, Archive, Send, Sparkles
+  Paperclip, Link2, Archive, Send, Sparkles, CalendarDays
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie,
@@ -131,10 +131,10 @@ const rankingDe = (db, ciclo) =>
 /* Ranking de cumplimiento de entregas (planeaciones, planes e informes).
    Ordena por porcentaje de avance; a igual porcentaje, gana quien más
    entregas haya cubierto en términos absolutos. */
-const rankingEntregas = (db, ciclo) =>
+const rankingEntregas = (db, ciclo, periodo) =>
   db.users.filter(u => u.rol === "docente" && u.activo)
     .map(u => {
-      const asig = db.asignaciones.find(a => a.docenteId === u.id && a.ciclo === ciclo);
+      const asig = asignacionDe(db, u.id, ciclo, periodo);
       const av = asig ? avanceDe(db, asig) : { requeridas: 0, entregadas: 0, pct: 0, indeterminado: false };
       return { ...u, ...av, conAsignacion: !!asig };
     })
@@ -143,12 +143,12 @@ const rankingEntregas = (db, ciclo) =>
 /* Ranking general del docente: combina capacitación y entregas.
    Ambas mitades valen lo mismo (50 y 50) para que ninguna eclipse a la
    otra, y la de capacitación se mide contra la meta anual del plantel. */
-function rankingGeneral(db, ciclo) {
+function rankingGeneral(db, ciclo, periodo) {
   const meta = Number(db.config.metaAnual) || 0;
   return db.users.filter(u => u.rol === "docente" && u.activo)
     .map(u => {
       const horas = horasValidadas(db, u.id, ciclo);
-      const asig = db.asignaciones.find(a => a.docenteId === u.id && a.ciclo === ciclo);
+      const asig = asignacionDe(db, u.id, ciclo, periodo);
       const av = asig ? avanceDe(db, asig) : null;
       const pctCap = meta ? Math.min(100, Math.round(100 * horas / meta)) : (horas > 0 ? 100 : 0);
       const pctEnt = av && av.requeridas ? av.pct : null;
@@ -249,6 +249,22 @@ const cicloDeConstancia = (datos = {}) =>
 const tieneFechaDeCiclo = (datos = {}) =>
   !!(datos.fecha_emision || datos.fecha_termino || datos.fecha_inicio);
 
+/* Las asignaciones son SEMESTRALES: cada ciclo escolar (agosto–julio)
+   se divide en dos periodos. */
+const PERIODOS = [
+  ["ago-ene", "Agosto – Enero"],
+  ["feb-jul", "Febrero – Julio"],
+];
+const nombrePeriodo = (p) => (PERIODOS.find(x => x[0] === p) || ["", p || "—"])[1];
+
+// Periodo al que pertenece una fecha (por omisión, hoy)
+function periodoDeFecha(fecha) {
+  const f = fecha ? new Date(fecha) : new Date();
+  const d = isNaN(f) ? new Date() : f;
+  const m = d.getMonth(); // 0 = enero
+  return (m >= 1 && m <= 6) ? "feb-jul" : "ago-ene"; // feb–jul / ago–ene
+}
+
 // Ciclos disponibles: los configurados más los que aparezcan en constancias
 function ciclosDisponibles(db) {
   const set = new Set(db.config.ciclos || []);
@@ -336,9 +352,10 @@ function encargosDe(db, asig) {
   }).sort((a, b) => a.actividad.localeCompare(b.actividad));
 }
 
-// Entregas del docente para un encargo y tipo dados
-const entregasDe = (db, docenteId, ciclo, clave, tipo) =>
+// Entregas del docente para un encargo y tipo dados, dentro de un semestre
+const entregasDe = (db, docenteId, ciclo, clave, tipo, periodo) =>
   db.entregas.filter(e => e.docenteId === docenteId && e.ciclo === ciclo
+    && (periodo ? (e.periodo || "ago-ene") === periodo : true)
     && e.encargoClave === clave && e.tipo === tipo);
 
 // Avance total de un docente sobre su asignación de un ciclo
@@ -350,16 +367,22 @@ function avanceDe(db, asig) {
       const n = e.requisitos[t];
       if (n === null) { indeterminado = true; continue; }
       req += n;
-      ent += Math.min(entregasDe(db, asig.docenteId, asig.ciclo, e.clave, t).length, n);
+      ent += Math.min(entregasDe(db, asig.docenteId, asig.ciclo, e.clave, t, asig.periodo || "ago-ene").length, n);
     }
   }
   return { requeridas: req, entregadas: ent, pct: req ? Math.round(100 * ent / req) : 0, indeterminado };
 }
 
-// La asignación vigente de un docente (la del ciclo más reciente)
-const asignacionDe = (db, docenteId) =>
-  db.asignaciones.filter(a => a.docenteId === docenteId)
-    .sort((a, b) => (b.ciclo || "").localeCompare(a.ciclo || ""))[0] || null;
+/* La asignación de un docente en un ciclo y periodo concretos. Sin
+   argumentos, la vigente: la del periodo actual, o la más reciente. */
+const asignacionDe = (db, docenteId, ciclo, periodo) => {
+  const suyas = db.asignaciones.filter(a => a.docenteId === docenteId);
+  if (ciclo) return suyas.find(a => a.ciclo === ciclo && (!periodo || (a.periodo || "ago-ene") === periodo)) || null;
+  const cicloHoy = cicloDeFecha(), periodoHoy = periodoDeFecha();
+  return suyas.find(a => a.ciclo === cicloHoy && (a.periodo || "ago-ene") === periodoHoy)
+    || suyas.sort((a, b) => (b.ciclo + (b.periodo || "")).localeCompare(a.ciclo + (a.periodo || "")))[0]
+    || null;
+};
 
 // Entregas que le faltan al docente (para la insignia del menú)
 function pendientesEntrega(db, docenteId) {
@@ -550,7 +573,10 @@ function Login() {
         <div className="text-center mb-6">
           <img src={LOGO} alt="CBTA No. 291" className="w-24 h-24 mx-auto mb-3 rounded-full bg-white p-1 shadow-lg" />
           <h1 className="text-white text-2xl font-bold leading-tight" style={{fontFamily:"'Archivo', sans-serif"}}>Mi portal<br />CBTA 291</h1>
-          <p className="text-slate-300 text-sm mt-1">Seguimiento de capacitación y expediente académico</p>
+          <p className="text-slate-300 text-sm mt-1 max-w-sm mx-auto">
+            Todo lo que necesita el docente en un solo lugar: capacitación, expedientes,
+            planeaciones, calendarios y más.
+          </p>
         </div>
         <Card className="p-6">
           <form onSubmit={entrar} className="space-y-4">
@@ -720,6 +746,7 @@ export default function App() {
     { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: pendValidacion },
     { id: "docentes", label: "Docentes", icono: Users },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
+    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
     { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
@@ -734,6 +761,7 @@ export default function App() {
     { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: pendValidacion },
     { id: "docentes", label: "Expedientes docentes", icono: Users },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
+    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
     { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
     { id: "reportes", label: "Reportes", icono: FileText },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
@@ -749,6 +777,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "subir", label: "Subir constancia", icono: Upload },
     { id: "cursos", label: "Mis cursos", icono: BookOpen },
+    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
     { id: "mi_asignacion", label: "Mi asignación", icono: FolderOpen, badge: pendientesEntrega(db, user.id) },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "expediente", label: "Mi perfil académico", icono: GraduationCap },
@@ -829,9 +858,11 @@ export default function App() {
         <main className="flex-1 p-4 lg:p-6 max-w-7xl mx-auto w-full">
           {pagina === "dashboard" && (user.rol === "jefe_academico"
             ? <DashboardAcademico db={db} irA={irA} />
-            : esRolValidador(user.rol)
-              ? <DashboardAdmin db={db} irA={irA} />
-              : <DashboardDocente db={db} user={user} irA={irA} />)}
+            : user.rol === "admin"
+              ? <DashboardGeneral db={db} irA={irA} />
+              : esRolValidador(user.rol)
+                ? <DashboardAdmin db={db} irA={irA} />
+                : <DashboardDocente db={db} user={user} irA={irA} />)}
           {pagina === "panel_entregas" && esRolAcademico(user.rol) && <DashboardAcademico db={db} irA={irA} />}
           {pagina === "subir" && <SubirConstancia db={db} user={user} mutar={mutar} irA={irA} />}
           {pagina === "cursos" && <MisCursos db={db} user={user} mutar={mutar} />}
@@ -844,6 +875,7 @@ export default function App() {
           {pagina === "avisos" && (esRolComunicador(user.rol)
             ? <Avisos db={db} user={user} mutar={mutar} />
             : <MisAvisos db={db} user={user} recargar={() => recargar(user.id)} />)}
+          {pagina === "calendario" && <CalendarioAcademico db={db} user={user} mutar={mutar} puedeEditar={esRolValidador(user.rol)} />}
           {pagina === "programas" && (esRolAcademico(user.rol)
             ? <ProgramasEstudio db={db} user={user} mutar={mutar} />
             : <ProgramasDocente db={db} />)}
@@ -997,6 +1029,33 @@ function usarFiltros(db) {
     </div>
   );
   return { certs, ciclo, UI };
+}
+
+/* El administrador general ve las dos áreas en un mismo tablero:
+   capacitación (Formación Docente) y planeaciones (Académico), más los
+   reportes descargables de cada una. */
+function DashboardGeneral({ db, irA }) {
+  const [area, setArea] = useState("formacion");
+  const tabs = [
+    ["formacion", "Formación Docente", Award],
+    ["academico", "Académico y Competencias", FileCheck],
+    ["reportes", "Reportes", Download],
+  ];
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1 bg-slate-100 rounded-xl p-1 overflow-x-auto">
+        {tabs.map(([id, txt, Ico]) => (
+          <button key={id} onClick={() => setArea(id)}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold whitespace-nowrap transition ${area === id ? "bg-white text-[#1a2340] shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+            <Ico size={14}/>{txt}
+          </button>
+        ))}
+      </div>
+      {area === "formacion" && <DashboardAdmin db={db} irA={irA} />}
+      {area === "academico" && <DashboardAcademico db={db} irA={irA} compacto />}
+      {area === "reportes" && <Reportes db={db} />}
+    </div>
+  );
 }
 
 function DashboardAdmin({ db, irA }) {
@@ -1981,6 +2040,12 @@ function Respaldo({ db, user }) {
         ruta: `Docentes/${d}/Planeaciones_y_planes/${nombreSeguro(e.actividad, 40)}__${e.tipo}__${nombreSeguro(e.titulo, 30)}`,
       });
     });
+    (db.calendarios || []).filter(c => c.archivoGuardado).forEach(c => {
+      items.push({
+        clave: "cal_" + c.id,
+        ruta: `Calendarios_academicos/${nombreSeguro(c.titulo, 50)}__${c.ciclo || ""}`,
+      });
+    });
     return items;
   };
 
@@ -2046,8 +2111,8 @@ function Respaldo({ db, user }) {
       });
       zip.file(`Indices/acuses_de_enterado_${sello}.csv`, csvTexto(fAcuses));
 
-      const fEnt = [["Docente", "Ciclo", "Actividad", "Tipo", "Archivo", "Fecha de entrega"]];
-      db.entregas.forEach(e => fEnt.push([nombreDe(e.docenteId), e.ciclo, e.actividad,
+      const fEnt = [["Docente", "Ciclo", "Semestre", "Actividad", "Tipo", "Archivo", "Fecha de entrega"]];
+      db.entregas.forEach(e => fEnt.push([nombreDe(e.docenteId), e.ciclo, nombrePeriodo(e.periodo || "ago-ene"), e.actividad,
         NOMBRE_TIPO_ENTREGA[e.tipo] || e.tipo, e.titulo, e.fecha ? new Date(e.fecha).toLocaleString("es-MX") : ""]));
       zip.file(`Indices/entregas_planeaciones_${sello}.csv`, csvTexto(fEnt));
 
@@ -2343,6 +2408,230 @@ function JefesDepartamento({ db, mutar }) {
 }
 
 /* ================================================================
+   CALENDARIO ACADÉMICO
+   Lo publica el Depto. de Formación Docente (o la administración
+   general) como imagen o PDF; todo el personal lo consulta en
+   pantalla, sin necesidad de descargarlo.
+   ================================================================ */
+
+const esImagenCal = (c) =>
+  (c.archivoTipo || "").startsWith("image/") ||
+  /\.(jpe?g|png|webp|gif)$/i.test(c.archivoNombre || "");
+
+// Visor: muestra imágenes directamente y PDFs incrustados en la página
+function VisorCalendario({ cal }) {
+  const [url, setUrl] = useState(null);
+  const [err, setErr] = useState(false);
+  const [nombre, setNombre] = useState("");
+
+  useEffect(() => {
+    let vivo = true, creada = null;
+    (async () => {
+      try {
+        const f = await leerArchivo("cal_" + cal.id);
+        if (!f || !vivo) { if (vivo) setErr(true); return; }
+        const bytes = atob(f.base64);
+        const arr = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+        creada = URL.createObjectURL(new Blob([arr], { type: f.mime }));
+        setUrl(creada); setNombre(f.nombre || "calendario");
+      } catch { if (vivo) setErr(true); }
+    })();
+    return () => { vivo = false; if (creada) URL.revokeObjectURL(creada); };
+  }, [cal.id]);
+
+  const descargar = () => {
+    const a = document.createElement("a");
+    a.href = url; a.download = nombre || (cal.titulo + ".pdf"); a.click();
+  };
+
+  if (err) return <p className="text-sm text-slate-400 py-6 text-center">El archivo de este calendario no está disponible.</p>;
+  if (!url) return (
+    <div className="h-64 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 text-sm gap-2">
+      <Loader2 size={16} className="animate-spin" /> Cargando calendario…
+    </div>
+  );
+
+  return (
+    <div className="space-y-2">
+      {esImagenCal(cal) ? (
+        <a href={url} target="_blank" rel="noreferrer" title="Abrir en tamaño completo">
+          <img src={url} alt={cal.titulo} className="w-full rounded-xl border border-slate-200" />
+        </a>
+      ) : (
+        <object data={url} type="application/pdf" className="w-full rounded-xl border border-slate-200" style={{ height: "70vh" }}>
+          {/* Algunos navegadores móviles no incrustan PDF: se ofrece abrirlo */}
+          <div className="p-6 text-center text-sm text-slate-500">
+            Tu navegador no puede mostrar el PDF aquí.
+            <a href={url} target="_blank" rel="noreferrer" className="text-indigo-600 font-semibold underline ml-1">Ábrelo en una pestaña nueva</a>.
+          </div>
+        </object>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button className={btnSec + " !px-3 !py-1.5"} onClick={descargar}><Download size={13}/>Descargar</button>
+        <a className={btnSec + " !px-3 !py-1.5"} href={url} target="_blank" rel="noreferrer"><Eye size={13}/>Ver en pantalla completa</a>
+      </div>
+    </div>
+  );
+}
+
+function CalendarioAcademico({ db, user, mutar, puedeEditar }) {
+  const [form, setForm] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [err, setErr] = useState("");
+
+  const lista = [...db.calendarios].sort((a, b) =>
+    (b.ciclo || "").localeCompare(a.ciclo || "") || (b.creadoEn || "").localeCompare(a.creadoEn || ""));
+  const [verId, setVerId] = useState(null);
+  const actual = lista.find(c => c.id === verId) || lista[0] || null;
+
+  const guardar = async () => {
+    const f = form;
+    if (!f.titulo.trim()) { setErr("Ponle un título al calendario."); return; }
+    if (!f._archivo && !f.archivoGuardado) { setErr("Selecciona la imagen o el PDF del calendario."); return; }
+    setGuardando(true); setErr("");
+    try {
+      const id = f.id || uid();
+      let guardado = f.archivoGuardado, tipo = f.archivoTipo, nombreArch = f.archivoNombre;
+      if (f._archivo) {
+        const b64 = await leerComoBase64(f._archivo);
+        if (b64.length > MAX_FILE_B64) { setErr("El archivo supera el límite (~7.5 MB). Comprímelo e inténtalo de nuevo."); setGuardando(false); return; }
+        const r = await guardarArchivo("cal_" + id, b64, f._archivo.type || "application/pdf", f._archivo.name);
+        if (!r.guardado) { setErr("No se pudo guardar el archivo."); setGuardando(false); return; }
+        guardado = true; tipo = f._archivo.type || ""; nombreArch = f._archivo.name;
+      }
+      const esNuevo = !db.calendarios.some(c => c.id === id);
+      await mutar(d => {
+        const base = { id, titulo: f.titulo.trim(), ciclo: f.ciclo, periodo: f.periodo || "",
+          nota: f.nota || "", archivoNombre: nombreArch, archivoTipo: tipo,
+          archivoGuardado: guardado, creadoEn: f.creadoEn || ahora(), publicadoPor: user.nombre };
+        const i = d.calendarios.findIndex(c => c.id === id);
+        if (i >= 0) d.calendarios[i] = { ...d.calendarios[i], ...base };
+        else d.calendarios.push(base);
+        if (esNuevo) {
+          d.users.filter(u => u.rol === "docente" && u.activo).forEach(u =>
+            notificar(d, u.id, `🗓️ Se publicó el calendario académico “${base.titulo}”.`));
+          registrarActividad(d, `Se publicó el calendario académico “${base.titulo}”.`);
+        }
+      });
+      setVerId(id);
+      setForm(null);
+    } catch (e) { setErr(e.message); }
+    setGuardando(false);
+  };
+
+  const eliminar = async (c) => {
+    if (!window.confirm(`¿Eliminar el calendario “${c.titulo}”?`)) return;
+    await mutar(d => { d.calendarios = d.calendarios.filter(x => x.id !== c.id); });
+    await eliminarArchivo("cal_" + c.id);
+    setVerId(null);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Calendario académico</h2>
+          <p className="text-sm text-slate-500">
+            {puedeEditar ? "Publica el calendario del ciclo; los docentes lo verán en pantalla y podrán descargarlo."
+              : "Calendario oficial del plantel. Puedes verlo aquí mismo o descargarlo."}
+          </p>
+        </div>
+        {puedeEditar && (
+          <button className={btnPrim} onClick={() => { setForm({ titulo: "", ciclo: db.config.cicloActual, periodo: "", nota: "", _archivo: null }); setErr(""); }}>
+            <Plus size={15}/>Publicar calendario
+          </button>
+        )}
+      </div>
+
+      {lista.length === 0 && (
+        <Card className="p-8 text-center text-sm text-slate-400">
+          {puedeEditar ? "Aún no has publicado ningún calendario." : "El calendario académico aún no ha sido publicado."}
+        </Card>
+      )}
+
+      {lista.length > 1 && (
+        <Card className="p-3 flex flex-wrap gap-2 items-center">
+          <span className="text-sm text-slate-500">Ver:</span>
+          <select className={inputCls + " !mt-0 !w-auto"} value={actual?.id || ""} onChange={e => setVerId(e.target.value)}>
+            {lista.map(c => <option key={c.id} value={c.id}>{c.titulo} · {c.ciclo}{c.periodo ? " · " + nombrePeriodo(c.periodo) : ""}</option>)}
+          </select>
+        </Card>
+      )}
+
+      {actual && (
+        <Card className="p-4 space-y-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h3 className="font-bold text-sm">{actual.titulo}</h3>
+              <p className="text-xs text-slate-500">
+                Ciclo {actual.ciclo}{actual.periodo ? ` · ${nombrePeriodo(actual.periodo)}` : ""}
+                {actual.publicadoPor && ` · publicado por ${actual.publicadoPor}`}
+              </p>
+            </div>
+            {puedeEditar && (
+              <div className="flex gap-1">
+                <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar"
+                  onClick={() => { setForm({ ...actual, _archivo: null }); setErr(""); }}><Pencil size={15}/></button>
+                <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500" title="Eliminar"
+                  onClick={() => eliminar(actual)}><Trash2 size={15}/></button>
+              </div>
+            )}
+          </div>
+          {actual.nota && <p className="text-sm text-slate-600 bg-slate-50 rounded-lg p-2.5">{actual.nota}</p>}
+          <VisorCalendario cal={actual} />
+        </Card>
+      )}
+
+      {form && (
+        <Modal titulo={form.id ? "Editar calendario" : "Publicar calendario académico"} onClose={() => setForm(null)}>
+          <div className="space-y-3">
+            <Campo label="Título">
+              <input className={inputCls} placeholder="Calendario académico 2026–2027"
+                value={form.titulo} onChange={e => setForm({ ...form, titulo: e.target.value })} />
+            </Campo>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Campo label="Ciclo escolar">
+                <select className={inputCls} value={form.ciclo} onChange={e => setForm({ ...form, ciclo: e.target.value })}>
+                  {ciclosDisponibles(db).map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </Campo>
+              <Campo label="Semestre (opcional)">
+                <select className={inputCls} value={form.periodo || ""} onChange={e => setForm({ ...form, periodo: e.target.value })}>
+                  <option value="">Todo el ciclo</option>
+                  {PERIODOS.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
+                </select>
+              </Campo>
+            </div>
+            <Campo label="Nota (opcional)">
+              <input className={inputCls} placeholder="Vigente a partir del 17 de agosto"
+                value={form.nota || ""} onChange={e => setForm({ ...form, nota: e.target.value })} />
+            </Campo>
+            <Campo label="Archivo: imagen o PDF">
+              <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" className="text-sm"
+                onChange={e => setForm({ ...form, _archivo: e.target.files[0] || null })} />
+              <p className="text-[11px] text-slate-400 mt-1">
+                Las imágenes se muestran directamente; los PDF se incrustan en la página. En ambos
+                casos el docente puede descargarlo.
+              </p>
+              {form.archivoNombre && !form._archivo &&
+                <p className="text-xs text-slate-500 mt-1">Archivo actual: {form.archivoNombre}</p>}
+            </Campo>
+            {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <button className={btnSec} onClick={() => setForm(null)}>Cancelar</button>
+            <button className={btnPrim} disabled={guardando} onClick={guardar}>
+              {guardando && <Loader2 size={14} className="animate-spin"/>}Guardar
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================
    PROGRAMAS DE ESTUDIO (repositorio)
    ================================================================ */
 
@@ -2398,9 +2687,19 @@ function ProgramasEstudio({ db, user, mutar }) {
     if (!archivos.length) return;
     setResumen(null); setErr("");
     let ok = 0, asigs = 0, revisar = 0, fallidos = [], motivos = [], funcionVieja = false;
+    let cuotaAgotada = false;
+    /* El nivel gratuito de Gemini permite unas pocas peticiones por minuto.
+       Se deja un respiro entre documentos para no toparlo; la función Edge
+       además espera y reintenta sola cuando ocurre. */
+    const RESPIRO_MS = 6000;
     for (let i = 0; i < archivos.length; i++) {
       const f = archivos[i];
       setCola({ total: archivos.length, hechos: i, actual: f.name });
+      if (i > 0) {
+        setCola({ total: archivos.length, hechos: i, actual: f.name, esperando: true });
+        await new Promise(r => setTimeout(r, RESPIRO_MS));
+        setCola({ total: archivos.length, hechos: i, actual: f.name });
+      }
       try {
         const b64 = await leerComoBase64(f);
         if (b64.length > MAX_FILE_B64) { fallidos.push(f.name + " (supera ~7.5 MB)"); continue; }
@@ -2424,7 +2723,10 @@ function ProgramasEstudio({ db, user, mutar }) {
           } else if (!asignaturas.length) {
             motivo = "La IA respondió sin asignaturas";
           }
-        } catch (e) { motivo = e.message || "Error del servicio de IA"; }
+        } catch (e) {
+          motivo = e.message || "Error del servicio de IA";
+          if (/límite de uso|cuota|quota|429/i.test(motivo)) cuotaAgotada = true;
+        }
         const id = uid();
         const r = await guardarArchivo("prog_" + id, b64, f.type || "application/pdf", f.name);
         if (!r.guardado) { fallidos.push(f.name + " (no se pudo guardar)"); continue; }
@@ -2438,10 +2740,16 @@ function ProgramasEstudio({ db, user, mutar }) {
         revisar += asignaturas.filter(a => a.numPlaneaciones == null).length + (asignaturas.length ? 0 : 1);
         if (motivo === "funcion_vieja") funcionVieja = true;
         else if (motivo) motivos.push(f.name + ": " + motivo);
+        if (cuotaAgotada) {
+          // El PDF ya quedó guardado; solo faltó la lectura con IA.
+          // Se detiene la cola: insistir solo consumiría más intentos.
+          fallidos.push(`Se detuvo en “${f.name}”: quedan ${archivos.length - i - 1} sin leer.`);
+          break;
+        }
       } catch (e) { fallidos.push(f.name + " (" + e.message + ")"); }
     }
     setCola(null);
-    setResumen({ ok, asigs, revisar, fallidos, motivos, funcionVieja });
+    setResumen({ ok, asigs, revisar, fallidos, motivos, funcionVieja, cuotaAgotada });
   };
 
   const [reintentando, setReintentando] = useState(null);
@@ -2539,9 +2847,13 @@ function ProgramasEstudio({ db, user, mutar }) {
           <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
             <div className="h-full bg-[#E8871E] transition-all" style={{ width: (100 * cola.hechos / cola.total) + "%" }} />
           </div>
-          <p className="text-[11px] text-slate-400 truncate">{cola.actual}</p>
+          <p className="text-[11px] text-slate-400 truncate">
+            {cola.esperando ? "Pausa breve para respetar el límite de la API…" : cola.actual}
+          </p>
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
-            Cada programa se lee con IA y se guarda de inmediato. No cierres esta pestaña.
+            Cada programa se lee con IA y se guarda de inmediato. Entre uno y otro se hace una pausa
+            corta para no exceder el límite gratuito de Gemini, así que con muchos archivos el
+            proceso tarda. No cierres esta pestaña.
           </p>
         </Card>
       )}
@@ -2552,6 +2864,13 @@ function ProgramasEstudio({ db, user, mutar }) {
         <div className="text-sm bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl p-3">
           <b>{resumen.ok} programa(s) subidos</b> con {resumen.asigs} asignatura(s) detectada(s).
           {resumen.revisar > 0 && <span className="block text-amber-700 mt-1">⚠ {resumen.revisar} asignatura(s) sin número de planeaciones: complétalas con el lápiz.</span>}
+          {resumen.cuotaAgotada && (
+            <span className="block text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2 mt-2">
+              <b>Se alcanzó el límite de la API de Gemini.</b> Los PDF sí quedaron guardados; lo que
+              faltó fue la lectura automática. Espera unos minutos y usa el botón ✨ de cada programa
+              para reintentar, o captura las asignaturas a mano con el lápiz.
+            </span>
+          )}
           {resumen.funcionVieja && (
             <span className="block text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2 mt-2">
               <b>La función “extraer” de Supabase no está actualizada.</b> Está respondiendo con el
@@ -2717,9 +3036,10 @@ function ProgramasDocente({ db }) {
    Panorama del cumplimiento de planeaciones, planes e informes.
    ================================================================ */
 
-function DashboardAcademico({ db, irA }) {
+function DashboardAcademico({ db, irA, compacto = false }) {
   const [cicloSel, setCicloSel] = useState(db.config.cicloActual);
-  const delCiclo = db.asignaciones.filter(a => a.ciclo === cicloSel);
+  const [periodoSel, setPeriodoSel] = useState(periodoDeFecha());
+  const delCiclo = db.asignaciones.filter(a => a.ciclo === cicloSel && (a.periodo || "ago-ene") === periodoSel);
 
   const filas = delCiclo.map(a => {
     const av = avanceDe(db, a);
@@ -2735,45 +3055,84 @@ function DashboardAcademico({ db, irA }) {
   const sinVinculo = delCiclo.filter(a => !a.docenteId).length;
   const conPendPrograma = filas.filter(f => f.sinPrograma > 0).length;
 
+  /* Reparto por tipo de entrega: muestra dónde está el rezago
+     (planeaciones, planes de trabajo o informes). */
+  const porTipo = ["planeacion", "plan", "informe"].map(t => {
+    let req = 0, ent = 0;
+    filas.forEach(f => f.encargos.forEach(e => {
+      const n = e.requisitos[t];
+      if (n === null || !n) return;
+      req += n;
+      ent += Math.min(entregasDe(db, f.asig.docenteId, cicloSel, e.clave, t, periodoSel).length, n);
+    }));
+    return { nombre: NOMBRE_TIPO_ENTREGA[t] + "es", requeridas: req, entregadas: ent,
+      pendientes: Math.max(req - ent, 0), pct: req ? Math.round(100 * ent / req) : 0 };
+  }).filter(x => x.requeridas > 0);
+
+  // Cuántos docentes hay en cada tramo de cumplimiento
+  const tramos = [
+    { nombre: "Completo (100%)", color: "#059669", n: filas.filter(f => f.av.pct >= 100).length },
+    { nombre: "Avanzado (60–99%)", color: "#E8871E", n: filas.filter(f => f.av.pct >= 60 && f.av.pct < 100).length },
+    { nombre: "Inicial (1–59%)", color: "#eab308", n: filas.filter(f => f.av.pct > 0 && f.av.pct < 60).length },
+    { nombre: "Sin entregas", color: "#e11d48", n: filas.filter(f => f.av.pct === 0).length },
+  ].filter(t => t.n > 0);
+
+  // Reparto de la carga por tipo de actividad
+  const porActividad = [
+    { nombre: "Frente a grupo", color: "#1a2340", n: 0 },
+    { nombre: "Módulos", color: "#E8871E", n: 0 },
+    { nombre: "Comisiones", color: "#64748b", n: 0 },
+  ];
+  filas.forEach(f => f.encargos.forEach(e => {
+    if (e.tipo === "asignatura") porActividad[0].n++;
+    else if (e.tipo === "modulo") porActividad[1].n++;
+    else porActividad[2].n++;
+  }));
+
   const exportarResumen = () => {
-    const filasCSV = [["Docente", "Ciclo", "Actividades", "Horas", "Entregas requeridas", "Entregas recibidas", "% de avance", "Requisitos por definir"]];
-    filas.forEach(f => filasCSV.push([
-      f.asig.nombreExtraido, cicloSel, f.encargos.length, f.asig.totalHoras ?? "",
-      f.av.requeridas, f.av.entregadas, f.av.pct + "%",
+    const fs = [["Lugar", "Docente", "Ciclo", "Semestre", "Actividades", "Horas", "Entregas requeridas", "Entregas recibidas", "% de avance", "Requisitos por definir"]];
+    [...filas].sort((a, b) => b.av.pct - a.av.pct).forEach((f, i) => fs.push([
+      i + 1, f.asig.nombreExtraido, cicloSel, nombrePeriodo(periodoSel), f.encargos.length,
+      f.asig.totalHoras ?? "", f.av.requeridas, f.av.entregadas, f.av.pct + "%",
       f.sinPrograma > 0 ? `${f.sinPrograma} asignatura(s) sin programa` : "",
     ]));
-    descargarCSV(`cumplimiento_planeaciones_${cicloSel}`, filasCSV);
+    descargarCSV(`cumplimiento_planeaciones_${cicloSel}_${periodoSel}`, fs);
   };
 
   const exportarDetalle = () => {
-    const filasCSV = [["Docente", "Actividad", "Tipo", "Grupos", "Horas", "Tipo de entrega", "Requeridas", "Recibidas", "Archivos recibidos"]];
+    const fs = [["Docente", "Ciclo", "Semestre", "Actividad", "Tipo", "Grupos", "Horas", "Tipo de entrega", "Requeridas", "Recibidas", "Archivos recibidos"]];
     filas.forEach(f => f.encargos.forEach(e => {
       [["planeacion", e.requisitos.planeacion], ["plan", e.requisitos.plan], ["informe", e.requisitos.informe]]
         .filter(([, n]) => n === null || n > 0)
         .forEach(([t, n]) => {
-          const ent = f.asig.docenteId ? entregasDe(db, f.asig.docenteId, cicloSel, e.clave, t) : [];
-          filasCSV.push([
-            f.asig.nombreExtraido, e.actividad,
+          const ent = f.asig.docenteId ? entregasDe(db, f.asig.docenteId, cicloSel, e.clave, t, periodoSel) : [];
+          fs.push([f.asig.nombreExtraido, cicloSel, nombrePeriodo(periodoSel), e.actividad,
             e.tipo === "modulo" ? "Módulo profesional" : e.tipo === "comision" ? "Comisión / cargo" : "Frente a grupo",
             [...new Set(e.grupos)].join(" "), e.horas,
             NOMBRE_TIPO_ENTREGA[t], n === null ? "Por definir" : n, ent.length,
-            ent.map(x => x.titulo).join(" | "),
-          ]);
+            ent.map(x => x.titulo).join(" | ")]);
         });
     }));
-    descargarCSV(`detalle_entregas_${cicloSel}`, filasCSV);
+    descargarCSV(`detalle_entregas_${cicloSel}_${periodoSel}`, fs);
   };
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Cumplimiento de planeaciones</h2>
-          <p className="text-sm text-slate-500">Avance de entregas de planeaciones, planes de trabajo e informes.</p>
+          <h2 className={compacto ? "text-lg font-bold" : "text-xl font-bold"} style={{fontFamily:"'Archivo', sans-serif"}}>
+            Cumplimiento de planeaciones
+          </h2>
+          <p className="text-sm text-slate-500">Avance de planeaciones, planes de trabajo e informes.</p>
         </div>
-        <select className={inputCls + " !mt-0 !w-auto"} value={cicloSel} onChange={e => setCicloSel(e.target.value)}>
-          {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
-        </select>
+        <div className="flex flex-wrap gap-2">
+          <select className={inputCls + " !mt-0 !w-auto"} value={cicloSel} onChange={e => setCicloSel(e.target.value)}>
+            {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+          </select>
+          <select className={inputCls + " !mt-0 !w-auto"} value={periodoSel} onChange={e => setPeriodoSel(e.target.value)}>
+            {PERIODOS.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
+          </select>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -2786,39 +3145,106 @@ function DashboardAcademico({ db, irA }) {
       {(sinVinculo > 0 || conPendPrograma > 0) && (
         <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-1">
           {sinVinculo > 0 && <p>⚠ <b>{sinVinculo}</b> asignación(es) sin cuenta vinculada: esos docentes no pueden ver ni subir sus entregas. Corrígelo en <button className="underline font-semibold" onClick={() => irA("asignaciones")}>Asignaciones</button>.</p>}
-          {conPendPrograma > 0 && <p>⚠ <b>{conPendPrograma}</b> docente(s) tienen asignaturas sin programa en el repositorio (o sin número de planeaciones): su requisito aún no se puede calcular. Súbelos en <button className="underline font-semibold" onClick={() => irA("programas")}>Programas de Estudio</button>.</p>}
+          {conPendPrograma > 0 && <p>⚠ <b>{conPendPrograma}</b> docente(s) con asignaturas sin programa en el repositorio: su requisito no se puede calcular. Súbelos en <button className="underline font-semibold" onClick={() => irA("programas")}>Programas de Estudio</button>.</p>}
         </div>
       )}
 
-      <Card className="p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-          <h3 className="font-bold text-sm">Avance por docente</h3>
-          <div className="flex gap-2">
-            <button className={btnSec + " !px-3 !py-1.5"} onClick={exportarResumen}><Download size={13}/>Resumen CSV</button>
-            <button className={btnSec + " !px-3 !py-1.5"} onClick={exportarDetalle}><Download size={13}/>Detalle CSV</button>
+      {filas.length === 0 ? (
+        <Card className="p-8 text-center text-sm text-slate-400">
+          No hay asignaciones cargadas en {nombrePeriodo(periodoSel)} del ciclo {cicloSel}.
+        </Card>
+      ) : (
+        <>
+          <div className="grid lg:grid-cols-2 gap-4">
+            {porTipo.length > 0 && (
+              <Card className="p-4">
+                <h3 className="font-bold text-sm mb-3">Avance por tipo de entrega</h3>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={porTipo} margin={{ top: 4, right: 8, left: -18, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                    <XAxis dataKey="nombre" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip formatter={(v, n) => [v, n === "entregadas" ? "Recibidas" : "Pendientes"]} />
+                    <Legend formatter={v => v === "entregadas" ? "Recibidas" : "Pendientes"} wrapperStyle={{ fontSize: 12 }} />
+                    <Bar dataKey="entregadas" stackId="a" fill="#059669" radius={[0, 0, 0, 0]} />
+                    <Bar dataKey="pendientes" stackId="a" fill="#e2e8f0" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </Card>
+            )}
+
+            <Card className="p-4">
+              <h3 className="font-bold text-sm mb-3">Docentes por nivel de cumplimiento</h3>
+              <ResponsiveContainer width="100%" height={220}>
+                <PieChart>
+                  <Pie data={tramos} dataKey="n" nameKey="nombre" cx="50%" cy="50%" outerRadius={78} label={({ n }) => n}>
+                    {tramos.map((t, i) => <Cell key={i} fill={t.color} />)}
+                  </Pie>
+                  <Tooltip formatter={(v, n) => [`${v} docente(s)`, n]} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </Card>
           </div>
-        </div>
-        {filas.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">No hay asignaciones cargadas en este ciclo.</p>}
-        {filas.map(f => (
-          <div key={f.asig.id} className="flex flex-wrap items-center gap-3 py-2.5 border-b border-slate-100 last:border-0">
-            <div className="flex-1 min-w-[200px]">
-              <div className="text-sm font-medium">{f.asig.nombreExtraido}
-                {!f.asig.docenteId && <span className="text-[10px] font-bold text-amber-600 ml-1">⚠ SIN CUENTA</span>}
+
+          <Card className="p-4">
+            <h3 className="font-bold text-sm mb-3">Avance por docente</h3>
+            <ResponsiveContainer width="100%" height={Math.max(220, filas.length * 26)}>
+              <BarChart data={filas.map(f => ({
+                nombre: (f.asig.nombreExtraido || "").split(" ").slice(0, 2).join(" "),
+                pct: f.av.pct, entregadas: f.av.entregadas, requeridas: f.av.requeridas,
+              }))} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
+                <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
+                <YAxis type="category" dataKey="nombre" width={110} tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v, n, p) => [`${v}% (${p.payload.entregadas} de ${p.payload.requeridas})`, "Avance"]} />
+                <Bar dataKey="pct" radius={[0, 6, 6, 0]}>
+                  {filas.map((f, i) => (
+                    <Cell key={i} fill={f.av.pct >= 100 ? "#059669" : f.av.pct >= 60 ? "#E8871E" : "#e11d48"} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+
+          <div className="grid lg:grid-cols-2 gap-4">
+            <Card className="p-4">
+              <h3 className="font-bold text-sm mb-3">Reparto de la carga académica</h3>
+              <ResponsiveContainer width="100%" height={200}>
+                <PieChart>
+                  <Pie data={porActividad.filter(a => a.n > 0)} dataKey="n" nameKey="nombre" cx="50%" cy="50%"
+                    innerRadius={45} outerRadius={72} label={({ n }) => n}>
+                    {porActividad.filter(a => a.n > 0).map((a, i) => <Cell key={i} fill={a.color} />)}
+                  </Pie>
+                  <Tooltip formatter={(v, n) => [`${v} encargo(s)`, n]} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                </PieChart>
+              </ResponsiveContainer>
+            </Card>
+
+            <Card className="p-4">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="font-bold text-sm">Reportes</h3>
               </div>
-              <div className="text-xs text-slate-500">
-                {f.encargos.length} actividades · {f.av.entregadas} de {f.av.requeridas} entregas
-                {f.sinPrograma > 0 && <span className="text-amber-600"> · {f.sinPrograma} sin programa</span>}
+              <p className="text-xs text-slate-500 mb-3">
+                Descarga el cumplimiento de {nombrePeriodo(periodoSel)} en formato Excel.
+              </p>
+              <div className="space-y-2">
+                <button className={btnSec + " w-full justify-start"} onClick={exportarResumen}>
+                  <Download size={14}/>Resumen por docente
+                </button>
+                <button className={btnSec + " w-full justify-start"} onClick={exportarDetalle}>
+                  <Download size={14}/>Detalle por actividad y entrega
+                </button>
               </div>
-            </div>
-            <div className="w-32">
-              <div className="flex justify-between text-[11px] text-slate-500 mb-0.5"><span>{f.av.pct}%</span></div>
-              <div className="w-full h-2 rounded-full bg-slate-200 overflow-hidden">
-                <div className={`h-full ${f.av.pct >= 100 ? "bg-emerald-600" : f.av.pct >= 60 ? "bg-[#E8871E]" : "bg-rose-500"}`} style={{ width: Math.min(f.av.pct, 100) + "%" }} />
+              <div className="mt-4 pt-3 border-t border-slate-100 text-xs text-slate-500 space-y-1">
+                <div className="flex justify-between"><span>Con rezago (menos del 60%)</span><b>{filas.filter(f => f.av.pct < 60).length}</b></div>
+                <div className="flex justify-between"><span>Entregas pendientes</span><b>{Math.max(totReq - totEnt, 0)}</b></div>
               </div>
-            </div>
+            </Card>
           </div>
-        ))}
-      </Card>
+        </>
+      )}
     </div>
   );
 }
@@ -2833,18 +3259,25 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
   const [extraidos, setExtraidos] = useState(null); // [{nombre, items, total_horas, docenteId}]
   const [loteArchivo, setLoteArchivo] = useState(null);
   const [cicloSel, setCicloSel] = useState(db.config.cicloActual);
+  const [periodoSel, setPeriodoSel] = useState(periodoDeFecha());
   const [err, setErr] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [detalle, setDetalle] = useState(null); // asignación abierta
+  const [ultimoIntento, setUltimoIntento] = useState(null); // para reintentar sin volver a elegir archivo
 
   const docentes = db.users.filter(u => u.rol === "docente" && u.activo);
-  const delCiclo = db.asignaciones.filter(a => a.ciclo === cicloSel);
+  const delCiclo = db.asignaciones.filter(a => a.ciclo === cicloSel && (a.periodo || "ago-ene") === periodoSel);
 
   const procesar = async (file) => {
     if (!file) return;
     setErr("");
     const b64 = await leerComoBase64(file);
     if (b64.length > MAX_FILE_B64) { setErr("El PDF supera el límite (~7.5 MB). Divídelo o comprímelo."); return; }
+    await procesarB64({ file, b64 });
+  };
+
+  const procesarB64 = async ({ file, b64 }) => {
+    setErr("");
     setLoteArchivo({ file, b64 });
     setFase("ia"); setProgreso(30);
     const timer = setInterval(() => setProgreso(p => Math.min(p + 4, 92)), 700);
@@ -2861,7 +3294,14 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
       setExtraidos(lista); setFase("revisar");
     } catch (e) {
       clearInterval(timer);
-      setErr("No se pudo leer el documento: " + e.message); setFase("lista");
+      const msg = e.message || "";
+      if (/límite de uso|cuota|quota|429|RESOURCE_EXHAUSTED/i.test(msg)) {
+        setErr("cuota");
+        setUltimoIntento({ file, b64 });
+      } else {
+        setErr("No se pudo leer el documento: " + msg);
+      }
+      setFase("lista");
     }
   };
 
@@ -2875,18 +3315,19 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
       await mutar(d => {
         for (const x of extraidos) {
           // Si el docente ya tenía asignación en este ciclo, se reemplaza
-          d.asignaciones = d.asignaciones.filter(a => !(a.ciclo === cicloSel && a.docenteId && a.docenteId === x.docenteId));
+          d.asignaciones = d.asignaciones.filter(a => !(a.ciclo === cicloSel
+            && (a.periodo || "ago-ene") === periodoSel && a.docenteId && a.docenteId === x.docenteId));
           d.asignaciones.push({
-            id: uid(), loteId, ciclo: cicloSel,
+            id: uid(), loteId, ciclo: cicloSel, periodo: periodoSel,
             docenteId: x.docenteId || null,
             nombreExtraido: (x.titulo ? x.titulo + " " : "") + x.nombre,
             items: x.items, totalHoras: x.totalHoras,
             creadoEn: ahora(), creadoPor: user.nombre,
           });
           if (x.docenteId) notificar(d, x.docenteId,
-            `📋 Ya está disponible tu asignación del ciclo ${cicloSel}. Revisa en “Mi asignación” qué planeaciones, planes e informes te corresponden.`);
+            `📋 Ya está disponible tu asignación del semestre ${nombrePeriodo(periodoSel)} (ciclo ${cicloSel}). Revisa en “Mi asignación” qué planeaciones, planes e informes te corresponden.`);
         }
-        registrarActividad(d, `Se cargaron asignaciones del ciclo ${cicloSel} (${extraidos.length} docentes).`);
+        registrarActividad(d, `Se cargaron asignaciones de ${nombrePeriodo(periodoSel)} del ciclo ${cicloSel} (${extraidos.length} docentes).`);
       });
       setFase("lista"); setExtraidos(null); setLoteArchivo(null);
     } catch (e) { setErr(e.message); }
@@ -2919,7 +3360,26 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
         )}
       </div>
 
-      {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
+      {err === "cuota" ? (
+        <div className="text-sm bg-amber-50 border border-amber-200 text-amber-900 rounded-xl p-3 space-y-2">
+          <p className="flex items-start gap-1.5">
+            <AlertTriangle size={15} className="mt-0.5 shrink-0"/>
+            <span>
+              <b>Se alcanzó el límite de uso de la API de Gemini.</b> El nivel gratuito permite unas
+              pocas lecturas por minuto. Espera un momento y vuelve a intentarlo; el documento no se
+              perdió. Si el aviso se repite todo el día, es la cuota diaria, que se restablece de
+              madrugada.
+            </span>
+          </p>
+          {ultimoIntento && (
+            <button className={btnSec + " !px-3 !py-1.5"} onClick={() => { setErr(""); procesarB64(ultimoIntento); }}>
+              <Sparkles size={13}/>Reintentar con el mismo PDF
+            </button>
+          )}
+        </div>
+      ) : err ? (
+        <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0"/>{err}</p>
+      ) : null}
 
       {fase === "ia" && (
         <Card className="p-6 text-center space-y-3">
@@ -2936,15 +3396,21 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
         <Card className="p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <h3 className="font-bold text-sm">Revisa lo extraído · {extraidos.length} docente(s)</h3>
-            <div className="flex items-center gap-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
               <span className="text-slate-500">Ciclo:</span>
               <select className={inputCls + " !mt-0 !w-auto"} value={cicloSel} onChange={e => setCicloSel(e.target.value)}>
                 {ciclosDisponibles(db).map(c => <option key={c} value={c}>{c}</option>)}
               </select>
+              <span className="text-slate-500">Semestre:</span>
+              <select className={inputCls + " !mt-0 !w-auto"} value={periodoSel} onChange={e => setPeriodoSel(e.target.value)}>
+                {PERIODOS.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
+              </select>
             </div>
           </div>
           <p className="text-xs text-slate-500">
-            Verifica que cada docente del PDF esté vinculado a su cuenta. Los datos con ⚠ requieren tu atención.
+            Se guardarán en <b>{nombrePeriodo(periodoSel)}</b> del ciclo <b>{cicloSel}</b>; si un docente
+            ya tenía asignación en ese semestre, se reemplaza. Verifica que cada docente esté
+            vinculado a su cuenta: los datos con ⚠ requieren tu atención.
           </p>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -2986,7 +3452,11 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
             <select className={inputCls + " !mt-0 !w-auto"} value={cicloSel} onChange={e => setCicloSel(e.target.value)}>
               {ciclosDisponibles(db).map(c => <option key={c} value={c}>{c}</option>)}
             </select>
-            <span className="text-xs text-slate-400 ml-auto">{delCiclo.length} asignación(es) en este ciclo</span>
+            <span className="text-sm text-slate-500">Semestre:</span>
+            <select className={inputCls + " !mt-0 !w-auto"} value={periodoSel} onChange={e => setPeriodoSel(e.target.value)}>
+              {PERIODOS.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
+            </select>
+            <span className="text-xs text-slate-400 ml-auto">{delCiclo.length} asignación(es) en este semestre</span>
           </Card>
           <Card className="p-4">
             {delCiclo.length === 0 && <p className="text-sm text-slate-400 py-8 text-center">No hay asignaciones cargadas en este ciclo.</p>}
@@ -3066,7 +3536,7 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose }) {
               {e.programa && <p className="text-[11px] text-slate-400 mt-1">Programa: {e.programa.programa?.nombre} · {e.programa.nombre}</p>}
               <div className="mt-2 space-y-1">
                 {filas.map(([t, n]) => {
-                  const ent = asig.docenteId ? entregasDe(db, asig.docenteId, asig.ciclo, e.clave, t) : [];
+                  const ent = asig.docenteId ? entregasDe(db, asig.docenteId, asig.ciclo, e.clave, t, asig.periodo || "ago-ene") : [];
                   return (
                     <div key={t} className="flex items-center gap-2 text-sm">
                       <span className="w-32 text-slate-500">{NOMBRE_TIPO_ENTREGA[t]}{n !== 1 ? "es" : ""}:</span>
@@ -3112,9 +3582,12 @@ function VerEntregaBtn({ entrega }) {
 
 function MiAsignacion({ db, user, mutar }) {
   const misAsigs = db.asignaciones.filter(a => a.docenteId === user.id)
-    .sort((a, b) => (b.ciclo || "").localeCompare(a.ciclo || ""));
-  const [cicloSel, setCicloSel] = useState(misAsigs[0]?.ciclo || db.config.cicloActual);
-  const asig = misAsigs.find(a => a.ciclo === cicloSel) || null;
+    .sort((a, b) => (b.ciclo + (b.periodo || "")).localeCompare(a.ciclo + (a.periodo || "")));
+  const vigente = asignacionDe(db, user.id);
+  const [sel, setSel] = useState(vigente ? `${vigente.ciclo}|${vigente.periodo || "ago-ene"}`
+    : `${db.config.cicloActual}|${periodoDeFecha()}`);
+  const [cicloSel, periodoSel] = sel.split("|");
+  const asig = misAsigs.find(a => a.ciclo === cicloSel && (a.periodo || "ago-ene") === periodoSel) || null;
   const [subiendo, setSubiendo] = useState(null); // clave del slot en proceso
   const [err, setErr] = useState("");
 
@@ -3131,7 +3604,8 @@ function MiAsignacion({ db, user, mutar }) {
       if (!r.guardado) { setErr("No se pudo guardar el archivo. Inténtalo de nuevo."); setSubiendo(null); return; }
       await mutar(d => {
         d.entregas.push({
-          id, docenteId: user.id, ciclo: asig.ciclo, encargoClave: encargo.clave,
+          id, docenteId: user.id, ciclo: asig.ciclo, periodo: asig.periodo || "ago-ene",
+          encargoClave: encargo.clave,
           actividad: encargo.actividad, tipo, titulo: file.name,
           estado: "entregada", fecha: ahora(),
         });
@@ -3166,11 +3640,13 @@ function MiAsignacion({ db, user, mutar }) {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Mi asignación</h2>
-          <p className="text-sm text-slate-500">{asig ? `${asig.totalHoras ?? "—"} horas · ${encargos.length} actividades` : "Sin asignación en este ciclo"}</p>
+            <p className="text-sm text-slate-500">{asig ? `${asig.totalHoras ?? "—"} horas · ${encargos.length} actividades` : "Sin asignación en este semestre"}</p>
         </div>
-        <select className={inputCls + " !mt-0 !w-auto"} value={cicloSel} onChange={e => setCicloSel(e.target.value)}>
-          {[...new Set([...misAsigs.map(a => a.ciclo), db.config.cicloActual])].sort().reverse()
-            .map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+        <select className={inputCls + " !mt-0 !w-auto"} value={sel} onChange={e => setSel(e.target.value)}>
+          {[...new Set([...misAsigs.map(a => `${a.ciclo}|${a.periodo || "ago-ene"}`),
+                        `${db.config.cicloActual}|${periodoDeFecha()}`])]
+            .sort().reverse()
+            .map(v => <option key={v} value={v}>{nombrePeriodo(v.split("|")[1])} · {v.split("|")[0]}</option>)}
         </select>
       </div>
 
@@ -3217,7 +3693,7 @@ function MiAsignacion({ db, user, mutar }) {
             )}
             <div className="space-y-2 mt-2">
               {filas.map(([t, n]) => {
-                const ent = entregasDe(db, user.id, asig.ciclo, e.clave, t);
+                const ent = entregasDe(db, user.id, asig.ciclo, e.clave, t, asig.periodo || "ago-ene");
                 const faltan = n === null ? 0 : Math.max(n - ent.length, 0);
                 const slot = e.clave + "|" + t;
                 return (
@@ -3953,7 +4429,118 @@ function Docentes({ db, mutar, irA, esAdmin = true }) {
   const [editando, setEditando] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [errAlta, setErrAlta] = useState("");
-  const docentes = db.users.filter(u => u.rol === "docente");
+  const [orden, setOrden] = useState("az");
+  const [qD, setQD] = useState("");
+  const [respaldando, setRespaldando] = useState(null);
+
+  /* Orden por APELLIDO: en México se usan dos apellidos al final del
+     nombre, así que se toman las dos últimas palabras. Con nombres
+     compuestos ("Yahaira Aracely Domínguez Tello") esto acierta, mientras
+     que tomar todo menos la primera palabra fallaría. */
+  const claveApellido = (n) => {
+    const ps = (n || "").trim().split(/\s+/);
+    if (ps.length <= 1) return n || "";
+    const apellidos = ps.length >= 3 ? ps.slice(-2) : ps.slice(-1);
+    const nombres = ps.slice(0, ps.length - apellidos.length);
+    return apellidos.join(" ") + " " + nombres.join(" ");
+  };
+  const cmp = (a, b) => a.localeCompare(b, "es", { sensitivity: "base" });
+
+  const docentes = db.users.filter(u => u.rol === "docente")
+    .filter(u => !qD || normTexto(u.nombre).includes(normTexto(qD))
+      || normTexto(u.email).includes(normTexto(qD))
+      || normTexto(u.area || "").includes(normTexto(qD)))
+    .sort((a, b) => {
+      if (orden === "az") return cmp(a.nombre || "", b.nombre || "");
+      if (orden === "za") return cmp(b.nombre || "", a.nombre || "");
+      if (orden === "apellido") return cmp(claveApellido(a.nombre), claveApellido(b.nombre));
+      if (orden === "area") return cmp(a.area || "zzz", b.area || "zzz") || cmp(a.nombre || "", b.nombre || "");
+      if (orden === "expediente") return completitudExpediente(db, a.id).pct - completitudExpediente(db, b.id).pct;
+      return 0;
+    });
+
+  // Respaldo del expediente de un solo docente
+  const respaldarDocente = async (u) => {
+    setRespaldando(u.id);
+    try {
+      const { default: JSZip } = await import("jszip");
+      const zip = new JSZip();
+      const sello = new Date().toISOString().slice(0, 10);
+      const carpeta = nombreSeguro(u.nombre, 40);
+
+      const certs = db.certs.filter(c => c.docenteId === u.id && !c._publico);
+      const grados = db.grados.filter(g => g.docenteId === u.id);
+      const comp = db.comp.filter(c => c.docenteId === u.id);
+      const entregas = db.entregas.filter(e => e.docenteId === u.id);
+
+      const fC = [["Curso", "Institución", "Horas", "Categoría", "Modalidad", "Fecha de emisión", "Folio", "Ciclo", "Estado"]];
+      certs.forEach(c => fC.push([c.datos.curso, c.datos.institucion, c.datos.horas, c.datos.categoria,
+        c.datos.modalidad, c.datos.fecha_emision, c.datos.folio, c.ciclo, ESTADOS_CERT[c.estado]?.txt || c.estado]));
+      zip.file(`${carpeta}/constancias.csv`, csvTexto(fC));
+
+      const fG = [["Nivel", "Programa", "Institución", "Año", "Cédula", "Estado"]];
+      grados.forEach(g => fG.push([g.nivel, g.datos?.programa || "", g.datos?.institucion || "",
+        g.datos?.fecha_expedicion || "", g.datos?.cedula || "", g.estado]));
+      zip.file(`${carpeta}/grados_academicos.csv`, csvTexto(fG));
+
+      if (entregas.length) {
+        const fE = [["Ciclo", "Semestre", "Actividad", "Tipo", "Archivo", "Fecha"]];
+        entregas.forEach(e => fE.push([e.ciclo, nombrePeriodo(e.periodo || "ago-ene"), e.actividad,
+          NOMBRE_TIPO_ENTREGA[e.tipo] || e.tipo, e.titulo,
+          e.fecha ? new Date(e.fecha).toLocaleString("es-MX") : ""]));
+        zip.file(`${carpeta}/planeaciones_y_planes.csv`, csvTexto(fE));
+      }
+
+      const docs = [
+        ...certs.filter(c => c.archivoGuardado).map(c => ({ clave: c.id,
+          ruta: `${carpeta}/Constancias/${nombreSeguro(c.datos.curso || "constancia", 50)}__${c.ciclo || "sin_ciclo"}` })),
+        ...grados.filter(g => g.archivoGuardado).map(g => ({ clave: g.id,
+          ruta: `${carpeta}/Grados_academicos/${nombreSeguro(g.nivel || "grado", 30)}__${nombreSeguro(g.datos?.programa || "titulo", 40)}` })),
+        ...comp.filter(c => c.archivoGuardado).map(c => ({ clave: c.id,
+          ruta: `${carpeta}/Formacion_complementaria/${nombreSeguro(c.nombre || "documento", 50)}` })),
+        ...entregas.map(e => ({ clave: "ent_" + e.id,
+          ruta: `${carpeta}/Planeaciones_y_planes/${nombreSeguro(e.actividad, 40)}__${e.tipo}__${nombreSeguro(e.titulo, 30)}` })),
+      ];
+      let ok = 0;
+      for (const d of docs) {
+        try {
+          const f = await leerArchivo(d.clave);
+          if (!f) continue;
+          const ext = (f.nombre && f.nombre.includes(".")) ? f.nombre.split(".").pop().toLowerCase()
+            : (f.mime || "").includes("pdf") ? "pdf" : "jpg";
+          zip.file(`${d.ruta}.${ext}`, f.base64, { base64: true });
+          ok++;
+        } catch { /* documento no recuperable: queda constancia en el CSV */ }
+      }
+
+      const exp = completitudExpediente(db, u.id);
+      zip.file(`${carpeta}/LEEME.txt`,
+`EXPEDIENTE DOCENTE
+Mi portal CBTA 291
+
+Docente: ${u.nombre}
+Correo: ${u.email}
+Área: ${u.area || "—"}
+Generado el: ${new Date().toLocaleString("es-MX")}
+
+Constancias: ${certs.length}
+Grados académicos: ${grados.length}
+Formación complementaria: ${comp.length}
+Planeaciones y planes entregados: ${entregas.length}
+Documentos incluidos: ${ok}
+Completitud del expediente: ${exp.pct}%
+`);
+
+      const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `expediente_${carpeta}_${sello}.zip`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    } catch (e) { alert("No se pudo generar el respaldo: " + e.message); }
+    setRespaldando(null);
+  };
+
   const guardar = async () => {
     const e = editando;
     if (!e.nombre.trim() || !e.email.trim()) return;
@@ -3997,7 +4584,21 @@ function Docentes({ db, mutar, irA, esAdmin = true }) {
         {esAdmin && <button className={btnPrim} onClick={() => setEditando({ nombre: "", email: "", area: "", asignaturas: "", nuevaPass: "" })}><Plus size={15}/>Agregar docente</button>}
       </div>
       <Card className="p-4">
-        {docentes.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">Todavía no hay docentes. Agrega al primero: la contraseña inicial por defecto es <code>docente123</code>.</p>}
+        <div className="flex flex-wrap gap-2 items-center pb-3 mb-1 border-b border-slate-100">
+          <div className="relative flex-1 min-w-[160px]">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar docente…" value={qD} onChange={e => setQD(e.target.value)} />
+          </div>
+          <select className={inputCls + " !mt-0 !w-auto"} value={orden} onChange={e => setOrden(e.target.value)}>
+            <option value="az">A – Z por nombre</option>
+            <option value="za">Z – A por nombre</option>
+            <option value="apellido">A – Z por apellido</option>
+            <option value="area">Por área</option>
+            <option value="expediente">Expediente menos completo</option>
+          </select>
+          <span className="text-xs text-slate-400">{docentes.length}</span>
+        </div>
+        {docentes.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">No hay docentes que coincidan.</p>}
         {docentes.map(u => {
           const exp = completitudExpediente(db, u.id);
           return (
@@ -4009,6 +4610,10 @@ function Docentes({ db, mutar, irA, esAdmin = true }) {
               </div>
               <button className={btnSec + " !px-3 !py-1.5"} onClick={() => irA("expediente_docente", u.id)}><FolderOpen size={14}/>Expediente</button>
               {esAdmin && <>
+                <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Respaldar expediente en ZIP"
+                  disabled={respaldando === u.id} onClick={() => respaldarDocente(u)}>
+                  {respaldando === u.id ? <Loader2 size={15} className="animate-spin"/> : <Download size={15}/>}
+                </button>
                 <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar" onClick={() => setEditando({ ...u, nuevaPass: "" })}><Pencil size={15}/></button>
                 <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title={u.activo ? "Desactivar" : "Reactivar"}
                   onClick={() => mutar(d => { const x = d.users.find(y => y.id === u.id); x.activo = !x.activo; })}>
