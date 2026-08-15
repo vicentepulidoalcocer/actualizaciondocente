@@ -751,7 +751,7 @@ export default function App() {
     { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
     { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
     { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
-    { id: "reportes", label: "Reportes", icono: FileText },
+    { id: "ranking_general", label: "Ranking general", icono: Medal },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "actividad", label: "Actividad reciente", icono: Activity },
     { id: "respaldo", label: "Respaldo", icono: Download },
@@ -763,7 +763,6 @@ export default function App() {
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "calendario", label: "Calendario académico", icono: CalendarDays },
     { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
-    { id: "reportes", label: "Reportes", icono: FileText },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "admin", label: "Metas y ciclos", icono: Settings },
   ] : user.rol === "jefe_academico" ? [
@@ -872,6 +871,7 @@ export default function App() {
             ? <RankingGeneral db={db} user={user} />
             : <Ranking db={db} user={user} />)}
           {pagina === "ranking_entregas" && esRolAcademico(user.rol) && <RankingEntregas db={db} />}
+          {pagina === "ranking_general" && esRolComunicador(user.rol) && <RankingGeneral db={db} user={user} />}
           {pagina === "logros" && <Logros db={db} user={user} />}
           {pagina === "avisos" && (esRolComunicador(user.rol)
             ? <Avisos db={db} user={user} mutar={mutar} />
@@ -1040,7 +1040,6 @@ function DashboardGeneral({ db, irA }) {
   const tabs = [
     ["formacion", "Formación Docente", Award],
     ["academico", "Académico y Competencias", FileCheck],
-    ["reportes", "Reportes", Download],
   ];
   return (
     <div className="space-y-4">
@@ -1054,7 +1053,6 @@ function DashboardGeneral({ db, irA }) {
       </div>
       {area === "formacion" && <DashboardAdmin db={db} irA={irA} />}
       {area === "academico" && <DashboardAcademico db={db} irA={irA} compacto />}
-      {area === "reportes" && <Reportes db={db} />}
     </div>
   );
 }
@@ -1175,6 +1173,7 @@ function DashboardAdmin({ db, irA }) {
           </div>
         </Card>
       </div>
+      <Reportes db={db} dentroDeTablero />
     </div>
   );
 }
@@ -1695,10 +1694,21 @@ function RankingEntregas({ db }) {
 
 function RankingGeneral({ db, user }) {
   const [ciclo, setCiclo] = useState(db.config.cicloActual);
-  if (!db.config.rankingPublico) return (
+  const [periodo, setPeriodo] = useState(periodoDeFecha());
+  const esStaff = user.rol !== "docente";
+  // El interruptor de ranking público solo afecta a los docentes
+  if (!esStaff && !db.config.rankingPublico) return (
     <Card className="p-8 text-center text-sm text-slate-500">La administración ha desactivado la visualización pública del ranking.</Card>
   );
-  const rank = rankingGeneral(db, ciclo);
+  const rank = rankingGeneral(db, ciclo, periodo);
+
+  const exportar = () => {
+    const filas = [["Lugar", "Docente", "Área", "Horas de capacitación", "% capacitación",
+      "Entregas recibidas", "Entregas requeridas", "% entregas", "Puntaje general"]];
+    rank.forEach((r, i) => filas.push([i + 1, r.nombre, r.area || "", r.horas, r.pctCap + "%",
+      r.av?.entregadas ?? "", r.av?.requeridas ?? "", r.pctEnt === null ? "sin asignación" : r.pctEnt + "%", r.puntos]));
+    descargarCSV(`ranking_general_${ciclo}_${periodo}`, filas);
+  };
   const yo = rank.findIndex(r => r.id === user.id);
   const podio = rank.slice(0, 3);
   const resto = rank.slice(3);
@@ -1711,12 +1721,27 @@ function RankingGeneral({ db, user }) {
           <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Ranking general</h2>
           <p className="text-sm text-slate-500">Combina capacitación y entrega de planeaciones, con el mismo peso cada una.</p>
         </div>
-        <select className={inputCls + " !mt-0 !w-auto"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
-          {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
-        </select>
+        <div className="flex flex-wrap gap-2">
+          {esStaff && <button className={btnSec + " !px-3 !py-1.5"} onClick={exportar}><Download size={13}/>CSV</button>}
+          <select className={inputCls + " !mt-0 !w-auto"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
+            {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+          </select>
+          <select className={inputCls + " !mt-0 !w-auto"} value={periodo} onChange={e => setPeriodo(e.target.value)}>
+            {PERIODOS.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
+          </select>
+        </div>
       </div>
 
-      {yo >= 0 && (
+      {esStaff && rank.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <Stat icono={Users} label="Docentes" valor={rank.length} />
+          <Stat icono={Target} label="Puntaje promedio" valor={Math.round(rank.reduce((s, r) => s + r.puntos, 0) / rank.length)} />
+          <Stat icono={Award} label="Con 80 o más" valor={rank.filter(r => r.puntos >= 80).length} />
+          <Stat icono={AlertTriangle} label="Por debajo de 50" valor={rank.filter(r => r.puntos < 50).length} />
+        </div>
+      )}
+
+      {!esStaff && yo >= 0 && (
         <Card className="p-4 bg-[#1a2340] text-white">
           <div className="flex flex-wrap items-center gap-4">
             <div className="text-center">
@@ -1988,12 +2013,114 @@ const csvTexto = (filas) => {
   return "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
 };
 
+/* Genera el ZIP con el expediente completo de UN docente: constancias,
+   grados, formación complementaria y planeaciones, con índices en CSV. */
+async function generarRespaldoDocente(db, u) {
+  const { default: JSZip } = await import("jszip");
+  const zip = new JSZip();
+  const sello = new Date().toISOString().slice(0, 10);
+  const carpeta = nombreSeguro(u.nombre, 40);
+
+  const certs = db.certs.filter(c => c.docenteId === u.id && !c._publico);
+  const grados = db.grados.filter(g => g.docenteId === u.id);
+  const comp = db.comp.filter(c => c.docenteId === u.id);
+  const entregas = db.entregas.filter(e => e.docenteId === u.id);
+
+  const fC = [["Curso", "Institución", "Horas", "Categoría", "Modalidad", "Fecha de emisión", "Folio", "Ciclo", "Estado", "Validado por", "Fecha de validación"]];
+  certs.forEach(c => fC.push([c.datos.curso, c.datos.institucion, c.datos.horas, c.datos.categoria,
+    c.datos.modalidad, c.datos.fecha_emision, c.datos.folio, c.ciclo,
+    ESTADOS_CERT[c.estado]?.txt || c.estado, c.validadoPor || "", (c.validadoEn || "").slice(0, 10)]));
+  zip.file(`${carpeta}/constancias_de_capacitacion.csv`, csvTexto(fC));
+
+  const fG = [["Nivel", "Programa", "Institución", "Año", "Cédula", "Estado"]];
+  grados.forEach(g => fG.push([g.nivel, g.datos?.programa || "", g.datos?.institucion || "",
+    g.datos?.fecha_expedicion || "", g.datos?.cedula || "", g.estado]));
+  zip.file(`${carpeta}/grados_academicos.csv`, csvTexto(fG));
+
+  if (comp.length) {
+    const fK = [["Tipo", "Nombre", "Institución", "Fecha", "Duración", "Estado"]];
+    comp.forEach(c => fK.push([c.tipo, c.nombre, c.institucion, c.fecha, c.duracion, c.estado]));
+    zip.file(`${carpeta}/formacion_complementaria.csv`, csvTexto(fK));
+  }
+
+  if (entregas.length) {
+    const fE = [["Ciclo", "Semestre", "Actividad", "Tipo de entrega", "Archivo", "Fecha"]];
+    entregas.forEach(e => fE.push([e.ciclo, nombrePeriodo(e.periodo || "ago-ene"), e.actividad,
+      NOMBRE_TIPO_ENTREGA[e.tipo] || e.tipo, e.titulo,
+      e.fecha ? new Date(e.fecha).toLocaleString("es-MX") : ""]));
+    zip.file(`${carpeta}/planeaciones_planes_e_informes.csv`, csvTexto(fE));
+  }
+
+  const docs = [
+    ...certs.filter(c => c.archivoGuardado).map(c => ({ clave: c.id,
+      ruta: `${carpeta}/Constancias_de_capacitacion/${nombreSeguro(c.datos.curso || "constancia", 50)}__${c.ciclo || "sin_ciclo"}` })),
+    ...grados.filter(g => g.archivoGuardado).map(g => ({ clave: g.id,
+      ruta: `${carpeta}/Grados_academicos/${nombreSeguro(g.nivel || "grado", 30)}__${nombreSeguro(g.datos?.programa || "titulo", 40)}` })),
+    ...comp.filter(c => c.archivoGuardado).map(c => ({ clave: c.id,
+      ruta: `${carpeta}/Formacion_complementaria/${nombreSeguro(c.nombre || "documento", 50)}` })),
+    ...entregas.map(e => ({ clave: "ent_" + e.id,
+      ruta: `${carpeta}/Planeaciones_planes_e_informes/${nombreSeguro(e.ciclo + "_" + (e.periodo || ""), 20)}__${nombreSeguro(e.actividad, 35)}__${NOMBRE_TIPO_ENTREGA[e.tipo] || e.tipo}__${nombreSeguro(e.titulo, 25)}` })),
+  ];
+
+  let ok = 0, fallidos = 0;
+  for (const d of docs) {
+    try {
+      const f = await leerArchivo(d.clave);
+      if (!f) { fallidos++; continue; }
+      const ext = (f.nombre && f.nombre.includes(".")) ? f.nombre.split(".").pop().toLowerCase()
+        : (f.mime || "").includes("pdf") ? "pdf" : "jpg";
+      zip.file(`${d.ruta}.${ext}`, f.base64, { base64: true });
+      ok++;
+    } catch { fallidos++; }
+  }
+
+  const exp = completitudExpediente(db, u.id);
+  const asig = asignacionDe(db, u.id);
+  const av = asig ? avanceDe(db, asig) : null;
+  zip.file(`${carpeta}/LEEME.txt`,
+`EXPEDIENTE DOCENTE
+Mi portal CBTA 291
+
+Docente: ${u.nombre}
+Correo: ${u.email}
+Área: ${u.area || "—"}
+Generado el: ${new Date().toLocaleString("es-MX")}
+
+CAPACITACIÓN
+Constancias registradas: ${certs.length} (validadas: ${certs.filter(c => c.estado === "validada").length})
+Horas validadas en el ciclo ${db.config.cicloActual}: ${horasValidadas(db, u.id, db.config.cicloActual)}
+Grados académicos: ${grados.length}
+Formación complementaria: ${comp.length}
+Completitud del expediente: ${exp.pct}%
+
+PLANEACIONES Y PLANES DE TRABAJO
+Documentos entregados: ${entregas.length}
+${av ? `Avance de la asignación vigente: ${av.entregadas} de ${av.requeridas} (${av.pct}%)` : "Sin asignación cargada"}
+
+CONTENIDO
+- Archivos CSV con el índice de cada apartado (se abren con Excel).
+- Carpetas con los documentos originales en PDF o imagen.
+Documentos incluidos: ${ok}${fallidos ? ` (no se pudieron recuperar ${fallidos})` : ""}
+`);
+
+  const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `expediente_${carpeta}_${sello}.zip`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  return { documentos: ok, fallidos, peso: (blob.size / 1048576).toFixed(1) };
+}
+
 function Respaldo({ db, user }) {
   const [estado, setEstado] = useState("listo"); // listo | trabajando | terminado | error
   const [progreso, setProgreso] = useState({ hechos: 0, total: 0, actual: "" });
   const [resultado, setResultado] = useState(null);
   const [err, setErr] = useState("");
   const [incluirArchivos, setIncluirArchivos] = useState(true);
+  const [docenteSel, setDocenteSel] = useState("");
+  const [indiv, setIndiv] = useState(null);
+  const [resultadoIndiv, setResultadoIndiv] = useState(null);
 
   const docentes = db.users.filter(u => u.rol === "docente");
   const nombreDe = (id) => docentes.find(d => d.id === id)?.nombre || "Docente";
@@ -2261,6 +2388,44 @@ de cada ciclo escolar.
           {estado === "trabajando" ? <Loader2 size={15} className="animate-spin"/> : <Download size={15}/>}
           {estado === "trabajando" ? "Generando respaldo…" : "Generar y descargar respaldo"}
         </button>
+      </Card>
+
+      <Card className="p-5 space-y-3">
+        <div>
+          <h3 className="font-bold text-sm">Respaldo de un solo docente</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Genera el expediente completo de una persona: constancias de capacitación, grados,
+            formación complementaria y sus planeaciones, planes de trabajo e informes. Útil cuando
+            un docente solicita su expediente o cuando cambia de plantel.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <select className={inputCls + " !mt-0 flex-1 min-w-[200px]"} value={docenteSel} onChange={e => setDocenteSel(e.target.value)}>
+            <option value="">Selecciona un docente…</option>
+            {[...docentes].sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es", { sensitivity: "base" }))
+              .map(d => <option key={d.id} value={d.id}>{d.nombre}{!d.activo ? " (inactivo)" : ""}</option>)}
+          </select>
+          <button className={btnPrim} disabled={!docenteSel || !!indiv}
+            onClick={async () => {
+              const u = docentes.find(x => x.id === docenteSel);
+              if (!u) return;
+              setIndiv("trabajando"); setErr("");
+              try {
+                const r = await generarRespaldoDocente(db, u);
+                setIndiv(null);
+                setResultadoIndiv({ nombre: u.nombre, ...r });
+              } catch (e) { setIndiv(null); setErr("No se pudo generar: " + e.message); }
+            }}>
+            {indiv ? <Loader2 size={15} className="animate-spin"/> : <Download size={15}/>}
+            {indiv ? "Generando…" : "Descargar expediente"}
+          </button>
+        </div>
+        {resultadoIndiv && (
+          <p className="text-sm bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg p-2.5">
+            Expediente de <b>{resultadoIndiv.nombre}</b> descargado · {resultadoIndiv.documentos} documento(s) · {resultadoIndiv.peso} MB.
+          </p>
+        )}
+        <p className="text-[11px] text-slate-400">También puedes hacerlo desde Docentes, con el ícono de descarga de cada persona.</p>
       </Card>
 
       <Card className="p-5">
@@ -4463,82 +4628,8 @@ function Docentes({ db, mutar, irA, esAdmin = true }) {
   // Respaldo del expediente de un solo docente
   const respaldarDocente = async (u) => {
     setRespaldando(u.id);
-    try {
-      const { default: JSZip } = await import("jszip");
-      const zip = new JSZip();
-      const sello = new Date().toISOString().slice(0, 10);
-      const carpeta = nombreSeguro(u.nombre, 40);
-
-      const certs = db.certs.filter(c => c.docenteId === u.id && !c._publico);
-      const grados = db.grados.filter(g => g.docenteId === u.id);
-      const comp = db.comp.filter(c => c.docenteId === u.id);
-      const entregas = db.entregas.filter(e => e.docenteId === u.id);
-
-      const fC = [["Curso", "Institución", "Horas", "Categoría", "Modalidad", "Fecha de emisión", "Folio", "Ciclo", "Estado"]];
-      certs.forEach(c => fC.push([c.datos.curso, c.datos.institucion, c.datos.horas, c.datos.categoria,
-        c.datos.modalidad, c.datos.fecha_emision, c.datos.folio, c.ciclo, ESTADOS_CERT[c.estado]?.txt || c.estado]));
-      zip.file(`${carpeta}/constancias.csv`, csvTexto(fC));
-
-      const fG = [["Nivel", "Programa", "Institución", "Año", "Cédula", "Estado"]];
-      grados.forEach(g => fG.push([g.nivel, g.datos?.programa || "", g.datos?.institucion || "",
-        g.datos?.fecha_expedicion || "", g.datos?.cedula || "", g.estado]));
-      zip.file(`${carpeta}/grados_academicos.csv`, csvTexto(fG));
-
-      if (entregas.length) {
-        const fE = [["Ciclo", "Semestre", "Actividad", "Tipo", "Archivo", "Fecha"]];
-        entregas.forEach(e => fE.push([e.ciclo, nombrePeriodo(e.periodo || "ago-ene"), e.actividad,
-          NOMBRE_TIPO_ENTREGA[e.tipo] || e.tipo, e.titulo,
-          e.fecha ? new Date(e.fecha).toLocaleString("es-MX") : ""]));
-        zip.file(`${carpeta}/planeaciones_y_planes.csv`, csvTexto(fE));
-      }
-
-      const docs = [
-        ...certs.filter(c => c.archivoGuardado).map(c => ({ clave: c.id,
-          ruta: `${carpeta}/Constancias/${nombreSeguro(c.datos.curso || "constancia", 50)}__${c.ciclo || "sin_ciclo"}` })),
-        ...grados.filter(g => g.archivoGuardado).map(g => ({ clave: g.id,
-          ruta: `${carpeta}/Grados_academicos/${nombreSeguro(g.nivel || "grado", 30)}__${nombreSeguro(g.datos?.programa || "titulo", 40)}` })),
-        ...comp.filter(c => c.archivoGuardado).map(c => ({ clave: c.id,
-          ruta: `${carpeta}/Formacion_complementaria/${nombreSeguro(c.nombre || "documento", 50)}` })),
-        ...entregas.map(e => ({ clave: "ent_" + e.id,
-          ruta: `${carpeta}/Planeaciones_y_planes/${nombreSeguro(e.actividad, 40)}__${e.tipo}__${nombreSeguro(e.titulo, 30)}` })),
-      ];
-      let ok = 0;
-      for (const d of docs) {
-        try {
-          const f = await leerArchivo(d.clave);
-          if (!f) continue;
-          const ext = (f.nombre && f.nombre.includes(".")) ? f.nombre.split(".").pop().toLowerCase()
-            : (f.mime || "").includes("pdf") ? "pdf" : "jpg";
-          zip.file(`${d.ruta}.${ext}`, f.base64, { base64: true });
-          ok++;
-        } catch { /* documento no recuperable: queda constancia en el CSV */ }
-      }
-
-      const exp = completitudExpediente(db, u.id);
-      zip.file(`${carpeta}/LEEME.txt`,
-`EXPEDIENTE DOCENTE
-Mi portal CBTA 291
-
-Docente: ${u.nombre}
-Correo: ${u.email}
-Área: ${u.area || "—"}
-Generado el: ${new Date().toLocaleString("es-MX")}
-
-Constancias: ${certs.length}
-Grados académicos: ${grados.length}
-Formación complementaria: ${comp.length}
-Planeaciones y planes entregados: ${entregas.length}
-Documentos incluidos: ${ok}
-Completitud del expediente: ${exp.pct}%
-`);
-
-      const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = `expediente_${carpeta}_${sello}.zip`;
-      a.click();
-      URL.revokeObjectURL(a.href);
-    } catch (e) { alert("No se pudo generar el respaldo: " + e.message); }
+    try { await generarRespaldoDocente(db, u); }
+    catch (e) { alert("No se pudo generar el respaldo: " + e.message); }
     setRespaldando(null);
   };
 
@@ -4903,7 +4994,7 @@ function ExpedienteIntegral({ db, docenteId, mutar, user, volver }) {
    REPORTES
    ================================================================ */
 
-function Reportes({ db }) {
+function Reportes({ db, dentroDeTablero = false }) {
   const [ciclo, setCiclo] = useState(db.config.cicloActual);
   const docentes = db.users.filter(u => u.rol === "docente");
   const nombreDe = (id) => docentes.find(u => u.id === id)?.nombre || "—";
@@ -4942,14 +5033,16 @@ function Reportes({ db }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Reportes</h2>
+      <div className={"flex flex-wrap items-center justify-between gap-3" + (dentroDeTablero ? " pt-2 border-t border-slate-200 mt-2" : "")}>
+        <h2 className={dentroDeTablero ? "text-lg font-bold" : "text-xl font-bold"} style={{fontFamily:"'Archivo', sans-serif"}}>
+          Reportes de capacitación
+        </h2>
         <select className={inputCls + " !mt-0 !w-auto"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
           {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
           <option value="historico">Histórico</option>
         </select>
       </div>
-      <p className="text-sm text-slate-500">Los reportes incluyen únicamente constancias validadas. Excel abre directamente los archivos CSV exportados; el botón PDF abre la vista de impresión para guardar como PDF.</p>
+      <p className="text-sm text-slate-500">Incluyen únicamente constancias validadas. El CSV abre en Excel; el botón PDF abre la vista de impresión para guardar como PDF.</p>
       <div className="grid md:grid-cols-2 gap-3">
         {reportes.map(r => (
           <Card key={r.nombre} className="p-4 flex items-center gap-3">
