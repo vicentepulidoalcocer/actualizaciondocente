@@ -58,6 +58,7 @@ const MAPA = {
   logros: { tabla: "logros", fila: (r) => ({ id: r.id, docente_id: r.docenteId, clave: r.clave, data: r }) },
   avisos: { tabla: "avisos", fila: (r) => ({ id: r.id, estado: r.estado, data: r }) },
   programas: { tabla: "programas", fila: (r) => ({ id: r.id, data: r }) },
+  calendarios: { tabla: "calendarios", fila: (r) => ({ id: r.id, data: r }) },
   asignaciones: { tabla: "asignaciones", fila: (r) => ({ id: r.id, docente_id: r.docenteId || null, data: r }) },
   entregas: { tabla: "entregas", fila: (r) => ({ id: r.id, docente_id: r.docenteId, estado: r.estado || "entregada", data: r }) },
   // `acuses` se omite a propósito: nunca se escribe desde el estado local.
@@ -85,10 +86,10 @@ export async function cargarTodo(uid) {
 
   const db = { users: [], certs: [], grados: [], comp: [], notifs: [],
                activity: [], logros: [], avisos: [], acuses: [],
-               programas: [], asignaciones: [], entregas: [], config };
+               programas: [], asignaciones: [], entregas: [], calendarios: [], config };
 
   if (esStaff) {
-    const [pf, ce, gr, co, no, ac, lo, av, aq, pr, asg, en] = await Promise.all([
+    const [pf, ce, gr, co, no, ac, lo, av, aq, pr, asg, en, cal] = await Promise.all([
       supabase.from("perfiles").select("*"),
       supabase.from("certs").select("data"),
       supabase.from("grados").select("data"),
@@ -101,8 +102,9 @@ export async function cargarTodo(uid) {
       supabase.from("programas").select("data"),
       supabase.from("asignaciones").select("data"),
       supabase.from("entregas").select("data"),
+      supabase.from("calendarios").select("data"),
     ]);
-    for (const r of [pf, ce, gr, co, no, ac, lo, av, aq, pr, asg, en]) lanzar(r.error, "No se pudieron cargar los datos");
+    for (const r of [pf, ce, gr, co, no, ac, lo, av, aq, pr, asg, en, cal]) lanzar(r.error, "No se pudieron cargar los datos");
     db.users = pf.data.map(aplanarPerfil);
     db.certs = ce.data.map((r) => r.data);
     db.grados = gr.data.map((r) => r.data);
@@ -115,8 +117,9 @@ export async function cargarTodo(uid) {
     db.programas = pr.data.map((r) => r.data);
     db.asignaciones = asg.data.map((r) => r.data);
     db.entregas = en.data.map((r) => r.data);
+    db.calendarios = cal.data.map((r) => r.data);
   } else {
-    const [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en] = await Promise.all([
+    const [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en, cal] = await Promise.all([
       supabase.from("publico_docentes").select("*"),
       supabase.from("publico_horas").select("*"),
       supabase.from("certs").select("data").eq("docente_id", uid),
@@ -129,8 +132,9 @@ export async function cargarTodo(uid) {
       supabase.from("programas").select("data"),
       supabase.from("asignaciones").select("data").eq("docente_id", uid),
       supabase.from("entregas").select("data").eq("docente_id", uid),
+      supabase.from("calendarios").select("data"),
     ]);
-    for (const r of [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en]) lanzar(r.error, "No se pudieron cargar los datos");
+    for (const r of [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en, cal]) lanzar(r.error, "No se pudieron cargar los datos");
     db.users = pub.data.map((p) =>
       p.id === uid ? yo : { id: p.id, nombre: p.nombre || "Docente", rol: p.rol, activo: p.activo, _publico: true }
     );
@@ -160,6 +164,7 @@ export async function cargarTodo(uid) {
     db.programas = pr.data.map((r) => r.data);
     db.asignaciones = asg.data.map((r) => r.data);
     db.entregas = en.data.map((r) => r.data);
+    db.calendarios = cal.data.map((r) => r.data);
   }
 
   // orden estable: lo más reciente primero donde aplica
