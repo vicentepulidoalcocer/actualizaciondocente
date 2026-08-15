@@ -388,25 +388,37 @@ function encargosDe(db, asig) {
     e.horas += Number(it.horas) || 0;
     mapa.set(clave, e);
   });
+  /* La administración general puede ajustar a mano cuántas entregas
+     corresponden a un encargo (incluido 0). Ese ajuste manda sobre el
+     cálculo automático y queda guardado en la asignación. */
+  const ajustes = asig?.ajustes || {};
+  const aplicarAjuste = (clave, req) => {
+    const a = ajustes[clave];
+    if (!a) return req;
+    const val = (t) => (a[t] === undefined || a[t] === null || a[t] === "") ? req[t] : Number(a[t]);
+    return { planeacion: val("planeacion"), plan: val("plan"), informe: val("informe") };
+  };
+
   return [...mapa.values()].map(e => {
     const tipo = clasificarActividad(e.actividad, e.grupos);
+    const ajustado = !!ajustes[e.clave];
     if (tipo === "baetam") {
-      return { ...e, tipo, programa: buscarPrograma(db, e.actividad),
-        requisitos: { planeacion: 1, plan: 0, informe: 0 } };
+      return { ...e, tipo, ajustado, programa: buscarPrograma(db, e.actividad),
+        requisitos: aplicarAjuste(e.clave, { planeacion: 1, plan: 0, informe: 0 }) };
     }
     if (tipo === "modulo") {
-      return { ...e, tipo, programa: buscarPrograma(db, e.actividad),
-        requisitos: { planeacion: 3, plan: 0, informe: 0 } };
+      return { ...e, tipo, ajustado, programa: buscarPrograma(db, e.actividad),
+        requisitos: aplicarAjuste(e.clave, { planeacion: 3, plan: 0, informe: 0 }) };
     }
     if (tipo === "comision") {
-      return { ...e, tipo, programa: null,
-        requisitos: { planeacion: 0, plan: 1, informe: 3 } };
+      return { ...e, tipo, ajustado, programa: null,
+        requisitos: aplicarAjuste(e.clave, { planeacion: 0, plan: 1, informe: 3 }) };
     }
     const prog = buscarPrograma(db, e.actividad);
     const num = prog && prog.numPlaneaciones != null && prog.numPlaneaciones !== ""
       ? Number(prog.numPlaneaciones) : null;
-    return { ...e, tipo, programa: prog,
-      requisitos: { planeacion: num, plan: 0, informe: 0 } };
+    return { ...e, tipo, ajustado, programa: prog,
+      requisitos: aplicarAjuste(e.clave, { planeacion: num, plan: 0, informe: 0 }) };
   }).sort((a, b) => a.actividad.localeCompare(b.actividad));
 }
 
@@ -3714,6 +3726,12 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
             </select>
             <span className="text-xs text-slate-400 ml-auto">{nAsignaciones(delCiclo.length)} en este semestre</span>
           </Card>
+          {user.rol !== "admin" && delCiclo.length > 0 && (
+            <p className="text-[11px] text-slate-400">
+              Para corregir una comisión, sus horas o el número de entregas de un docente,
+              solicítalo a la administración general.
+            </p>
+          )}
           <Card className="p-4">
             {delCiclo.length === 0 && <p className="text-sm text-slate-400 py-8 text-center">No hay asignaciones cargadas en este ciclo.</p>}
             {delCiclo.sort((a, b) => a.nombreExtraido.localeCompare(b.nombreExtraido)).map(a => {
@@ -3743,17 +3761,86 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
         </>
       )}
 
-      {detalle && <DetalleAsignacion db={db} asig={detalle} docentes={docentes} mutar={mutar} onClose={() => setDetalle(null)} />}
+      {detalle && <DetalleAsignacion db={db} asig={detalle} docentes={docentes} mutar={mutar}
+        onClose={() => setDetalle(null)} esAdmin={user.rol === "admin"} />}
     </div>
   );
 }
 
-function DetalleAsignacion({ db, asig, docentes, mutar, onClose }) {
+function DetalleAsignacion({ db, asig, docentes, mutar, onClose, esAdmin = false }) {
   const encargos = encargosDe(db, asig);
+  const [editando, setEditando] = useState(null);
   const cambiarVinculo = (id) => mutar(d => {
     const a = d.asignaciones.find(x => x.id === asig.id);
     if (a) a.docenteId = id || null;
   });
+
+  /* Edición manual (solo administración general): cambiar el nombre de la
+     actividad o comisión, sus horas, y cuántas entregas corresponden. */
+  const abrirEdicion = (e) => setEditando({
+    clave: e.clave,
+    actividad: e.actividad,
+    horas: e.horas,
+    planeacion: e.requisitos.planeacion ?? "",
+    plan: e.requisitos.plan ?? "",
+    informe: e.requisitos.informe ?? "",
+  });
+
+  const guardarEdicion = async () => {
+    const ed = editando;
+    const nuevaClave = normTexto(ed.actividad);
+    if (!nuevaClave) return;
+    await mutar(d => {
+      const a = d.asignaciones.find(x => x.id === asig.id);
+      if (!a) return;
+
+      // 1. Renombrar la actividad en los renglones y repartir las horas
+      const renglones = (a.items || []).filter(i => normTexto(i.actividad) === ed.clave);
+      if (renglones.length) {
+        const nuevasHoras = Number(ed.horas);
+        const total = renglones.reduce((s, i) => s + (Number(i.horas) || 0), 0);
+        renglones.forEach((i, idx) => {
+          i.actividad = ed.actividad;
+          if (!isNaN(nuevasHoras)) {
+            // Se reparte proporcionalmente; el último absorbe el redondeo
+            i.horas = total > 0
+              ? (idx === renglones.length - 1
+                  ? nuevasHoras - renglones.slice(0, -1).reduce((s, r) => s + Math.round(nuevasHoras * (Number(r.horas) || 0) / total), 0)
+                  : Math.round(nuevasHoras * (Number(i.horas) || 0) / total))
+              : (idx === 0 ? nuevasHoras : 0);
+          }
+        });
+      }
+      a.totalHoras = (a.items || []).reduce((s, i) => s + (Number(i.horas) || 0), 0);
+
+      // 2. Guardar el ajuste de entregas bajo la clave nueva
+      a.ajustes = { ...(a.ajustes || {}) };
+      if (ed.clave !== nuevaClave) delete a.ajustes[ed.clave];
+      a.ajustes[nuevaClave] = {
+        planeacion: ed.planeacion === "" ? null : Number(ed.planeacion),
+        plan: ed.plan === "" ? null : Number(ed.plan),
+        informe: ed.informe === "" ? null : Number(ed.informe),
+      };
+
+      // 3. Si cambió el nombre, mover las entregas ya subidas a la clave nueva
+      //    para que no se pierda el trabajo del docente
+      if (ed.clave !== nuevaClave) {
+        d.entregas.filter(x => x.docenteId === a.docenteId && x.ciclo === a.ciclo
+          && (x.periodo || "ago-ene") === (a.periodo || "ago-ene") && x.encargoClave === ed.clave)
+          .forEach(x => { x.encargoClave = nuevaClave; x.actividad = ed.actividad; });
+      }
+
+      registrarActividad(d, `Se ajustó la asignación de ${a.nombreExtraido}: “${ed.actividad}”.`);
+    });
+    setEditando(null);
+  };
+
+  const quitarAjuste = async (clave) => {
+    await mutar(d => {
+      const a = d.asignaciones.find(x => x.id === asig.id);
+      if (a && a.ajustes) { delete a.ajustes[clave]; a.ajustes = { ...a.ajustes }; }
+    });
+  };
   return (
     <Modal titulo={`Asignación · ${asig.nombreExtraido}`} onClose={onClose} ancho="max-w-3xl">
       <div className="space-y-4">
@@ -3781,7 +3868,22 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose }) {
                   {NOMBRE_TIPO_ENCARGO[e.tipo] || e.tipo}
                 </span>
                 {e.grupos.length > 0 && <span className="text-xs text-slate-400">{[...new Set(e.grupos)].join(", ")}</span>}
+                {e.ajustado && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                    AJUSTADO A MANO
+                  </span>
+                )}
                 <span className="text-xs text-slate-400 ml-auto">{e.horas} h</span>
+                {esAdmin && (
+                  <>
+                    <button className="p-1 rounded hover:bg-slate-100 text-slate-500" title="Editar actividad, horas y entregas"
+                      onClick={() => abrirEdicion(e)}><Pencil size={14}/></button>
+                    {e.ajustado && (
+                      <button className="p-1 rounded hover:bg-slate-100 text-slate-400" title="Quitar el ajuste manual y volver al cálculo automático"
+                        onClick={() => quitarAjuste(e.clave)}><X size={14}/></button>
+                    )}
+                  </>
+                )}
               </div>
               {e.tipo === "asignatura" && !e.programa && (
                 <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2 mt-2">
@@ -3808,6 +3910,50 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose }) {
           );
         })}
       </div>
+
+      {editando && (
+        <Modal titulo="Editar actividad de la asignación" onClose={() => setEditando(null)}>
+          <div className="space-y-3">
+            <Campo label="Actividad, comisión o cargo">
+              <input className={inputCls} value={editando.actividad}
+                onChange={e => setEditando({ ...editando, actividad: e.target.value })} />
+            </Campo>
+            <Campo label="Horas totales de esta actividad">
+              <input type="number" min="0" className={inputCls} value={editando.horas}
+                onChange={e => setEditando({ ...editando, horas: e.target.value })} />
+            </Campo>
+            <div>
+              <p className="text-xs font-semibold text-slate-600 mb-1">Entregas que debe subir el docente</p>
+              <div className="grid grid-cols-3 gap-2">
+                <Campo label="Planeaciones">
+                  <input type="number" min="0" className={inputCls} value={editando.planeacion}
+                    onChange={e => setEditando({ ...editando, planeacion: e.target.value })} />
+                </Campo>
+                <Campo label="Planes de trabajo">
+                  <input type="number" min="0" className={inputCls} value={editando.plan}
+                    onChange={e => setEditando({ ...editando, plan: e.target.value })} />
+                </Campo>
+                <Campo label="Informes">
+                  <input type="number" min="0" className={inputCls} value={editando.informe}
+                    onChange={e => setEditando({ ...editando, informe: e.target.value })} />
+                </Campo>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Puedes poner <b>0</b> para que no se pida ese tipo de entrega. Deja el campo vacío
+                para volver al cálculo automático de ese renglón.
+              </p>
+            </div>
+            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+              Si cambias el nombre de la actividad, los documentos que el docente ya subió se
+              conservan y se mueven a la actividad renombrada.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <button className={btnSec} onClick={() => setEditando(null)}>Cancelar</button>
+            <button className={btnPrim} onClick={guardarEdicion}>Guardar cambios</button>
+          </div>
+        </Modal>
+      )}
     </Modal>
   );
 }
