@@ -240,7 +240,7 @@ function otorgarLogros(db, docenteId, cicloRef) {
       return entregasDe(db, docenteId, ciclo, e.clave, t, asig.periodo || "ago-ene").length >= n;
     }));
   };
-  if (cubierto(["planeacion"], e => e.tipo === "asignatura" || e.tipo === "modulo")) dar("planeaciones_completas");
+  if (cubierto(["planeacion"], e => e.tipo === "asignatura" || e.tipo === "modulo" || e.tipo === "baetam")) dar("planeaciones_completas");
   if (cubierto(["plan", "informe"], e => e.tipo === "comision")) dar("comisiones_completas");
 }
 
@@ -334,7 +334,15 @@ const normTexto = (t) => (t || "")
      progresiones tenga su programa de estudio */
 const PALABRAS_COMISION = /(TUTOR|ORIENTACION EDUCATIVA|ACTIVACION FISICA|PARAESCOLAR|BECA|YO NO ABAND|DIRECCION|SUBDIRECCION|DEPARTAMENTO|COORDINAD|ENCARGAD|AUXILIAR|SECRETARI|RECURSOS HUMANOS|PROMOCION Y DIFUSION|PROYECTOS|PRESIDENTE DE ACADEMIA|OFICINA|VINCULACION|CENTRO DE COMPUTO|FORMACION SOCIOEMOCIONAL)/;
 
-function clasificarActividad(nombre) {
+/* BAETAM es una modalidad distinta: sus asignaciones entregan UNA sola
+   planeación, sin importar cuántos propósitos tenga el programa. Aparece
+   tanto en el nombre de la actividad como en la columna de grupo
+   (por ejemplo "BAETAM 1° A"), así que se revisan ambos. */
+const esBaetam = (actividad, grupos = []) =>
+  /BAETAM/.test(normTexto(actividad)) || grupos.some(g => /BAETAM/.test(normTexto(g)));
+
+function clasificarActividad(nombre, grupos = []) {
+  if (esBaetam(nombre, grupos)) return "baetam";
   const n = normTexto(nombre);
   if (/MODULO/.test(n)) return "modulo";
   if (PALABRAS_COMISION.test(n)) return "comision";
@@ -381,7 +389,11 @@ function encargosDe(db, asig) {
     mapa.set(clave, e);
   });
   return [...mapa.values()].map(e => {
-    const tipo = clasificarActividad(e.actividad);
+    const tipo = clasificarActividad(e.actividad, e.grupos);
+    if (tipo === "baetam") {
+      return { ...e, tipo, programa: buscarPrograma(db, e.actividad),
+        requisitos: { planeacion: 1, plan: 0, informe: 0 } };
+    }
     if (tipo === "modulo") {
       return { ...e, tipo, programa: buscarPrograma(db, e.actividad),
         requisitos: { planeacion: 3, plan: 0, informe: 0 } };
@@ -452,6 +464,12 @@ function emparejarDocente(db, nombreExtraido) {
 }
 
 const NOMBRE_TIPO_ENTREGA = { planeacion: "Planeación", plan: "Plan de trabajo", informe: "Informe" };
+const NOMBRE_TIPO_ENCARGO = {
+  asignatura: "Frente a grupo",
+  modulo: "Módulo profesional",
+  comision: "Comisión / cargo",
+  baetam: "BAETAM",
+};
 const PLURAL_TIPO_ENTREGA = { planeacion: "Planeaciones", plan: "Planes de trabajo", informe: "Informes" };
 // Devuelve singular o plural según la cantidad
 const tipoEntrega = (t, n) => (n === 1 ? NOMBRE_TIPO_ENTREGA[t] : PLURAL_TIPO_ENTREGA[t]) || t;
@@ -796,16 +814,16 @@ export default function App() {
 
   const nav = user.rol === "admin" ? [
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
+    { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: pendValidacion },
     { id: "docentes", label: "Docentes", icono: Users },
-    { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "calendario", label: "Calendario académico", icono: CalendarDays },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
+    { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
     { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
     { id: "ranking_general", label: "Ranking general", icono: Medal },
-    { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "actividad", label: "Actividad reciente", icono: Activity },
     { id: "respaldo", label: "Respaldo", icono: Download },
     { id: "admin", label: "Administración", icono: Settings },
@@ -3317,12 +3335,14 @@ function DashboardAcademico({ db, irA, compacto = false }) {
   const porActividad = [
     { nombre: "Frente a grupo", color: "#1a2340", n: 0 },
     { nombre: "Módulos", color: "#E8871E", n: 0 },
+    { nombre: "BAETAM", color: "#0ea5e9", n: 0 },
     { nombre: "Comisiones", color: "#64748b", n: 0 },
   ];
   filas.forEach(f => f.encargos.forEach(e => {
     if (e.tipo === "asignatura") porActividad[0].n++;
     else if (e.tipo === "modulo") porActividad[1].n++;
-    else porActividad[2].n++;
+    else if (e.tipo === "baetam") porActividad[2].n++;
+    else porActividad[3].n++;
   }));
 
   const exportarResumen = () => {
@@ -3343,7 +3363,7 @@ function DashboardAcademico({ db, irA, compacto = false }) {
         .forEach(([t, n]) => {
           const ent = f.asig.docenteId ? entregasDe(db, f.asig.docenteId, cicloSel, e.clave, t, periodoSel) : [];
           fs.push([f.asig.nombreExtraido, cicloSel, nombrePeriodo(periodoSel), e.actividad,
-            e.tipo === "modulo" ? "Módulo profesional" : e.tipo === "comision" ? "Comisión / cargo" : "Frente a grupo",
+            NOMBRE_TIPO_ENCARGO[e.tipo] || e.tipo,
             [...new Set(e.grupos)].join(" "), e.horas,
             NOMBRE_TIPO_ENTREGA[t], n === null ? "Por definir" : n, ent.length,
             ent.map(x => x.titulo).join(" | ")]);
@@ -3758,7 +3778,7 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose }) {
               <div className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold text-sm">{e.actividad}</span>
                 <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-                  {e.tipo === "modulo" ? "Módulo profesional" : e.tipo === "comision" ? "Comisión / cargo" : "Frente a grupo"}
+                  {NOMBRE_TIPO_ENCARGO[e.tipo] || e.tipo}
                 </span>
                 {e.grupos.length > 0 && <span className="text-xs text-slate-400">{[...new Set(e.grupos)].join(", ")}</span>}
                 <span className="text-xs text-slate-400 ml-auto">{e.horas} h</span>
@@ -3912,7 +3932,7 @@ function MiAsignacion({ db, user, mutar }) {
             <div className="flex flex-wrap items-center gap-2 mb-1">
               <span className="font-semibold text-sm">{e.actividad}</span>
               <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-                {e.tipo === "modulo" ? "Módulo profesional" : e.tipo === "comision" ? "Comisión / cargo" : "Frente a grupo"}
+                {NOMBRE_TIPO_ENCARGO[e.tipo] || e.tipo}
               </span>
               {e.grupos.length > 0 && <span className="text-xs text-slate-400">{[...new Set(e.grupos)].join(", ")}</span>}
             </div>
