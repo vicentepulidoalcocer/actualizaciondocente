@@ -22,7 +22,7 @@ import { supabase, configurada } from "./lib/supabase";
 import {
   cargarTodo, sincronizar, guardarArchivo, leerArchivo, eliminarArchivo,
   extraerConIA, crearDocente, restablecerPassword, cambiarEmailDocente,
-  marcarEnterado,
+  marcarEnterado, MAX_FILE_B64,
 } from "./lib/nube";
 
 const CATEGORIAS = [
