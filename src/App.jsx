@@ -2957,7 +2957,7 @@ function ProgramasEstudio({ db, user, mutar }) {
     /* El nivel gratuito de Gemini permite unas pocas peticiones por minuto.
        Se deja un respiro entre documentos para no toparlo; la función Edge
        además espera y reintenta sola cuando ocurre. */
-    const RESPIRO_MS = 6000;
+    const RESPIRO_MS = 5000;
     for (let i = 0; i < archivos.length; i++) {
       const f = archivos[i];
       setCola({ total: archivos.length, hechos: i, actual: f.name });
@@ -3135,6 +3135,10 @@ function ProgramasEstudio({ db, user, mutar }) {
               <b>Se alcanzó el límite de la API de Gemini.</b> Los PDF sí quedaron guardados; lo que
               faltó fue la lectura automática. Espera unos minutos y usa el botón ✨ de cada programa
               para reintentar, o captura las asignaturas a mano con el lápiz.
+              <span className="block mt-1 text-xs">
+                El límite cuenta <b>peticiones</b>, no tamaño: cada PDF consume una. Subir los
+                programas en tandas de 10 a 15, con unos minutos de separación, evita toparlo.
+              </span>
             </span>
           )}
           {resumen.funcionVieja && (
