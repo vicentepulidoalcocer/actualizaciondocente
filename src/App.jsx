@@ -128,6 +128,38 @@ const rankingDe = (db, ciclo) =>
     .map(u => ({ ...u, horas: horasValidadas(db, u.id, ciclo) }))
     .sort((a, b) => b.horas - a.horas);
 
+/* Ranking de cumplimiento de entregas (planeaciones, planes e informes).
+   Ordena por porcentaje de avance; a igual porcentaje, gana quien más
+   entregas haya cubierto en términos absolutos. */
+const rankingEntregas = (db, ciclo) =>
+  db.users.filter(u => u.rol === "docente" && u.activo)
+    .map(u => {
+      const asig = db.asignaciones.find(a => a.docenteId === u.id && a.ciclo === ciclo);
+      const av = asig ? avanceDe(db, asig) : { requeridas: 0, entregadas: 0, pct: 0, indeterminado: false };
+      return { ...u, ...av, conAsignacion: !!asig };
+    })
+    .sort((a, b) => b.pct - a.pct || b.entregadas - a.entregadas);
+
+/* Ranking general del docente: combina capacitación y entregas.
+   Ambas mitades valen lo mismo (50 y 50) para que ninguna eclipse a la
+   otra, y la de capacitación se mide contra la meta anual del plantel. */
+function rankingGeneral(db, ciclo) {
+  const meta = Number(db.config.metaAnual) || 0;
+  return db.users.filter(u => u.rol === "docente" && u.activo)
+    .map(u => {
+      const horas = horasValidadas(db, u.id, ciclo);
+      const asig = db.asignaciones.find(a => a.docenteId === u.id && a.ciclo === ciclo);
+      const av = asig ? avanceDe(db, asig) : null;
+      const pctCap = meta ? Math.min(100, Math.round(100 * horas / meta)) : (horas > 0 ? 100 : 0);
+      const pctEnt = av && av.requeridas ? av.pct : null;
+      // Si el docente aún no tiene asignación, su puntaje se basa solo en
+      // capacitación: no se le penaliza por algo que no le han cargado.
+      const puntos = pctEnt === null ? pctCap : Math.round(0.5 * pctCap + 0.5 * pctEnt);
+      return { ...u, horas, pctCap, pctEnt, av, puntos };
+    })
+    .sort((a, b) => b.puntos - a.puntos || b.horas - a.horas);
+}
+
 function detectarDuplicado(db, cert) {
   const norm = (s) => (s || "").toString().toLowerCase().trim();
   return db.certs.find(c => {
@@ -247,16 +279,29 @@ function clasificarActividad(nombre) {
   return "asignatura";
 }
 
-// Busca en el repositorio el programa que corresponde a una actividad
+/* Cada programa de estudio cubre VARIAS asignaturas (por ejemplo, el
+   programa de Pensamiento Matemático desarrolla I, II y III), cada una
+   con su propio número de planeaciones. */
+const asignaturasDe = (p) => Array.isArray(p.asignaturas) ? p.asignaturas : [];
+
+// Todas las asignaturas del repositorio, con su programa de origen
+const todasLasAsignaturas = (db) =>
+  db.programas.flatMap(p => asignaturasDe(p).map((a, i) => ({ ...a, programa: p, idx: i })));
+
+/* Busca la asignatura del repositorio que corresponde a una actividad de
+   la asignación. Prioriza la coincidencia exacta; si no la hay, la más
+   específica (la más larga), para que "Pensamiento Matemático III" no se
+   confunda con "Pensamiento Matemático I". */
 function buscarPrograma(db, actividad) {
   const n = normTexto(actividad);
   if (!n) return null;
+  const cands = todasLasAsignaturas(db);
+  for (const a of cands) if (normTexto(a.nombre) === n) return a;
   let mejor = null, mejorLen = 0;
-  for (const p of db.programas) {
-    const pn = normTexto(p.nombre);
-    if (!pn) continue;
-    if (pn === n) return p;
-    if ((n.includes(pn) || pn.includes(n)) && pn.length > mejorLen) { mejor = p; mejorLen = pn.length; }
+  for (const a of cands) {
+    const an = normTexto(a.nombre);
+    if (!an) continue;
+    if ((n.includes(an) || an.includes(n)) && an.length > mejorLen) { mejor = a; mejorLen = an.length; }
   }
   return mejor;
 }
@@ -677,7 +722,8 @@ export default function App() {
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
-    { id: "ranking", label: "Ranking", icono: Trophy },
+    { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
+    { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
     { id: "reportes", label: "Reportes", icono: FileText },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "actividad", label: "Actividad reciente", icono: Activity },
@@ -688,6 +734,7 @@ export default function App() {
     { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: pendValidacion },
     { id: "docentes", label: "Expedientes docentes", icono: Users },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
+    { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
     { id: "reportes", label: "Reportes", icono: FileText },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "admin", label: "Metas y ciclos", icono: Settings },
@@ -696,6 +743,7 @@ export default function App() {
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
+    { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
   ] : [
     { id: "avisos", label: "Avisos", icono: Megaphone, badge: avisosPendientes(db, user).length },
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
@@ -704,7 +752,7 @@ export default function App() {
     { id: "mi_asignacion", label: "Mi asignación", icono: FolderOpen, badge: pendientesEntrega(db, user.id) },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "expediente", label: "Mi perfil académico", icono: GraduationCap },
-    ...(db.config.rankingPublico ? [{ id: "ranking", label: "Ranking", icono: Trophy }] : []),
+    ...(db.config.rankingPublico ? [{ id: "ranking", label: "Ranking general", icono: Trophy }] : []),
     { id: "logros", label: "Logros", icono: Award },
   ];
 
@@ -730,7 +778,11 @@ export default function App() {
           <div className="flex-1 max-w-md mx-auto relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={busqueda} onChange={e => setBusqueda(e.target.value)}
-              placeholder={esAdmin ? "Buscar docente, curso, institución…" : "Buscar en mis cursos…"}
+              placeholder={
+                user.rol === "admin" ? "Buscar docente, curso, programa, asignación…" :
+                user.rol === "jefe_formacion" ? "Buscar docente, constancia, institución…" :
+                user.rol === "jefe_academico" ? "Buscar programa, asignatura, docente, entrega…" :
+                "Buscar en mis cursos, programas y entregas…"}
               className="w-full rounded-xl bg-white/10 border border-white/15 pl-9 pr-3 py-1.5 text-sm placeholder:text-slate-400 focus:outline-none focus:bg-white/15" />
             {busqueda.trim() && <Buscador db={db} user={user} q={busqueda} irA={irA} cerrar={() => setBusqueda("")} />}
           </div>
@@ -784,7 +836,10 @@ export default function App() {
           {pagina === "subir" && <SubirConstancia db={db} user={user} mutar={mutar} irA={irA} />}
           {pagina === "cursos" && <MisCursos db={db} user={user} mutar={mutar} />}
           {pagina === "expediente" && <PerfilAcademico db={db} user={user} docenteId={user.id} mutar={mutar} editable />}
-          {pagina === "ranking" && <Ranking db={db} user={user} />}
+          {pagina === "ranking" && (user.rol === "docente"
+            ? <RankingGeneral db={db} user={user} />
+            : <Ranking db={db} user={user} />)}
+          {pagina === "ranking_entregas" && esRolAcademico(user.rol) && <RankingEntregas db={db} />}
           {pagina === "logros" && <Logros db={db} user={user} />}
           {pagina === "avisos" && (esRolComunicador(user.rol)
             ? <Avisos db={db} user={user} mutar={mutar} />
@@ -810,42 +865,95 @@ export default function App() {
 
 /* ---------------- Buscador global -------------------------------- */
 function Buscador({ db, user, q, irA, cerrar }) {
-  const esAdmin = user.rol === "admin";
+  const rol = user.rol;
+  const esValidador = esRolValidador(rol);
+  const esAcademico = esRolAcademico(rol);
   const t = q.toLowerCase();
-  const certs = db.certs.filter(c =>
-    (esAdmin || c.docenteId === user.id) &&
-    [c.datos.curso, c.datos.institucion, c.datos.folio, c.datos.categoria].some(v => (v || "").toLowerCase().includes(t))
-  ).slice(0, 6);
-  const docentes = esAdmin ? db.users.filter(u => u.rol === "docente" &&
-    (u.nombre.toLowerCase().includes(t) || (u.area || "").toLowerCase().includes(t))).slice(0, 5) : [];
-  const avisos = db.avisos.filter(a =>
-    (esAdmin || a.estado !== "draft") &&
-    [a.titulo, a.tipo, a.descripcion].some(v => (v || "").toLowerCase().includes(t))
-  ).slice(0, 5);
+  const coincide = (...vs) => vs.some(v => (v || "").toLowerCase().includes(t));
+
+  /* Cada rol busca en lo que usa: Formación Docente en expedientes y
+     constancias; el Académico en programas, asignaturas y asignaciones;
+     el docente en lo suyo. */
+  const docentes = (esValidador || esAcademico)
+    ? db.users.filter(u => u.rol === "docente" && coincide(u.nombre, u.area)).slice(0, 5) : [];
+  const certs = (esValidador || rol === "docente")
+    ? db.certs.filter(c => (esValidador || c.docenteId === user.id)
+        && coincide(c.datos.curso, c.datos.institucion, c.datos.folio, c.datos.categoria)).slice(0, 6) : [];
+  const grados = esValidador
+    ? db.grados.filter(g => coincide(g.datos?.programa, g.datos?.institucion, g.nivel)).slice(0, 4) : [];
+  const programas = esAcademico || rol === "docente"
+    ? db.programas.filter(p => coincide(p.nombre) || asignaturasDe(p).some(a => coincide(a.nombre))).slice(0, 5) : [];
+  const asignaciones = esAcademico
+    ? db.asignaciones.filter(a => coincide(a.nombreExtraido)
+        || (a.items || []).some(i => coincide(i.actividad))).slice(0, 5) : [];
+  const entregas = esAcademico
+    ? db.entregas.filter(e => coincide(e.actividad, e.titulo)).slice(0, 5)
+    : rol === "docente" ? db.entregas.filter(e => e.docenteId === user.id && coincide(e.actividad, e.titulo)).slice(0, 4) : [];
+  const avisos = db.avisos.filter(a => (esRolComunicador(rol) || a.estado !== "draft")
+    && coincide(a.titulo, a.tipo, a.descripcion)).slice(0, 4);
+
+  const nombreDe = (id) => db.users.find(u => u.id === id)?.nombre || "Docente";
+  const vacio = ![docentes, certs, grados, programas, asignaciones, entregas, avisos].some(x => x.length);
+
+  const Seccion = ({ titulo, children }) => (<>
+    <div className="px-3 pt-2 text-[11px] font-bold text-slate-400 uppercase">{titulo}</div>
+    {children}
+  </>);
+  const Fila = ({ onClick, icono: Ico, children }) => (
+    <button onClick={onClick} className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2">
+      {Ico && <Ico size={14} className="text-slate-400 shrink-0" />}<span className="truncate">{children}</span>
+    </button>
+  );
+
   return (
-    <div className="absolute left-0 right-0 top-10 bg-white text-slate-800 rounded-2xl shadow-xl border border-slate-200 overflow-hidden z-50">
-      {docentes.length > 0 && <div className="px-3 pt-2 text-[11px] font-bold text-slate-400 uppercase">Docentes</div>}
-      {docentes.map(d => (
-        <button key={d.id} onClick={() => { irA("expediente_docente", d.id); cerrar(); }}
-          className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2">
-          <User size={14} className="text-slate-400" />{d.nombre} <span className="text-xs text-slate-400">· {d.area}</span>
-        </button>
-      ))}
-      {certs.length > 0 && <div className="px-3 pt-2 text-[11px] font-bold text-slate-400 uppercase">Constancias</div>}
-      {certs.map(c => (
-        <button key={c.id} onClick={() => { irA(esAdmin ? "validaciones" : "cursos"); cerrar(); }}
-          className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50">
-          {c.datos.curso || "(sin título)"} <span className="text-xs text-slate-400">· {c.datos.institucion || "—"}</span>
-        </button>
-      ))}
-      {avisos.length > 0 && <div className="px-3 pt-2 text-[11px] font-bold text-slate-400 uppercase">Avisos</div>}
-      {avisos.map(a => (
-        <button key={a.id} onClick={() => { irA("avisos"); cerrar(); }}
-          className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 flex items-center gap-2">
-          <Megaphone size={14} className="text-slate-400" />{a.titulo} <span className="text-xs text-slate-400">· {a.tipo}</span>
-        </button>
-      ))}
-      {docentes.length === 0 && certs.length === 0 && avisos.length === 0 && <p className="px-3 py-3 text-sm text-slate-500">Sin resultados para “{q}”.</p>}
+    <div className="absolute left-0 right-0 top-10 bg-white text-slate-800 rounded-2xl shadow-xl border border-slate-200 overflow-hidden z-50 max-h-[70vh] overflow-y-auto">
+      {docentes.length > 0 && <Seccion titulo="Docentes">
+        {docentes.map(d => <Fila key={d.id} icono={User}
+          onClick={() => { irA(esValidador ? "expediente_docente" : "asignaciones", d.id); cerrar(); }}>
+          {d.nombre} <span className="text-xs text-slate-400">· {d.area || "sin área"}</span>
+        </Fila>)}
+      </Seccion>}
+
+      {programas.length > 0 && <Seccion titulo="Programas de estudio">
+        {programas.map(p => <Fila key={p.id} icono={BookOpen} onClick={() => { irA("programas"); cerrar(); }}>
+          {p.nombre} <span className="text-xs text-slate-400">· {asignaturasDe(p).length} asignatura(s)</span>
+        </Fila>)}
+      </Seccion>}
+
+      {asignaciones.length > 0 && <Seccion titulo="Asignaciones">
+        {asignaciones.map(a => <Fila key={a.id} icono={FolderOpen} onClick={() => { irA("asignaciones"); cerrar(); }}>
+          {a.nombreExtraido} <span className="text-xs text-slate-400">· ciclo {a.ciclo}</span>
+        </Fila>)}
+      </Seccion>}
+
+      {entregas.length > 0 && <Seccion titulo="Planeaciones y entregas">
+        {entregas.map(e => <Fila key={e.id} icono={FileCheck}
+          onClick={() => { irA(rol === "docente" ? "mi_asignacion" : "asignaciones"); cerrar(); }}>
+          {e.actividad} <span className="text-xs text-slate-400">· {NOMBRE_TIPO_ENTREGA[e.tipo]}{esAcademico ? ` · ${nombreDe(e.docenteId)}` : ""}</span>
+        </Fila>)}
+      </Seccion>}
+
+      {certs.length > 0 && <Seccion titulo="Constancias">
+        {certs.map(c => <Fila key={c.id} icono={FileText}
+          onClick={() => { irA(esValidador ? "validaciones" : "cursos"); cerrar(); }}>
+          {c.datos.curso || "(sin título)"} <span className="text-xs text-slate-400">· {c.datos.institucion || "—"}{esValidador ? ` · ${nombreDe(c.docenteId)}` : ""}</span>
+        </Fila>)}
+      </Seccion>}
+
+      {grados.length > 0 && <Seccion titulo="Grados académicos">
+        {grados.map(g => <Fila key={g.id} icono={GraduationCap}
+          onClick={() => { irA("expediente_docente", g.docenteId); cerrar(); }}>
+          {g.nivel} — {g.datos?.programa || "sin programa"} <span className="text-xs text-slate-400">· {nombreDe(g.docenteId)}</span>
+        </Fila>)}
+      </Seccion>}
+
+      {avisos.length > 0 && <Seccion titulo="Avisos">
+        {avisos.map(a => <Fila key={a.id} icono={Megaphone} onClick={() => { irA("avisos"); cerrar(); }}>
+          {a.titulo} <span className="text-xs text-slate-400">· {a.tipo}</span>
+        </Fila>)}
+      </Seccion>}
+
+      {vacio && <p className="px-3 py-3 text-sm text-slate-500">Sin resultados para “{q}”.</p>}
     </div>
   );
 }
@@ -1441,6 +1549,180 @@ function MisCursos({ db, user, mutar }) {
 /* ================================================================
    RANKING Y PODIO
    ================================================================ */
+
+/* ================================================================
+   RANKING DE ENTREGAS (jefe académico y administrador)
+   ================================================================ */
+
+function RankingEntregas({ db }) {
+  const [ciclo, setCiclo] = useState(db.config.cicloActual);
+  const rank = rankingEntregas(db, ciclo).filter(r => r.conAsignacion);
+  const podio = rank.slice(0, 3);
+  const resto = rank.slice(3);
+  const medallas = ["🥇", "🥈", "🥉"];
+
+  const exportar = () => {
+    const filas = [["Lugar", "Docente", "Área", "Entregas requeridas", "Entregas recibidas", "% de cumplimiento"]];
+    rank.forEach((r, i) => filas.push([i + 1, r.nombre, r.area || "", r.requeridas, r.entregadas, r.pct + "%"]));
+    descargarCSV(`ranking_entregas_${ciclo}`, filas);
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Ranking de entregas</h2>
+          <p className="text-sm text-slate-500">Cumplimiento de planeaciones, planes de trabajo e informes.</p>
+        </div>
+        <div className="flex gap-2">
+          <button className={btnSec + " !px-3 !py-1.5"} onClick={exportar}><Download size={13}/>CSV</button>
+          <select className={inputCls + " !mt-0 !w-auto"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
+            {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {rank.length === 0 && (
+        <Card className="p-8 text-center text-sm text-slate-400">
+          No hay asignaciones cargadas en este ciclo, así que todavía no hay nada que comparar.
+        </Card>
+      )}
+
+      {podio.length > 0 && (
+        <div className="grid grid-cols-3 gap-3">
+          {[1, 0, 2].map(pos => {
+            const r = podio[pos];
+            if (!r) return <div key={pos} />;
+            return (
+              <Card key={pos} className={`p-4 text-center ${pos === 0 ? "ring-2 ring-[#E8871E]" : ""}`}>
+                <div className="text-3xl">{medallas[pos]}</div>
+                <div className="font-bold text-sm mt-1 truncate">{r.nombre}</div>
+                <div className="text-xs text-slate-500">{r.area || "Sin área"}</div>
+                <div className="text-2xl font-bold text-[#1a2340] mt-2">{r.pct}%</div>
+                <div className="text-[11px] text-slate-500">{r.entregadas} de {r.requeridas} entregas</div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {resto.length > 0 && (
+        <Card className="p-4">
+          {resto.map((r, i) => (
+            <div key={r.id} className="flex items-center gap-3 py-2 border-b border-slate-100 last:border-0">
+              <span className="w-6 text-sm font-bold text-slate-400">{i + 4}</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">{r.nombre}</div>
+                <div className="text-xs text-slate-500">{r.entregadas} de {r.requeridas} entregas{r.indeterminado && " · algunos requisitos por definir"}</div>
+              </div>
+              <div className="w-28">
+                <div className="text-[11px] text-slate-500 text-right mb-0.5">{r.pct}%</div>
+                <div className="w-full h-1.5 rounded-full bg-slate-200 overflow-hidden">
+                  <div className={`h-full ${r.pct >= 100 ? "bg-emerald-600" : r.pct >= 60 ? "bg-[#E8871E]" : "bg-rose-500"}`} style={{ width: Math.min(r.pct, 100) + "%" }} />
+                </div>
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================
+   RANKING GENERAL DEL DOCENTE (capacitación + entregas)
+   ================================================================ */
+
+function RankingGeneral({ db, user }) {
+  const [ciclo, setCiclo] = useState(db.config.cicloActual);
+  if (!db.config.rankingPublico) return (
+    <Card className="p-8 text-center text-sm text-slate-500">La administración ha desactivado la visualización pública del ranking.</Card>
+  );
+  const rank = rankingGeneral(db, ciclo);
+  const yo = rank.findIndex(r => r.id === user.id);
+  const podio = rank.slice(0, 3);
+  const resto = rank.slice(3);
+  const medallas = ["🥇", "🥈", "🥉"];
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Ranking general</h2>
+          <p className="text-sm text-slate-500">Combina capacitación y entrega de planeaciones, con el mismo peso cada una.</p>
+        </div>
+        <select className={inputCls + " !mt-0 !w-auto"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
+          {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+        </select>
+      </div>
+
+      {yo >= 0 && (
+        <Card className="p-4 bg-[#1a2340] text-white">
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="text-center">
+              <div className="text-3xl font-bold">#{yo + 1}</div>
+              <div className="text-[11px] text-slate-300">de {rank.length}</div>
+            </div>
+            <div className="flex-1 min-w-[180px] grid grid-cols-3 gap-3 text-center">
+              <div>
+                <div className="text-lg font-bold">{rank[yo].puntos}</div>
+                <div className="text-[11px] text-slate-300">puntos</div>
+              </div>
+              <div>
+                <div className="text-lg font-bold">{rank[yo].pctCap}%</div>
+                <div className="text-[11px] text-slate-300">capacitación</div>
+              </div>
+              <div>
+                <div className="text-lg font-bold">{rank[yo].pctEnt === null ? "—" : rank[yo].pctEnt + "%"}</div>
+                <div className="text-[11px] text-slate-300">entregas</div>
+              </div>
+            </div>
+          </div>
+          {rank[yo].pctEnt === null && (
+            <p className="text-[11px] text-slate-300 mt-2">
+              Aún no tienes asignación cargada, así que tu puntaje considera solo la capacitación.
+            </p>
+          )}
+        </Card>
+      )}
+
+      <div className="grid grid-cols-3 gap-3">
+        {[1, 0, 2].map(pos => {
+          const r = podio[pos];
+          if (!r) return <div key={pos} />;
+          return (
+            <Card key={pos} className={`p-4 text-center ${r.id === user.id ? "ring-2 ring-[#E8871E]" : ""}`}>
+              <div className="text-3xl">{medallas[pos]}</div>
+              <div className="font-bold text-sm mt-1 truncate">{r.nombre}</div>
+              <div className="text-2xl font-bold text-[#1a2340] mt-2">{r.puntos}</div>
+              <div className="text-[11px] text-slate-500">{r.horas} h · {r.pctEnt === null ? "sin asignación" : r.pctEnt + "% entregas"}</div>
+            </Card>
+          );
+        })}
+      </div>
+
+      {resto.length > 0 && (
+        <Card className="p-4">
+          {resto.map((r, i) => (
+            <div key={r.id} className={`flex items-center gap-3 py-2 border-b border-slate-100 last:border-0 ${r.id === user.id ? "bg-amber-50 -mx-4 px-4" : ""}`}>
+              <span className="w-6 text-sm font-bold text-slate-400">{i + 4}</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">{r.nombre}</div>
+                <div className="text-xs text-slate-500">{r.horas} h de capacitación · {r.pctEnt === null ? "sin asignación" : `${r.entregadas ?? r.av?.entregadas ?? 0} de ${r.av?.requeridas ?? 0} entregas`}</div>
+              </div>
+              <span className="text-sm font-bold text-[#1a2340]">{r.puntos}</span>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      <p className="text-[11px] text-slate-400">
+        El puntaje va de 0 a 100: la mitad corresponde al avance hacia la meta anual de capacitación
+        y la otra mitad al porcentaje de planeaciones, planes e informes entregados.
+      </p>
+    </div>
+  );
+}
 
 function Ranking({ db, user }) {
   const [ciclo, setCiclo] = useState(db.config.cicloActual);
@@ -2092,66 +2374,81 @@ function DescargarProgramaBtn({ programa, texto = false }) {
 
 // Vista del jefe académico y del administrador: administra el repositorio
 function ProgramasEstudio({ db, user, mutar }) {
-  const [cola, setCola] = useState(null);        // subida masiva en proceso
-  const [resumen, setResumen] = useState(null);  // resultado de la última subida
+  const [cola, setCola] = useState(null);
+  const [resumen, setResumen] = useState(null);
   const [editando, setEditando] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
 
   const lista = db.programas
-    .filter(p => !q || normTexto(p.nombre).includes(normTexto(q)))
+    .filter(p => !q || normTexto(p.nombre).includes(normTexto(q))
+      || asignaturasDe(p).some(a => normTexto(a.nombre).includes(normTexto(q))))
     .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
-  const incompletos = db.programas.filter(p => !p.nombre || p.numPlaneaciones == null || p.numPlaneaciones === "").length;
 
-  /* Subida masiva: se pueden seleccionar TODOS los PDF de una vez.
-     Cada archivo se procesa y se guarda de inmediato (IA → almacenamiento →
-     registro), para no acumular cientos de MB en la memoria del navegador. */
+  const totalAsig = todasLasAsignaturas(db).length;
+  const pendientes = todasLasAsignaturas(db).filter(a => a.numPlaneaciones == null || a.numPlaneaciones === "").length;
+
+  /* Subida masiva: se pueden seleccionar TODOS los PDF a la vez. Cada
+     documento se procesa y guarda de inmediato, uno por uno. Un mismo
+     programa puede desarrollar varias asignaturas (I, II, III…) y la IA
+     extrae cada una con su propio número de planeaciones. */
   const subirLote = async (files) => {
     const archivos = [...files].filter(f => f.name.toLowerCase().endsWith(".pdf"));
     if (!archivos.length) return;
     setResumen(null); setErr("");
-    setCola({ total: archivos.length, hechos: 0, actual: archivos[0].name });
-    let ok = 0, revisar = 0, fallidos = [];
+    let ok = 0, asigs = 0, revisar = 0, fallidos = [];
     for (let i = 0; i < archivos.length; i++) {
       const f = archivos[i];
       setCola({ total: archivos.length, hechos: i, actual: f.name });
       try {
         const b64 = await leerComoBase64(f);
         if (b64.length > MAX_FILE_B64) { fallidos.push(f.name + " (supera ~7.5 MB)"); continue; }
-        // La IA lee nombre y número de propósitos/progresiones
-        let nombre = "", num = null;
+        let nombrePrograma = "", asignaturas = [];
         try {
           const d = await extraerConIA({ base64: b64, mime: f.type || "application/pdf", tipo: "programa" });
-          nombre = d.nombre || "";
-          num = d.num_planeaciones ?? null;
+          nombrePrograma = d.programa || "";
+          asignaturas = (d.asignaturas || []).filter(a => a && a.nombre).map(a => ({
+            nombre: a.nombre,
+            numPlaneaciones: a.num_planeaciones ?? null,
+            base: a.base || null,
+            semestre: a.semestre || "",
+          }));
         } catch { /* si la IA falla, queda para captura manual */ }
         const id = uid();
         const r = await guardarArchivo("prog_" + id, b64, f.type || "application/pdf", f.name);
         if (!r.guardado) { fallidos.push(f.name + " (no se pudo guardar)"); continue; }
-        const pendiente = !nombre || num == null;
         await mutar(d => {
-          d.programas.push({ id, nombre: nombre || f.name.replace(/\.pdf$/i, ""),
-            numPlaneaciones: num, archivoNombre: f.name, archivoGuardado: true,
-            revisar: pendiente, creadoEn: ahora() });
+          d.programas.push({
+            id, nombre: nombrePrograma || f.name.replace(/\.pdf$/i, ""),
+            asignaturas, archivoNombre: f.name, archivoGuardado: true, creadoEn: ahora(),
+          });
         });
-        ok++; if (pendiente) revisar++;
+        ok++; asigs += asignaturas.length;
+        revisar += asignaturas.filter(a => a.numPlaneaciones == null).length + (asignaturas.length ? 0 : 1);
       } catch (e) { fallidos.push(f.name + " (" + e.message + ")"); }
     }
     setCola(null);
-    setResumen({ ok, revisar, fallidos });
+    setResumen({ ok, asigs, revisar, fallidos });
+  };
+
+  const abrirEdicion = (p) => {
+    setEditando({ id: p.id, nombre: p.nombre || "",
+      asignaturas: asignaturasDe(p).map(a => ({ ...a, numPlaneaciones: a.numPlaneaciones ?? "" })) });
+    setErr("");
   };
 
   const guardarEdicion = async () => {
     const e = editando;
     if (!e.nombre.trim()) { setErr("El nombre del programa es obligatorio."); return; }
+    if (e.asignaturas.some(a => !a.nombre.trim())) { setErr("Todas las asignaturas necesitan nombre."); return; }
     setGuardando(true); setErr("");
     try {
       await mutar(d => {
         const i = d.programas.findIndex(x => x.id === e.id);
         if (i >= 0) d.programas[i] = { ...d.programas[i], nombre: e.nombre.trim(),
-          numPlaneaciones: e.numPlaneaciones === "" ? null : Number(e.numPlaneaciones),
-          revisar: e.numPlaneaciones === "" || e.numPlaneaciones == null,
+          asignaturas: e.asignaturas.map(a => ({ ...a, nombre: a.nombre.trim(),
+            numPlaneaciones: a.numPlaneaciones === "" ? null : Number(a.numPlaneaciones) })),
           actualizadoEn: ahora() };
       });
       setEditando(null);
@@ -2160,7 +2457,7 @@ function ProgramasEstudio({ db, user, mutar }) {
   };
 
   const eliminar = async (p) => {
-    if (!window.confirm(`¿Eliminar el programa “${p.nombre}”?\n\nLas asignaciones que dependan de él quedarán marcadas como “sin programa”.`)) return;
+    if (!window.confirm(`¿Eliminar el programa “${p.nombre}” y sus ${asignaturasDe(p).length} asignatura(s)?\n\nLas asignaciones que dependan de él quedarán marcadas como “sin programa”.`)) return;
     await mutar(d => { d.programas = d.programas.filter(x => x.id !== p.id); });
     await eliminarArchivo("prog_" + p.id);
   };
@@ -2171,8 +2468,8 @@ function ProgramasEstudio({ db, user, mutar }) {
         <div>
           <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Programas de Estudio</h2>
           <p className="text-sm text-slate-500">
-            Repositorio oficial del plantel. La IA lee cada PDF y captura el nombre y el número de
-            propósitos o progresiones — de ese número salen las planeaciones que entregará el docente.
+            Repositorio oficial. Un programa suele desarrollar varias asignaturas (I, II, III…); la IA
+            extrae cada una con su número de propósitos o progresiones, que equivale a sus planeaciones.
           </p>
         </div>
         <label className={btnPrim + " cursor-pointer" + (cola ? " opacity-50 pointer-events-none" : "")}>
@@ -2180,6 +2477,12 @@ function ProgramasEstudio({ db, user, mutar }) {
           <input type="file" accept=".pdf" multiple className="hidden"
             onChange={e => { subirLote(e.target.files); e.target.value = ""; }} />
         </label>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <Stat icono={BookOpen} label="Programas" valor={db.programas.length} />
+        <Stat icono={FileText} label="Asignaturas cubiertas" valor={totalAsig} />
+        <Stat icono={AlertTriangle} label="Por revisar" valor={pendientes} />
       </div>
 
       {cola && (
@@ -2195,71 +2498,103 @@ function ProgramasEstudio({ db, user, mutar }) {
           </div>
           <p className="text-[11px] text-slate-400 truncate">{cola.actual}</p>
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
-            Cada programa se lee con IA y se guarda de inmediato. No cierres esta pestaña;
-            puedes dejarla trabajando en segundo plano.
+            Cada programa se lee con IA y se guarda de inmediato. No cierres esta pestaña.
           </p>
         </Card>
       )}
 
       {resumen && (
         <div className="text-sm bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl p-3">
-          <b>{resumen.ok} programa(s) subidos.</b>
-          {resumen.revisar > 0 && <span className="block text-amber-700 mt-1">⚠ {resumen.revisar} necesitan revisión: la IA no pudo leer el nombre o el número de planeaciones. Complétalos con el lápiz.</span>}
+          <b>{resumen.ok} programa(s) subidos</b> con {resumen.asigs} asignatura(s) detectada(s).
+          {resumen.revisar > 0 && <span className="block text-amber-700 mt-1">⚠ {resumen.revisar} asignatura(s) sin número de planeaciones: complétalas con el lápiz.</span>}
           {resumen.fallidos.length > 0 && <span className="block text-rose-600 mt-1">No se subieron: {resumen.fallidos.join("; ")}</span>}
         </div>
-      )}
-
-      {incompletos > 0 && !resumen && (
-        <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
-          ⚠ Hay {incompletos} programa(s) sin número de planeaciones definido. Los docentes que impartan
-          esas asignaturas verán su requisito como pendiente hasta que lo captures.
-        </p>
       )}
 
       <Card className="p-3">
         <div className="relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar programa…" value={q} onChange={e => setQ(e.target.value)} />
+          <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar programa o asignatura…" value={q} onChange={e => setQ(e.target.value)} />
         </div>
       </Card>
 
-      <Card className="p-4">
-        <h3 className="font-bold text-sm mb-2">Repositorio <span className="text-slate-400 font-normal">· {lista.length} programa(s)</span></h3>
-        {lista.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">Aún no hay programas. Selecciona todos los PDF de una vez con “Subir programas”.</p>}
-        {lista.map(p => {
-          const pendiente = p.numPlaneaciones == null || p.numPlaneaciones === "";
-          return (
-            <div key={p.id} className="flex flex-wrap items-center gap-3 py-2.5 border-b border-slate-100 last:border-0">
+      {lista.length === 0 && (
+        <Card className="p-8 text-center text-sm text-slate-400">
+          Aún no hay programas. Selecciona todos los PDF de una vez con “Subir programas”.
+        </Card>
+      )}
+
+      {lista.map(p => {
+        const asigs = asignaturasDe(p);
+        return (
+          <Card key={p.id} className="p-4">
+            <div className="flex flex-wrap items-center gap-3">
               <div className="flex-1 min-w-[200px]">
-                <div className="font-medium text-sm">{p.nombre} {pendiente && <span className="text-[10px] font-bold text-amber-600">⚠ REVISAR</span>}</div>
+                <div className="font-bold text-sm">{p.nombre}</div>
                 <div className="text-xs text-slate-500">
-                  {pendiente ? "Planeaciones sin definir" : <><b>{p.numPlaneaciones}</b> planeación(es)</>}
-                  {!p.archivoGuardado && <span className="text-amber-600"> · sin PDF</span>}
+                  {asigs.length} asignatura(s){!p.archivoGuardado && <span className="text-amber-600"> · sin PDF</span>}
                 </div>
               </div>
               <DescargarProgramaBtn programa={p} />
-              <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar"
-                onClick={() => { setEditando({ id: p.id, nombre: p.nombre || "", numPlaneaciones: p.numPlaneaciones ?? "" }); setErr(""); }}><Pencil size={15}/></button>
+              <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar asignaturas"
+                onClick={() => abrirEdicion(p)}><Pencil size={15}/></button>
               <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500" title="Eliminar"
                 onClick={() => eliminar(p)}><Trash2 size={15}/></button>
             </div>
-          );
-        })}
-      </Card>
+            {asigs.length === 0 ? (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2 mt-2">
+                ⚠ La IA no detectó asignaturas en este PDF. Agrégalas manualmente con el lápiz.
+              </p>
+            ) : (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {asigs.map((a, i) => {
+                  const sin = a.numPlaneaciones == null || a.numPlaneaciones === "";
+                  return (
+                    <span key={i} className={`text-xs px-2.5 py-1 rounded-full border ${sin ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-slate-50 border-slate-200 text-slate-700"}`}>
+                      {a.nombre} · {sin ? "⚠ sin definir" : `${a.numPlaneaciones} planeación(es)`}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+        );
+      })}
 
       {editando && (
-        <Modal titulo="Editar programa" onClose={() => setEditando(null)}>
+        <Modal titulo="Editar programa y asignaturas" onClose={() => setEditando(null)} ancho="max-w-3xl">
           <div className="space-y-3">
-            <Campo label="Nombre de la asignatura / UAC / módulo">
+            <Campo label="Nombre del programa">
               <input className={inputCls} value={editando.nombre} onChange={e => setEditando({ ...editando, nombre: e.target.value })} />
             </Campo>
-            <Campo label="Número de planeaciones (propósitos o progresiones del programa)">
-              <input type="number" min="0" className={inputCls} value={editando.numPlaneaciones}
-                onChange={e => setEditando({ ...editando, numPlaneaciones: e.target.value })} />
-            </Campo>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-semibold text-slate-600">Asignaturas que desarrolla</span>
+                <button className="text-xs font-semibold text-indigo-600 hover:underline"
+                  onClick={() => setEditando({ ...editando, asignaturas: [...editando.asignaturas, { nombre: "", numPlaneaciones: "", base: null, semestre: "" }] })}>
+                  + Agregar asignatura
+                </button>
+              </div>
+              <div className="space-y-2">
+                {editando.asignaturas.map((a, i) => (
+                  <div key={i} className="flex gap-2 items-start">
+                    <input className={inputCls + " !mt-0 flex-1"} placeholder="Nombre de la asignatura, UAC o módulo"
+                      value={a.nombre} onChange={e => setEditando({ ...editando,
+                        asignaturas: editando.asignaturas.map((x, j) => j === i ? { ...x, nombre: e.target.value } : x) })} />
+                    <input type="number" min="0" className={inputCls + " !mt-0 !w-28"} placeholder="Planeac."
+                      value={a.numPlaneaciones} onChange={e => setEditando({ ...editando,
+                        asignaturas: editando.asignaturas.map((x, j) => j === i ? { ...x, numPlaneaciones: e.target.value } : x) })} />
+                    <button className="p-2 rounded-lg hover:bg-rose-50 text-rose-500 shrink-0" title="Quitar"
+                      onClick={() => setEditando({ ...editando, asignaturas: editando.asignaturas.filter((_, j) => j !== i) })}><Trash2 size={15}/></button>
+                  </div>
+                ))}
+                {editando.asignaturas.length === 0 && <p className="text-xs text-slate-400">Sin asignaturas. Agrega al menos una.</p>}
+              </div>
+            </div>
             <p className="text-[11px] text-slate-400">
-              El nombre debe coincidir con el que aparece en las asignaciones para que el sistema
-              los relacione automáticamente.
+              El número de planeaciones equivale a los <b>propósitos</b> de la asignatura, o a sus
+              <b> progresiones</b> cuando el programa se organiza así. El nombre debe coincidir con el
+              que aparece en las asignaciones para que el sistema los relacione.
             </p>
             {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
           </div>
@@ -2279,7 +2614,8 @@ function ProgramasEstudio({ db, user, mutar }) {
 function ProgramasDocente({ db }) {
   const [q, setQ] = useState("");
   const lista = db.programas
-    .filter(p => !q || normTexto(p.nombre).includes(normTexto(q)))
+    .filter(p => !q || normTexto(p.nombre).includes(normTexto(q))
+      || asignaturasDe(p).some(a => normTexto(a.nombre).includes(normTexto(q))))
     .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
   return (
     <div className="space-y-4">
@@ -2290,19 +2626,28 @@ function ProgramasDocente({ db }) {
       <Card className="p-3">
         <div className="relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar programa…" value={q} onChange={e => setQ(e.target.value)} />
+          <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar programa o asignatura…" value={q} onChange={e => setQ(e.target.value)} />
         </div>
       </Card>
-      <div className="grid sm:grid-cols-2 gap-2">
-        {lista.map(p => (
-          <Card key={p.id} className="p-3">
-            <div className="font-medium text-sm">{p.nombre}</div>
-            <div className="text-xs text-slate-500 mb-2">{p.numPlaneaciones != null && p.numPlaneaciones !== "" ? `${p.numPlaneaciones} planeación(es)` : "Planeaciones por definir"}</div>
+      {lista.map(p => (
+        <Card key={p.id} className="p-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex-1 min-w-[200px]">
+              <div className="font-bold text-sm">{p.nombre}</div>
+              <div className="text-xs text-slate-500">{asignaturasDe(p).length} asignatura(s)</div>
+            </div>
             {p.archivoGuardado ? <DescargarProgramaBtn programa={p} texto />
               : <span className="text-xs text-slate-400">PDF no disponible</span>}
-          </Card>
-        ))}
-      </div>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {asignaturasDe(p).map((a, i) => (
+              <span key={i} className="text-xs px-2.5 py-1 rounded-full bg-slate-50 border border-slate-200 text-slate-700">
+                {a.nombre}{a.numPlaneaciones != null && a.numPlaneaciones !== "" && ` · ${a.numPlaneaciones} planeación(es)`}
+              </span>
+            ))}
+          </div>
+        </Card>
+      ))}
       {lista.length === 0 && <Card className="p-8 text-center text-sm text-slate-400">Aún no hay programas publicados.</Card>}
     </div>
   );
@@ -2659,7 +3004,7 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose }) {
                   planeaciones corresponden. Súbelo en Programas de Estudio (el nombre debe coincidir).
                 </p>
               )}
-              {e.programa && <p className="text-[11px] text-slate-400 mt-1">Programa: {e.programa.nombre}</p>}
+              {e.programa && <p className="text-[11px] text-slate-400 mt-1">Programa: {e.programa.programa?.nombre} · {e.programa.nombre}</p>}
               <div className="mt-2 space-y-1">
                 {filas.map(([t, n]) => {
                   const ent = asig.docenteId ? entregasDe(db, asig.docenteId, asig.ciclo, e.clave, t) : [];
@@ -2801,7 +3146,8 @@ function MiAsignacion({ db, user, mutar }) {
             </div>
             {e.programa && (
               <p className="text-[11px] text-slate-400 mb-1 flex items-center gap-2">
-                Programa: {e.programa.nombre} <DescargarProgramaBtn programa={e.programa} texto />
+                Programa: {e.programa.programa?.nombre} · {e.programa.nombre}
+                {e.programa.programa && <DescargarProgramaBtn programa={e.programa.programa} texto />}
               </p>
             )}
             {e.tipo === "asignatura" && !e.programa && (
