@@ -57,6 +57,9 @@ const MAPA = {
   activity: { tabla: "activity", fila: (r) => ({ id: r.id, data: r }) },
   logros: { tabla: "logros", fila: (r) => ({ id: r.id, docente_id: r.docenteId, clave: r.clave, data: r }) },
   avisos: { tabla: "avisos", fila: (r) => ({ id: r.id, estado: r.estado, data: r }) },
+  programas: { tabla: "programas", fila: (r) => ({ id: r.id, data: r }) },
+  asignaciones: { tabla: "asignaciones", fila: (r) => ({ id: r.id, docente_id: r.docenteId || null, data: r }) },
+  entregas: { tabla: "entregas", fila: (r) => ({ id: r.id, docente_id: r.docenteId, estado: r.estado || "entregada", data: r }) },
   // `acuses` se omite a propósito: nunca se escribe desde el estado local.
   // El acuse se crea con marcarEnterado(), que deja que el servidor fije
   // el usuario (auth.uid()) y la fecha (now()).
@@ -73,7 +76,7 @@ export async function cargarTodo(uid) {
     .from("perfiles").select("*").eq("id", uid).single();
   lanzar(e0, "No se pudo leer tu perfil");
   const yo = aplanarPerfil(perfilFila);
-  const esAdmin = yo.rol === "admin";
+  const esStaff = yo.rol !== "docente"; // admin y jefes de departamento
 
   const { data: cfgFila, error: e1 } = await supabase
     .from("config").select("data").eq("id", 1).maybeSingle();
@@ -81,10 +84,11 @@ export async function cargarTodo(uid) {
   const config = { ...CONFIG_DEFECTO, ...(cfgFila?.data || {}) };
 
   const db = { users: [], certs: [], grados: [], comp: [], notifs: [],
-               activity: [], logros: [], avisos: [], acuses: [], config };
+               activity: [], logros: [], avisos: [], acuses: [],
+               programas: [], asignaciones: [], entregas: [], config };
 
-  if (esAdmin) {
-    const [pf, ce, gr, co, no, ac, lo, av, aq] = await Promise.all([
+  if (esStaff) {
+    const [pf, ce, gr, co, no, ac, lo, av, aq, pr, asg, en] = await Promise.all([
       supabase.from("perfiles").select("*"),
       supabase.from("certs").select("data"),
       supabase.from("grados").select("data"),
@@ -94,8 +98,11 @@ export async function cargarTodo(uid) {
       supabase.from("logros").select("data"),
       supabase.from("avisos").select("data"),
       supabase.from("acuses").select("id, aviso_id, usuario_id, fecha_enterado"),
+      supabase.from("programas").select("data"),
+      supabase.from("asignaciones").select("data"),
+      supabase.from("entregas").select("data"),
     ]);
-    for (const r of [pf, ce, gr, co, no, ac, lo, av, aq]) lanzar(r.error, "No se pudieron cargar los datos");
+    for (const r of [pf, ce, gr, co, no, ac, lo, av, aq, pr, asg, en]) lanzar(r.error, "No se pudieron cargar los datos");
     db.users = pf.data.map(aplanarPerfil);
     db.certs = ce.data.map((r) => r.data);
     db.grados = gr.data.map((r) => r.data);
@@ -105,8 +112,11 @@ export async function cargarTodo(uid) {
     db.logros = lo.data.map((r) => r.data);
     db.avisos = av.data.map((r) => r.data);
     db.acuses = aq.data.map(aplanarAcuse);
+    db.programas = pr.data.map((r) => r.data);
+    db.asignaciones = asg.data.map((r) => r.data);
+    db.entregas = en.data.map((r) => r.data);
   } else {
-    const [pub, horas, ce, gr, co, no, lo, av, aq] = await Promise.all([
+    const [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en] = await Promise.all([
       supabase.from("publico_docentes").select("*"),
       supabase.from("publico_horas").select("*"),
       supabase.from("certs").select("data").eq("docente_id", uid),
@@ -116,8 +126,11 @@ export async function cargarTodo(uid) {
       supabase.from("logros").select("data").eq("docente_id", uid),
       supabase.from("avisos").select("data").in("estado", ["published", "archived"]),
       supabase.from("acuses").select("id, aviso_id, usuario_id, fecha_enterado").eq("usuario_id", uid),
+      supabase.from("programas").select("data"),
+      supabase.from("asignaciones").select("data").eq("docente_id", uid),
+      supabase.from("entregas").select("data").eq("docente_id", uid),
     ]);
-    for (const r of [pub, horas, ce, gr, co, no, lo, av, aq]) lanzar(r.error, "No se pudieron cargar los datos");
+    for (const r of [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en]) lanzar(r.error, "No se pudieron cargar los datos");
     db.users = pub.data.map((p) =>
       p.id === uid ? yo : { id: p.id, nombre: p.nombre || "Docente", rol: p.rol, activo: p.activo, _publico: true }
     );
@@ -144,6 +157,9 @@ export async function cargarTodo(uid) {
     db.logros = lo.data.map((r) => r.data);
     db.avisos = av.data.map((r) => r.data);
     db.acuses = aq.data.map(aplanarAcuse);
+    db.programas = pr.data.map((r) => r.data);
+    db.asignaciones = asg.data.map((r) => r.data);
+    db.entregas = en.data.map((r) => r.data);
   }
 
   // orden estable: lo más reciente primero donde aplica
@@ -276,8 +292,8 @@ async function llamarAdmin(body) {
   return data;
 }
 
-export const crearDocente = ({ email, password, nombre, area, asignaturas, antiguedad }) =>
-  llamarAdmin({ accion: "crear", email, password, nombre, area, asignaturas, antiguedad });
+export const crearDocente = ({ email, password, nombre, area, asignaturas, rol }) =>
+  llamarAdmin({ accion: "crear", email, password, nombre, area, asignaturas, rol });
 
 export const restablecerPassword = ({ id, password }) =>
   llamarAdmin({ accion: "reset_pass", id, password });
