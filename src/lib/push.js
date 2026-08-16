@@ -110,8 +110,13 @@ export async function enviarPush({ destinatarios, titulo, cuerpo, ruta, urgente 
       },
       body: JSON.stringify({ destinatarios, titulo, cuerpo, ruta, urgente }),
     });
-    return await r.json();
-  } catch {
-    return { enviadas: 0 };
+    if (r.status === 404) {
+      return { enviadas: 0, error: "La función “enviar-push” no existe en Supabase. Créala con ese nombre exacto y publícala." };
+    }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok && !j.error) j.error = `El servidor respondió ${r.status}.`;
+    return { enviadas: 0, ...j };
+  } catch (e) {
+    return { enviadas: 0, error: "No se pudo contactar al servidor de notificaciones: " + e.message };
   }
 }
