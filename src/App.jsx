@@ -760,6 +760,17 @@ export default function App() {
       .finally(() => { setCargando(false); ultimaCarga.current = Date.now(); });
   }, [sesion, recargar]);
 
+  // Prepara la recepción de notificaciones y atiende los toques en ellas
+  useEffect(() => {
+    if (!soportaPush()) return;
+    registrarServicio().catch(() => {});
+    const alMensaje = (ev) => {
+      if (ev.data?.tipo === "ir_a" && ev.data.ruta) setPagina(ev.data.ruta);
+    };
+    navigator.serviceWorker.addEventListener("message", alMensaje);
+    return () => navigator.serviceWorker.removeEventListener("message", alMensaje);
+  }, []);
+
   // Refresca datos al volver a la pestaña, para ver los cambios de otros
   // usuarios. Nunca muestra la pantalla de carga ni desmonta nada: los
   // formularios abiertos conservan lo que se haya escrito. Además se
@@ -870,17 +881,6 @@ export default function App() {
     ...(db.config.rankingPublico ? [{ id: "ranking", label: "Ranking general", icono: Trophy }] : []),
     { id: "logros", label: "Logros", icono: Award },
   ];
-
-  // Prepara la recepción de notificaciones y atiende los toques en ellas
-  useEffect(() => {
-    if (!soportaPush()) return;
-    registrarServicio().catch(() => {});
-    const alMensaje = (ev) => {
-      if (ev.data?.tipo === "ir_a" && ev.data.ruta) setPagina(ev.data.ruta);
-    };
-    navigator.serviceWorker.addEventListener("message", alMensaje);
-    return () => navigator.serviceWorker.removeEventListener("message", alMensaje);
-  }, []);
 
   const irA = (p, ctx = null) => { setPagina(p); setPaginaCtx(ctx); setMenuAbierto(false); setBusqueda(""); };
 
