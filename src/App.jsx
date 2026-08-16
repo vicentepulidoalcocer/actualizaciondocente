@@ -2736,8 +2736,9 @@ function NotificacionesCelular({ user }) {
       cuerpo: "Si ves esto, tu dispositivo está bien configurado.",
     });
     setTrabajando(false);
-    if (r.enviadas > 0) setMsg("Enviada. Debe aparecer en unos segundos.");
-    else setErr("No se pudo enviar. Verifica que las notificaciones estén activas en este dispositivo.");
+    if (r.enviadas > 0) { setMsg("Enviada. Debe aparecer en unos segundos."); return; }
+    // Se muestra el motivo real para poder corregirlo
+    setErr(r.error || "No se pudo enviar. Vuelve a activar las notificaciones en este dispositivo.");
   };
 
   return (
