@@ -258,9 +258,9 @@ async function detalleError(error, generico) {
   return error.message || generico;
 }
 
-export async function extraerConIA({ base64, mime, tipo }) {
+export async function extraerConIA({ base64, mime, tipo, rubro }) {
   const { data, error } = await supabase.functions.invoke("extraer", {
-    body: { base64, mime, tipo },
+    body: { base64, mime, tipo, rubro },
   });
   if (error) throw new Error(await detalleError(error, "Error del servicio de IA"));
   if (data?.error) throw new Error(data.error);
