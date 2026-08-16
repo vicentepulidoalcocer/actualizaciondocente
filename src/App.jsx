@@ -24,6 +24,10 @@ import {
   extraerConIA, crearDocente, restablecerPassword, cambiarEmailDocente,
   marcarEnterado, MAX_FILE_B64,
 } from "./lib/nube";
+import {
+  soportaPush, esIOS, instaladoEnInicio, permisoActual,
+  activarNotificaciones, desactivarNotificaciones, estaActivo, enviarPush, registrarServicio,
+} from "./lib/push";
 
 const CATEGORIAS = [
   "Formación pedagógica", "Evaluación", "Tecnología educativa",
@@ -866,6 +870,17 @@ export default function App() {
     ...(db.config.rankingPublico ? [{ id: "ranking", label: "Ranking general", icono: Trophy }] : []),
     { id: "logros", label: "Logros", icono: Award },
   ];
+
+  // Prepara la recepción de notificaciones y atiende los toques en ellas
+  useEffect(() => {
+    if (!soportaPush()) return;
+    registrarServicio().catch(() => {});
+    const alMensaje = (ev) => {
+      if (ev.data?.tipo === "ir_a" && ev.data.ruta) setPagina(ev.data.ruta);
+    };
+    navigator.serviceWorker.addEventListener("message", alMensaje);
+    return () => navigator.serviceWorker.removeEventListener("message", alMensaje);
+  }, []);
 
   const irA = (p, ctx = null) => { setPagina(p); setPaginaCtx(ctx); setMenuAbierto(false); setBusqueda(""); };
 
@@ -2674,6 +2689,116 @@ function JefesDepartamento({ db, mutar }) {
 }
 
 /* ================================================================
+   NOTIFICACIONES AL CELULAR
+   ================================================================ */
+
+function NotificacionesCelular({ user }) {
+  const [activo, setActivo] = useState(null);
+  const [trabajando, setTrabajando] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  useEffect(() => { estaActivo().then(setActivo); }, []);
+
+  const soporta = soportaPush();
+  const iosPendiente = soporta && esIOS() && !instaladoEnInicio();
+
+  const activar = async () => {
+    setTrabajando(true); setErr(""); setMsg("");
+    const r = await activarNotificaciones(user.id);
+    setTrabajando(false);
+    if (r.ok) {
+      setActivo(true);
+      setMsg("Listo. Este dispositivo recibirá los avisos aunque el portal esté cerrado.");
+      return;
+    }
+    const razones = {
+      no_soportado: "Este navegador no admite notificaciones. Prueba con Chrome en Android o Safari en iPhone.",
+      ios_sin_instalar: "En iPhone primero agrega el portal a la pantalla de inicio (botón Compartir → “Agregar a inicio”) y ábrelo desde ese ícono.",
+      permiso_denegado: "No se concedió el permiso. Puedes habilitarlo en los ajustes del navegador para este sitio.",
+      guardado: "No se pudo registrar el dispositivo: " + (r.detalle || ""),
+    };
+    setErr(razones[r.motivo] || "No se pudieron activar las notificaciones.");
+  };
+
+  const desactivar = async () => {
+    setTrabajando(true); setErr(""); setMsg("");
+    await desactivarNotificaciones();
+    setTrabajando(false); setActivo(false);
+    setMsg("Este dispositivo dejará de recibir notificaciones.");
+  };
+
+  const probar = async () => {
+    setTrabajando(true); setErr(""); setMsg("");
+    const r = await enviarPush({
+      destinatarios: [user.id],
+      titulo: "Notificación de prueba",
+      cuerpo: "Si ves esto, tu dispositivo está bien configurado.",
+    });
+    setTrabajando(false);
+    if (r.enviadas > 0) setMsg("Enviada. Debe aparecer en unos segundos.");
+    else setErr("No se pudo enviar. Verifica que las notificaciones estén activas en este dispositivo.");
+  };
+
+  return (
+    <Card className="p-5 space-y-3">
+      <div>
+        <h3 className="font-bold text-sm flex items-center gap-1.5"><Bell size={15}/>Notificaciones en este dispositivo</h3>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Recibe los avisos y circulares en tu celular, aunque no tengas el portal abierto.
+          Cada dispositivo se activa por separado.
+        </p>
+      </div>
+
+      {!soporta && (
+        <p className="text-sm text-slate-500 bg-slate-50 rounded-lg p-2.5">
+          Este navegador no admite notificaciones. Funcionan en Chrome (Android y computadora) y en
+          Safari de iPhone con el portal agregado a la pantalla de inicio.
+        </p>
+      )}
+
+      {iosPendiente && (
+        <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+          <b>Un paso previo en iPhone:</b> toca el botón <b>Compartir</b> de Safari, elige
+          <b> “Agregar a inicio”</b> y abre el portal desde ese nuevo ícono. Desde ahí podrás
+          activar las notificaciones. Es un requisito de Apple, no del portal.
+        </div>
+      )}
+
+      {soporta && !iosPendiente && (
+        <div className="flex flex-wrap items-center gap-2">
+          {activo ? (
+            <>
+              <span className="text-sm text-emerald-700 font-semibold flex items-center gap-1.5">
+                <CheckCircle2 size={15}/>Activas en este dispositivo
+              </span>
+              <button className={btnSec + " !px-3 !py-1.5"} disabled={trabajando} onClick={probar}>
+                {trabajando ? <Loader2 size={13} className="animate-spin"/> : <Send size={13}/>}Enviar prueba
+              </button>
+              <button className={btnSec + " !px-3 !py-1.5"} disabled={trabajando} onClick={desactivar}>Desactivar</button>
+            </>
+          ) : (
+            <button className={btnPrim} disabled={trabajando} onClick={activar}>
+              {trabajando ? <Loader2 size={14} className="animate-spin"/> : <Bell size={14}/>}
+              Activar notificaciones
+            </button>
+          )}
+        </div>
+      )}
+
+      {permisoActual() === "denied" && (
+        <p className="text-xs text-slate-500">
+          El permiso está bloqueado para este sitio. Habilítalo desde el candado de la barra de
+          direcciones (o Ajustes → Notificaciones) y vuelve a intentarlo.
+        </p>
+      )}
+      {msg && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2">{msg}</p>}
+      {err && <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0"/>{err}</p>}
+    </Card>
+  );
+}
+
+/* ================================================================
    CALENDARIO ACADÉMICO
    Lo publica el Depto. de Formación Docente (o la administración
    general) como imagen o PDF; todo el personal lo consulta en
@@ -3581,6 +3706,7 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
     const sinMatch = extraidos.filter(x => !x.docenteId).length;
     if (sinMatch && !window.confirm(`${sinMatch} docente(s) del PDF no quedaron vinculados a una cuenta y no podrán ver su asignación. ¿Guardar de todos modos?`)) return;
     setGuardando(true); setErr("");
+    const aNotificar = [];
     try {
       const loteId = uid();
       await guardarArchivo("asig_" + loteId, loteArchivo.b64, loteArchivo.file.type || "application/pdf", loteArchivo.file.name);
@@ -3596,11 +3722,22 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
             items: x.items, totalHoras: x.totalHoras,
             creadoEn: ahora(), creadoPor: user.nombre,
           });
-          if (x.docenteId) notificar(d, x.docenteId,
-            `📋 Ya está disponible tu asignación del semestre ${nombrePeriodo(periodoSel)} (ciclo ${cicloSel}). Revisa en “Mi asignación” qué planeaciones, planes e informes te corresponden.`);
+          if (x.docenteId) {
+            notificar(d, x.docenteId,
+              `📋 Ya está disponible tu asignación del semestre ${nombrePeriodo(periodoSel)} (ciclo ${cicloSel}). Revisa en “Mi asignación” qué planeaciones, planes e informes te corresponden.`);
+            aNotificar.push(x.docenteId);
+          }
         }
         registrarActividad(d, `Se cargaron asignaciones de ${nombrePeriodo(periodoSel)} del ciclo ${cicloSel} (${extraidos.length} docentes).`);
       });
+      if (aNotificar.length) {
+        enviarPush({
+          destinatarios: aNotificar,
+          titulo: "Tu asignación está disponible",
+          cuerpo: `Semestre ${nombrePeriodo(periodoSel)} · ciclo ${cicloSel}. Revisa qué debes entregar.`,
+          ruta: "mi_asignacion",
+        });
+      }
       setFase("lista"); setExtraidos(null); setLoteArchivo(null);
     } catch (e) { setErr(e.message); }
     setGuardando(false);
@@ -4211,6 +4348,7 @@ function Avisos({ db, user, mutar }) {
   };
 
   const guardar = async (publicar) => {
+    let paraPush = [];
     if (!editando.titulo.trim() || !editando.descripcion.trim()) {
       setErr("El título y la descripción son obligatorios."); return;
     }
@@ -4233,8 +4371,21 @@ function Avisos({ db, user, mutar }) {
           destinatariosDe(d, base).forEach(doc => notificar(d, doc.id,
             `${base.prioridad === "Urgente" ? "🔴 URGENTE · " : "📢 "}Nuevo aviso: “${base.titulo}”. Márcalo como enterado en la sección Avisos.`));
           registrarActividad(d, `Se publicó el aviso “${base.titulo}”.`);
+          paraPush = destinatariosDe(d, base).map(doc => doc.id);
         }
       });
+
+      /* Notificación al celular. Va después de guardar y sin bloquear:
+         si el envío falla, el aviso igual quedó publicado. */
+      if (paraPush.length) {
+        enviarPush({
+          destinatarios: paraPush,
+          titulo: (editando.prioridad === "Urgente" ? "🔴 URGENTE · " : "") + "Nuevo aviso",
+          cuerpo: editando.titulo,
+          ruta: "avisos",
+          urgente: editando.prioridad === "Urgente",
+        });
+      }
       setEditando(null); setConfirmar(null);
     } catch (e) { setErr(e.message); }
     setGuardando(false);
@@ -4496,6 +4647,9 @@ function SeguimientoAviso({ db, aviso, onClose }) {
 
 function MisAvisos({ db, user, recargar }) {
   const [tab, setTab] = useState("pendientes");
+  const [mostrarPush, setMostrarPush] = useState(false);
+  // Si aún no las activó, se ofrece de forma discreta
+  useEffect(() => { estaActivo().then(a => setMostrarPush(!a && permisoActual() === "default")); }, []);
   const [confirmando, setConfirmando] = useState(null);
   const [firmando, setFirmando] = useState(false);
   const [err, setErr] = useState("");
@@ -4528,7 +4682,15 @@ function MisAvisos({ db, user, recargar }) {
           <button key={k} onClick={() => setTab(k)}
             className={`px-3.5 py-1.5 rounded-xl text-sm font-semibold ${tab === k ? "bg-[#1a2340] text-white" : "bg-white border border-slate-200 text-slate-600"}`}>{l}</button>
         ))}
+        {!mostrarPush && soportaPush() && (
+          <button onClick={() => setMostrarPush(true)}
+            className="ml-auto text-xs font-semibold text-indigo-600 hover:underline flex items-center gap-1">
+            <Bell size={13}/>Recibir avisos en mi celular
+          </button>
+        )}
       </div>
+
+      {mostrarPush && <NotificacionesCelular user={user} />}
 
       {lista.length === 0 && (
         <Card className="p-8 text-center text-sm text-slate-400">
@@ -4678,6 +4840,7 @@ function Validaciones({ db, user, mutar }) {
   const nombreDe = (id) => db.users.find(u => u.id === id)?.nombre || "—";
 
   const validarCert = async (cert) => {
+    let avisarAlCelular = null;
     await mutar(d => {
       const c = d.certs.find(x => x.id === cert.id);
       c.datos = cert.datos; // correcciones del admin
@@ -4686,22 +4849,41 @@ function Validaciones({ db, user, mutar }) {
       notificar(d, c.docenteId, `✅ Tu constancia “${c.datos.curso}” fue validada. Se sumaron ${c.datos.horas || 0} horas a tu historial.`);
       registrarActividad(d, `Se validó la constancia “${c.datos.curso}” de ${nombreDe(c.docenteId)} (${c.datos.horas || 0} h).`);
       otorgarLogros(d, c.docenteId, c.ciclo);
+      avisarAlCelular = { id: c.docenteId, ok: true, curso: c.datos.curso };
       const h = horasValidadas(d, c.docenteId, d.config.cicloActual);
       const m = metaDe(d, c.docenteId);
       if (h >= m) registrarActividad(d, `🎉 ${nombreDe(c.docenteId)} alcanzó ${h} horas y cumplió su meta del ciclo.`);
       else if (h >= 20 && h - (Number(c.datos.horas)||0) < 20) registrarActividad(d, `${nombreDe(c.docenteId)} alcanzó ${h} horas de capacitación.`);
     });
+    if (avisarAlCelular) {
+      enviarPush({
+        destinatarios: [avisarAlCelular.id],
+        titulo: "Constancia validada ✅",
+        cuerpo: `“${avisarAlCelular.curso}” ya cuenta en tu historial.`,
+        ruta: "cursos",
+      });
+    }
     setRevisando(null);
   };
 
   const rechazarCert = async (cert) => {
     if (!motivo.trim()) return;
+    let avisarRechazo = null;
     await mutar(d => {
       const c = d.certs.find(x => x.id === cert.id);
       c.estado = "rechazada"; c.motivoRechazo = motivo.trim();
       c.historial.push({ fecha: ahora(), accion: `Rechazada · motivo: ${motivo.trim()}`, por: user.nombre });
       notificar(d, c.docenteId, `❌ Tu constancia “${c.datos.curso || c.archivoNombre}” fue rechazada. Motivo: ${motivo.trim()}`);
+      avisarRechazo = { id: c.docenteId, curso: c.datos.curso || c.archivoNombre };
     });
+    if (avisarRechazo) {
+      enviarPush({
+        destinatarios: [avisarRechazo.id],
+        titulo: "Constancia rechazada",
+        cuerpo: `“${avisarRechazo.curso}”. Revisa el motivo en Mis cursos.`,
+        ruta: "cursos",
+      });
+    }
     setMotivo(""); setRevisando(null);
   };
 
@@ -5493,6 +5675,7 @@ function Administracion({ db, user, mutar, esAdmin = true }) {
 
       {esAdmin && <JefesDepartamento db={db} mutar={mutar} />}
 
+      <NotificacionesCelular user={user} />
       <MiCuenta user={user} soloTarjeta />
     </div>
   );
