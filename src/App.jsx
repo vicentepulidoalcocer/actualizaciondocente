@@ -68,7 +68,30 @@ const esRolValidador = (r) => r === "admin" || r === "jefe_formacion";
 const esRolAcademico = (r) => r === "admin" || r === "jefe_academico";
 const esRolComunicador = (r) => r !== "docente";
 
-/* ---- Programas de estudio y asignaciones ---- */
+/* ---- Programas de estudio ----
+   Las mallas conviven en cuatro rubros. De cada uno sale un número de
+   planeaciones distinto:
+     propósitos   → una por propósito (1.º y 3.er semestre)
+     progresiones → una por progresión (5.º semestre)
+     BAETAM       → una sola, sea cual sea el programa
+     módulos      → tres por semestre                                  */
+const RUBROS_PROGRAMA = [
+  ["propositos", "Propósitos", "1.º y 3.er semestre · una planeación por propósito"],
+  ["progresiones", "Progresiones", "5.º semestre · una planeación por progresión"],
+  ["baetam", "BAETAM", "Todos los semestres · una sola planeación"],
+  ["modulos", "Módulos profesionales", "Todos los semestres · tres planeaciones"],
+];
+const nombreRubro = (r) => (RUBROS_PROGRAMA.find(x => x[0] === r) || ["", r || "Sin rubro"])[1];
+
+/* Semestre al que pertenece un grupo ("3° B", "BAETAM 1° A", "5°C"). */
+function semestreDeGrupo(grupo) {
+  const m = normTexto(grupo).match(/\b([135])\b/);
+  return m ? Number(m[1]) : null;
+}
+
+/* Rubro que corresponde a una asignatura según su semestre:
+   1.º y 3.er van por propósitos; 5.º por progresiones. */
+const rubroDeSemestre = (sem) => (sem === 5 ? "progresiones" : sem ? "propositos" : null);
 
 /* ---- Avisos y circulares ---- */
 const TIPOS_AVISO = ["Circular", "Curso", "Reunión", "Información general", "Actividad", "Importante", "Urgente"];
@@ -362,22 +385,36 @@ const asignaturasDe = (p) => Array.isArray(p.asignaturas) ? p.asignaturas : [];
 const todasLasAsignaturas = (db) =>
   db.programas.flatMap(p => asignaturasDe(p).map((a, i) => ({ ...a, programa: p, idx: i })));
 
-/* Busca la asignatura del repositorio que corresponde a una actividad de
-   la asignación. Prioriza la coincidencia exacta; si no la hay, la más
-   específica (la más larga), para que "Pensamiento Matemático III" no se
-   confunda con "Pensamiento Matemático I". */
-function buscarPrograma(db, actividad) {
+/* Busca la asignatura del repositorio que corresponde a una actividad.
+   Cuando se conoce el semestre, se prioriza el rubro que le toca
+   (propósitos para 1.º y 3.º, progresiones para 5.º); si ahí no aparece,
+   se busca en el resto para no dejar al docente sin referencia.
+   Dentro de cada grupo gana la coincidencia exacta y, si no la hay, la
+   más específica: así "Pensamiento Matemático III" no se confunde con
+   "Pensamiento Matemático I". */
+function buscarPrograma(db, actividad, semestre) {
   const n = normTexto(actividad);
   if (!n) return null;
-  const cands = todasLasAsignaturas(db);
-  for (const a of cands) if (normTexto(a.nombre) === n) return a;
-  let mejor = null, mejorLen = 0;
-  for (const a of cands) {
-    const an = normTexto(a.nombre);
-    if (!an) continue;
-    if ((n.includes(an) || an.includes(n)) && an.length > mejorLen) { mejor = a; mejorLen = an.length; }
+  const todas = todasLasAsignaturas(db);
+  const rubro = rubroDeSemestre(semestre);
+
+  const buscarEn = (lista) => {
+    for (const a of lista) if (normTexto(a.nombre) === n) return a;
+    let mejor = null, mejorLen = 0;
+    for (const a of lista) {
+      const an = normTexto(a.nombre);
+      if (!an) continue;
+      if ((n.includes(an) || an.includes(n)) && an.length > mejorLen) { mejor = a; mejorLen = an.length; }
+    }
+    return mejor;
+  };
+
+  if (rubro) {
+    const delRubro = todas.filter(a => (a.programa?.rubro || "propositos") === rubro);
+    const hallado = buscarEn(delRubro);
+    if (hallado) return hallado;
   }
-  return mejor;
+  return buscarEn(todas);
 }
 
 /* Agrupa los renglones de una asignación por actividad y calcula qué debe
@@ -406,22 +443,24 @@ function encargosDe(db, asig) {
   return [...mapa.values()].map(e => {
     const tipo = clasificarActividad(e.actividad, e.grupos);
     const ajustado = !!ajustes[e.clave];
+    // Semestre del encargo: el primero que aparezca en sus grupos
+    const semestre = e.grupos.map(semestreDeGrupo).find(x => x) || null;
     if (tipo === "baetam") {
-      return { ...e, tipo, ajustado, programa: buscarPrograma(db, e.actividad),
+      return { ...e, tipo, ajustado, semestre, programa: buscarPrograma(db, e.actividad),
         requisitos: aplicarAjuste(e.clave, { planeacion: 1, plan: 0, informe: 0 }) };
     }
     if (tipo === "modulo") {
-      return { ...e, tipo, ajustado, programa: buscarPrograma(db, e.actividad),
+      return { ...e, tipo, ajustado, semestre, programa: buscarPrograma(db, e.actividad),
         requisitos: aplicarAjuste(e.clave, { planeacion: 3, plan: 0, informe: 0 }) };
     }
     if (tipo === "comision") {
-      return { ...e, tipo, ajustado, programa: null,
+      return { ...e, tipo, ajustado, semestre: null, programa: null,
         requisitos: aplicarAjuste(e.clave, { planeacion: 0, plan: 1, informe: 3 }) };
     }
-    const prog = buscarPrograma(db, e.actividad);
+    const prog = buscarPrograma(db, e.actividad, semestre);
     const num = prog && prog.numPlaneaciones != null && prog.numPlaneaciones !== ""
       ? Number(prog.numPlaneaciones) : null;
-    return { ...e, tipo, ajustado, programa: prog,
+    return { ...e, tipo, ajustado, semestre, programa: prog,
       requisitos: aplicarAjuste(e.clave, { planeacion: num, plan: 0, informe: 0 }) };
   }).sort((a, b) => a.actividad.localeCompare(b.actividad));
 }
@@ -2273,7 +2312,7 @@ function Respaldo({ db, user }) {
     db.programas.filter(p => p.archivoGuardado).forEach(p => {
       items.push({
         clave: "prog_" + p.id,
-        ruta: `Programas_de_estudio/${nombreSeguro(p.nombre, 60)}`,
+        ruta: `Programas_de_estudio/${nombreSeguro(nombreRubro(p.rubro || "propositos"), 30)}/${nombreSeguro(p.nombre, 55)}`,
       });
     });
     db.entregas.forEach(e => {
@@ -3055,35 +3094,38 @@ function DescargarProgramaBtn({ programa, texto = false }) {
 
 // Vista del jefe académico y del administrador: administra el repositorio
 function ProgramasEstudio({ db, user, mutar }) {
+  const [rubro, setRubro] = useState("propositos");
   const [cola, setCola] = useState(null);
   const [resumen, setResumen] = useState(null);
   const [editando, setEditando] = useState(null);
+  const [reintentando, setReintentando] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
 
-  const lista = db.programas
+  // Los programas antiguos, sin rubro, se consideran de propósitos
+  const rubroDe = (p) => p.rubro || "propositos";
+  const delRubro = db.programas.filter(p => rubroDe(p) === rubro);
+  const lista = delRubro
     .filter(p => !q || normTexto(p.nombre).includes(normTexto(q))
       || asignaturasDe(p).some(a => normTexto(a.nombre).includes(normTexto(q))))
     .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
 
-  const totalAsig = todasLasAsignaturas(db).length;
-  const pendientes = todasLasAsignaturas(db).filter(a => a.numPlaneaciones == null || a.numPlaneaciones === "").length;
+  const pendientes = delRubro.flatMap(asignaturasDe)
+    .filter(a => a.numPlaneaciones == null || a.numPlaneaciones === "").length;
+  const totalAsig = delRubro.reduce((n, p) => n + asignaturasDe(p).length, 0);
 
-  /* Subida masiva: se pueden seleccionar TODOS los PDF a la vez. Cada
-     documento se procesa y guarda de inmediato, uno por uno. Un mismo
-     programa puede desarrollar varias asignaturas (I, II, III…) y la IA
-     extrae cada una con su propio número de planeaciones. */
+  /* Subida masiva dentro del rubro activo. La IA cuenta propósitos o
+     progresiones según el rubro; en BAETAM y módulos el número es fijo. */
   const subirLote = async (files) => {
     const archivos = [...files].filter(f => f.name.toLowerCase().endsWith(".pdf"));
     if (!archivos.length) return;
     setResumen(null); setErr("");
     let ok = 0, asigs = 0, revisar = 0, fallidos = [], motivos = [], funcionVieja = false;
     let cuotaAgotada = false;
-    /* El nivel gratuito de Gemini permite unas pocas peticiones por minuto.
-       Se deja un respiro entre documentos para no toparlo; la función Edge
-       además espera y reintenta sola cuando ocurre. */
     const RESPIRO_MS = 5000;
+    const fijo = rubro === "baetam" ? 1 : rubro === "modulos" ? 3 : null;
+
     for (let i = 0; i < archivos.length; i++) {
       const f = archivos[i];
       setCola({ total: archivos.length, hechos: i, actual: f.name });
@@ -3097,19 +3139,15 @@ function ProgramasEstudio({ db, user, mutar }) {
         if (b64.length > MAX_FILE_B64) { fallidos.push(f.name + " (supera ~7.5 MB)"); continue; }
         let nombrePrograma = "", asignaturas = [], motivo = "";
         try {
-          const d = await extraerConIA({ base64: b64, mime: f.type || "application/pdf", tipo: "programa" });
+          const d = await extraerConIA({ base64: b64, mime: f.type || "application/pdf", tipo: "programa", rubro });
           nombrePrograma = d.programa || "";
           asignaturas = (d.asignaturas || []).filter(a => a && a.nombre).map(a => ({
             nombre: a.nombre,
-            numPlaneaciones: a.num_planeaciones ?? null,
-            base: a.base || null,
+            numPlaneaciones: fijo ?? (a.num_planeaciones ?? null),
             semestre: a.semestre || "",
           }));
-          /* Compatibilidad: si la función Edge todavía es la versión
-             anterior, responde con un solo {nombre, num_planeaciones}.
-             Se aprovecha el dato y se avisa que falta actualizarla. */
           if (!asignaturas.length && d.nombre) {
-            asignaturas = [{ nombre: d.nombre, numPlaneaciones: d.num_planeaciones ?? null, base: null, semestre: d.semestre || "" }];
+            asignaturas = [{ nombre: d.nombre, numPlaneaciones: fijo ?? (d.num_planeaciones ?? null), semestre: "" }];
             nombrePrograma = nombrePrograma || d.nombre;
             motivo = "funcion_vieja";
           } else if (!asignaturas.length) {
@@ -3124,7 +3162,8 @@ function ProgramasEstudio({ db, user, mutar }) {
         if (!r.guardado) { fallidos.push(f.name + " (no se pudo guardar)"); continue; }
         await mutar(d => {
           d.programas.push({
-            id, nombre: nombrePrograma || f.name.replace(/\.pdf$/i, ""),
+            id, rubro,
+            nombre: nombrePrograma || f.name.replace(/\.pdf$/i, ""),
             asignaturas, archivoNombre: f.name, archivoGuardado: true, creadoEn: ahora(),
           });
         });
@@ -3133,8 +3172,6 @@ function ProgramasEstudio({ db, user, mutar }) {
         if (motivo === "funcion_vieja") funcionVieja = true;
         else if (motivo) motivos.push(f.name + ": " + motivo);
         if (cuotaAgotada) {
-          // El PDF ya quedó guardado; solo faltó la lectura con IA.
-          // Se detiene la cola: insistir solo consumiría más intentos.
           fallidos.push(`Se detuvo en “${f.name}”: quedan ${archivos.length - i - 1} sin leer.`);
           break;
         }
@@ -3144,23 +3181,20 @@ function ProgramasEstudio({ db, user, mutar }) {
     setResumen({ ok, asigs, revisar, fallidos, motivos, funcionVieja, cuotaAgotada });
   };
 
-  const [reintentando, setReintentando] = useState(null);
-
-  /* Reintenta la lectura con IA usando el PDF que ya está guardado,
-     sin necesidad de volver a subirlo. */
   const reintentar = async (p) => {
     setReintentando(p.id); setErr("");
+    const fijo = rubroDe(p) === "baetam" ? 1 : rubroDe(p) === "modulos" ? 3 : null;
     try {
       const f = await leerArchivo("prog_" + p.id);
       if (!f) { setErr("El PDF de este programa ya no está disponible."); setReintentando(null); return; }
-      const d = await extraerConIA({ base64: f.base64, mime: f.mime || "application/pdf", tipo: "programa" });
+      const d = await extraerConIA({ base64: f.base64, mime: f.mime || "application/pdf",
+        tipo: "programa", rubro: rubroDe(p) });
       let asigs = (d.asignaturas || []).filter(a => a && a.nombre).map(a => ({
-        nombre: a.nombre, numPlaneaciones: a.num_planeaciones ?? null,
-        base: a.base || null, semestre: a.semestre || "",
+        nombre: a.nombre, numPlaneaciones: fijo ?? (a.num_planeaciones ?? null), semestre: a.semestre || "",
       }));
       if (!asigs.length && d.nombre) {
-        asigs = [{ nombre: d.nombre, numPlaneaciones: d.num_planeaciones ?? null, base: null, semestre: "" }];
-        setErr("La función “extraer” de Supabase aún responde con el formato anterior: solo detecta una asignatura por documento. Actualízala para leer todas.");
+        asigs = [{ nombre: d.nombre, numPlaneaciones: fijo ?? (d.num_planeaciones ?? null), semestre: "" }];
+        setErr("La función “extraer” de Supabase aún responde con el formato anterior. Actualízala para leer todas las asignaturas.");
       } else if (!asigs.length) {
         setErr("La IA leyó el documento pero no identificó asignaturas. Agrégalas manualmente con el lápiz.");
       }
@@ -3176,7 +3210,7 @@ function ProgramasEstudio({ db, user, mutar }) {
   };
 
   const abrirEdicion = (p) => {
-    setEditando({ id: p.id, nombre: p.nombre || "",
+    setEditando({ id: p.id, nombre: p.nombre || "", rubro: rubroDe(p),
       asignaturas: asignaturasDe(p).map(a => ({ ...a, numPlaneaciones: a.numPlaneaciones ?? "" })) });
     setErr("");
   };
@@ -3189,7 +3223,7 @@ function ProgramasEstudio({ db, user, mutar }) {
     try {
       await mutar(d => {
         const i = d.programas.findIndex(x => x.id === e.id);
-        if (i >= 0) d.programas[i] = { ...d.programas[i], nombre: e.nombre.trim(),
+        if (i >= 0) d.programas[i] = { ...d.programas[i], nombre: e.nombre.trim(), rubro: e.rubro,
           asignaturas: e.asignaturas.map(a => ({ ...a, nombre: a.nombre.trim(),
             numPlaneaciones: a.numPlaneaciones === "" ? null : Number(a.numPlaneaciones) })),
           actualizadoEn: ahora() };
@@ -3205,25 +3239,44 @@ function ProgramasEstudio({ db, user, mutar }) {
     await eliminarArchivo("prog_" + p.id);
   };
 
+  const desc = (RUBROS_PROGRAMA.find(r => r[0] === rubro) || [])[2];
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Programas de Estudio</h2>
           <p className="text-sm text-slate-500">
-            Repositorio oficial. Un programa suele desarrollar varias asignaturas (I, II, III…); la IA
-            extrae cada una con su número de propósitos o progresiones, que equivale a sus planeaciones.
+            Las mallas se organizan en cuatro rubros. Sube cada programa en el que le corresponde:
+            de ahí sale cuántas planeaciones entregará el docente.
           </p>
         </div>
+      </div>
+
+      <div className="flex gap-1 bg-slate-100 rounded-xl p-1 overflow-x-auto">
+        {RUBROS_PROGRAMA.map(([id, txt]) => {
+          const n = db.programas.filter(p => rubroDe(p) === id).length;
+          return (
+            <button key={id} onClick={() => { setRubro(id); setResumen(null); setErr(""); setQ(""); }}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold whitespace-nowrap transition ${rubro === id ? "bg-white text-[#1a2340] shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+              {txt}
+              {n > 0 && <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${rubro === id ? "bg-[#1a2340] text-white" : "bg-slate-200 text-slate-600"}`}>{n}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-slate-500">{desc}</p>
         <label className={btnPrim + " cursor-pointer" + (cola ? " opacity-50 pointer-events-none" : "")}>
-          <Upload size={15}/>Subir programas
+          <Upload size={15}/>Subir a {nombreRubro(rubro)}
           <input type="file" accept=".pdf" multiple className="hidden"
             onChange={e => { subirLote(e.target.files); e.target.value = ""; }} />
         </label>
       </div>
 
       <div className="grid grid-cols-3 gap-3">
-        <Stat icono={BookOpen} label="Programas" valor={db.programas.length} />
+        <Stat icono={BookOpen} label="Programas en este rubro" valor={delRubro.length} />
         <Stat icono={FileText} label="Asignaturas cubiertas" valor={totalAsig} />
         <Stat icono={AlertTriangle} label="Por revisar" valor={pendientes} />
       </div>
@@ -3244,8 +3297,7 @@ function ProgramasEstudio({ db, user, mutar }) {
           </p>
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
             Cada programa se lee con IA y se guarda de inmediato. Entre uno y otro se hace una pausa
-            corta para no exceder el límite gratuito de Gemini, así que con muchos archivos el
-            proceso tarda. No cierres esta pestaña.
+            corta para no exceder el límite gratuito de Gemini. No cierres esta pestaña.
           </p>
         </Card>
       )}
@@ -3254,29 +3306,21 @@ function ProgramasEstudio({ db, user, mutar }) {
 
       {resumen && (
         <div className="text-sm bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl p-3">
-          <b>{resumen.ok} programa(s) subidos</b> con {resumen.asigs} asignatura(s) detectada(s).
+          <b>{resumen.ok} programa(s) subidos</b> a {nombreRubro(rubro)} con {resumen.asigs} asignatura(s) detectada(s).
           {resumen.revisar > 0 && <span className="block text-amber-700 mt-1">⚠ {resumen.revisar} asignatura(s) sin número de planeaciones: complétalas con el lápiz.</span>}
           {resumen.cuotaAgotada && (
             <span className="block text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2 mt-2">
-              <b>Se alcanzó el límite de la API de Gemini.</b> Los PDF sí quedaron guardados; lo que
-              faltó fue la lectura automática. Espera unos minutos y usa el botón ✨ de cada programa
-              para reintentar, o captura las asignaturas a mano con el lápiz.
-              <span className="block mt-1 text-xs">
-                El límite cuenta <b>peticiones</b>, no tamaño: cada PDF consume una. Subir los
-                programas en tandas de 10 a 15, con unos minutos de separación, evita toparlo.
-              </span>
+              <b>Se alcanzó el límite de la API de Gemini.</b> Los PDF quedaron guardados; faltó la
+              lectura automática. Espera unos minutos y usa ✨ en cada programa para reintentar.
             </span>
           )}
           {resumen.funcionVieja && (
             <span className="block text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2 mt-2">
-              <b>La función “extraer” de Supabase no está actualizada.</b> Está respondiendo con el
-              formato anterior (una sola asignatura por documento). Actualízala en Supabase →
-              Edge Functions → extraer → Deploy, y vuelve a subir estos programas.
+              <b>La función “extraer” de Supabase no está actualizada.</b> Actualízala en
+              Edge Functions → extraer → Deploy y vuelve a subir estos programas.
             </span>
           )}
-          {resumen.motivos?.length > 0 && (
-            <span className="block text-amber-700 mt-1 text-xs">Detalle: {resumen.motivos.join(" · ")}</span>
-          )}
+          {resumen.motivos?.length > 0 && <span className="block text-amber-700 mt-1 text-xs">Detalle: {resumen.motivos.join(" · ")}</span>}
           {resumen.fallidos.length > 0 && <span className="block text-rose-600 mt-1">No se subieron: {resumen.fallidos.join("; ")}</span>}
         </div>
       )}
@@ -3284,13 +3328,13 @@ function ProgramasEstudio({ db, user, mutar }) {
       <Card className="p-3">
         <div className="relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar programa o asignatura…" value={q} onChange={e => setQ(e.target.value)} />
+          <input className={inputCls + " !mt-0 !pl-8"} placeholder={`Buscar en ${nombreRubro(rubro)}…`} value={q} onChange={e => setQ(e.target.value)} />
         </div>
       </Card>
 
       {lista.length === 0 && (
         <Card className="p-8 text-center text-sm text-slate-400">
-          Aún no hay programas. Selecciona todos los PDF de una vez con “Subir programas”.
+          Aún no hay programas en {nombreRubro(rubro)}. Selecciona todos los PDF de una vez con el botón de arriba.
         </Card>
       )}
 
@@ -3317,7 +3361,7 @@ function ProgramasEstudio({ db, user, mutar }) {
             </div>
             {asigs.length === 0 ? (
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2 mt-2">
-                ⚠ Sin asignaturas detectadas. Usa ✨ para reintentar la lectura con IA, o el lápiz para agregarlas a mano.
+                ⚠ Sin asignaturas detectadas. Usa ✨ para reintentar la lectura, o el lápiz para agregarlas a mano.
               </p>
             ) : (
               <div className="mt-2 flex flex-wrap gap-1.5">
@@ -3338,14 +3382,21 @@ function ProgramasEstudio({ db, user, mutar }) {
       {editando && (
         <Modal titulo="Editar programa y asignaturas" onClose={() => setEditando(null)} ancho="max-w-3xl">
           <div className="space-y-3">
-            <Campo label="Nombre del programa">
-              <input className={inputCls} value={editando.nombre} onChange={e => setEditando({ ...editando, nombre: e.target.value })} />
-            </Campo>
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Campo label="Nombre del programa">
+                <input className={inputCls} value={editando.nombre} onChange={e => setEditando({ ...editando, nombre: e.target.value })} />
+              </Campo>
+              <Campo label="Rubro">
+                <select className={inputCls} value={editando.rubro} onChange={e => setEditando({ ...editando, rubro: e.target.value })}>
+                  {RUBROS_PROGRAMA.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
+                </select>
+              </Campo>
+            </div>
             <div>
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs font-semibold text-slate-600">Asignaturas que desarrolla</span>
                 <button className="text-xs font-semibold text-indigo-600 hover:underline"
-                  onClick={() => setEditando({ ...editando, asignaturas: [...editando.asignaturas, { nombre: "", numPlaneaciones: "", base: null, semestre: "" }] })}>
+                  onClick={() => setEditando({ ...editando, asignaturas: [...editando.asignaturas, { nombre: "", numPlaneaciones: "", semestre: "" }] })}>
                   + Agregar asignatura
                 </button>
               </div>
@@ -3366,9 +3417,9 @@ function ProgramasEstudio({ db, user, mutar }) {
               </div>
             </div>
             <p className="text-[11px] text-slate-400">
-              El número de planeaciones equivale a los <b>propósitos</b> de la asignatura, o a sus
-              <b> progresiones</b> cuando el programa se organiza así. El nombre debe coincidir con el
-              que aparece en las asignaciones para que el sistema los relacione.
+              El nombre debe coincidir con el que aparece en las asignaciones para que el sistema
+              los relacione. Las asignaturas de 1.º y 3.er semestre se buscan en Propósitos; las de
+              5.º, en Progresiones.
             </p>
             {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
           </div>
@@ -3387,28 +3438,45 @@ function ProgramasEstudio({ db, user, mutar }) {
 // Vista del docente: consulta y descarga
 function ProgramasDocente({ db }) {
   const [q, setQ] = useState("");
+  const [rubro, setRubro] = useState("todos");
+  const rubroDe = (p) => p.rubro || "propositos";
   const lista = db.programas
+    .filter(p => rubro === "todos" || rubroDe(p) === rubro)
     .filter(p => !q || normTexto(p.nombre).includes(normTexto(q))
       || asignaturasDe(p).some(a => normTexto(a.nombre).includes(normTexto(q))))
     .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
+
   return (
     <div className="space-y-4">
       <div>
         <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Programas de Estudio</h2>
         <p className="text-sm text-slate-500">Repositorio oficial del plantel. Consulta y descarga los programas vigentes.</p>
       </div>
+
+      <div className="flex gap-1 bg-slate-100 rounded-xl p-1 overflow-x-auto">
+        {[["todos", "Todos"], ...RUBROS_PROGRAMA.map(([v, n]) => [v, n])].map(([id, txt]) => (
+          <button key={id} onClick={() => setRubro(id)}
+            className={`px-3 py-2 rounded-lg text-sm font-semibold whitespace-nowrap transition ${rubro === id ? "bg-white text-[#1a2340] shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+            {txt}
+          </button>
+        ))}
+      </div>
+
       <Card className="p-3">
         <div className="relative">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar programa o asignatura…" value={q} onChange={e => setQ(e.target.value)} />
         </div>
       </Card>
+
       {lista.map(p => (
         <Card key={p.id} className="p-4">
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex-1 min-w-[200px]">
               <div className="font-bold text-sm">{p.nombre}</div>
-              <div className="text-xs text-slate-500">{asignaturasDe(p).length} asignatura(s)</div>
+              <div className="text-xs text-slate-500">
+                {nombreRubro(rubroDe(p))} · {asignaturasDe(p).length} asignatura(s)
+              </div>
             </div>
             {p.archivoGuardado ? <DescargarProgramaBtn programa={p} texto />
               : <span className="text-xs text-slate-400">PDF no disponible</span>}
@@ -3422,7 +3490,7 @@ function ProgramasDocente({ db }) {
           </div>
         </Card>
       ))}
-      {lista.length === 0 && <Card className="p-8 text-center text-sm text-slate-400">Aún no hay programas publicados.</Card>}
+      {lista.length === 0 && <Card className="p-8 text-center text-sm text-slate-400">No hay programas en esta categoría.</Card>}
     </div>
   );
 }
