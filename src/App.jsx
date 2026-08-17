@@ -1318,6 +1318,30 @@ function DashboardAdmin({ db, irA }) {
    DASHBOARD DEL DOCENTE
    ================================================================ */
 
+/* Saludo según la hora, como en un portal de uso diario */
+const saludoHora = () => {
+  const h = new Date().getHours();
+  return h < 12 ? "Buenos días" : h < 19 ? "Buenas tardes" : "Buenas noches";
+};
+
+/* Acceso rápido: azulejo con ícono, etiqueta y contador opcional */
+function Azulejo({ icono: Ico, label, color, badge, onClick }) {
+  return (
+    <button onClick={onClick}
+      className="relative bg-white rounded-2xl border border-slate-200 shadow-sm p-3 flex flex-col items-center justify-center gap-2 text-center hover:shadow-md hover:-translate-y-0.5 transition active:scale-95">
+      <span className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={{ background: color + "1a" }}>
+        <Ico size={21} style={{ color }} />
+      </span>
+      <span className="text-[11px] font-semibold text-slate-700 leading-tight">{label}</span>
+      {badge > 0 && (
+        <span className="absolute top-2 right-2 min-w-[18px] h-[18px] px-1 rounded-full bg-[#E8871E] text-white text-[10px] font-bold flex items-center justify-center">
+          {badge > 99 ? "99+" : badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
 function DashboardDocente({ db, user, irA }) {
   const [ciclo, setCiclo] = useState(db.config.cicloActual);
   const h = horasValidadas(db, user.id, ciclo);
@@ -1333,67 +1357,134 @@ function DashboardDocente({ db, user, irA }) {
   const exp = completitudExpediente(db, user.id);
   const misLogros = db.logros.filter(l => l.docenteId === user.id && l.clave.endsWith("@" + ciclo));
   const pendAvisos = avisosPendientes(db, user);
+  const pendEntregas = pendientesEntrega(db, user.id);
+  const asig = asignacionDe(db, user.id);
+  const avEnt = asig ? avanceDe(db, asig) : null;
+
+  // Los accesos llevan a las mismas secciones del menú lateral
+  const accesos = [
+    { id: "avisos", label: "Avisos", icono: Megaphone, color: "#E8871E", badge: pendAvisos.length },
+    { id: "mi_asignacion", label: "Mi asignación", icono: FolderOpen, color: "#7c3aed", badge: pendEntregas },
+    { id: "subir", label: "Subir constancia", icono: Upload, color: "#059669" },
+    { id: "calendario", label: "Calendario", icono: CalendarDays, color: "#0ea5e9" },
+    { id: "programas", label: "Programas", icono: BookOpen, color: "#2563eb" },
+    { id: "cursos", label: "Mis cursos", icono: FileText, color: "#64748b" },
+    { id: "expediente", label: "Mi perfil", icono: GraduationCap, color: "#db2777" },
+    ...(db.config.rankingPublico ? [{ id: "ranking", label: "Ranking", icono: Trophy, color: "#ca8a04" }] : []),
+    { id: "logros", label: "Logros", icono: Award, color: "#e11d48" },
+  ];
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <img src={MASCOTA} alt="" className="w-14 h-14 object-contain object-top hidden sm:block" />
-          <div>
-            <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Hola, {user.nombre.split(" ")[0]}</h2>
-            <p className="text-sm text-slate-500">{user.area || "Docente"}</p>
+      {/* Encabezado: saludo y resumen del ciclo */}
+      <div className="rounded-3xl bg-gradient-to-br from-[#1a2340] to-[#2f3d6b] text-white p-5 sm:p-6 relative overflow-hidden">
+        <img src={MASCOTA} alt="" className="absolute -right-3 -bottom-4 w-28 sm:w-32 object-contain opacity-90 pointer-events-none" />
+        <div className="relative">
+          <p className="text-sm text-slate-300">{saludoHora()},</p>
+          <h2 className="text-2xl font-bold leading-tight" style={{fontFamily:"'Archivo', sans-serif"}}>
+            {user.nombre.split(" ")[0]}
+          </h2>
+          <p className="text-xs text-slate-300 mt-0.5">{user.area || "Docente"}</p>
+
+          <div className="flex flex-wrap gap-4 mt-4 pr-24 sm:pr-28">
+            <div>
+              <div className="text-2xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>{h}<span className="text-sm font-normal text-slate-300">/{meta} h</span></div>
+              <div className="text-[11px] text-slate-300">Capacitación</div>
+            </div>
+            {avEnt && avEnt.requeridas > 0 && (
+              <div>
+                <div className="text-2xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>{avEnt.entregadas}<span className="text-sm font-normal text-slate-300">/{avEnt.requeridas}</span></div>
+                <div className="text-[11px] text-slate-300">Entregas</div>
+              </div>
+            )}
+            <div>
+              <div className="text-2xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>{pos > 0 && h > 0 ? `#${pos}` : "—"}</div>
+              <div className="text-[11px] text-slate-300">Ranking</div>
+            </div>
+          </div>
+
+          <div className="mt-3 pr-24 sm:pr-28">
+            <div className="w-full h-2 rounded-full bg-white/20 overflow-hidden">
+              <div className="h-full rounded-full transition-all" style={{ width: Math.min(pct, 100) + "%", background: SEM_COLORS[sem] }} />
+            </div>
+            <p className="text-[11px] text-slate-300 mt-1">
+              {sem === "verde" ? "Meta del ciclo alcanzada" : sem === "amarillo" ? `Vas al ${pct}% de tu meta` : `Vas al ${pct}% de tu meta: aún hay tiempo`}
+            </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <select className={inputCls + " !mt-0 !w-auto"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
+      </div>
+
+      {/* Accesos rápidos */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="font-bold text-sm">Accesos rápidos</h3>
+          <select className={inputCls + " !mt-0 !w-auto !py-1 !text-xs"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
             {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
           </select>
-          <button className={btnPrim} onClick={() => irA("subir")}><Upload size={15} /> Subir constancia</button>
+        </div>
+        <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-2.5">
+          {accesos.map(a => (
+            <Azulejo key={a.id} icono={a.icono} label={a.label} color={a.color}
+              badge={a.badge} onClick={() => irA(a.id)} />
+          ))}
         </div>
       </div>
 
-      {pendAvisos.length > 0 && (
-        <button onClick={() => irA("avisos")}
-          className={`w-full text-left p-3 rounded-2xl border flex items-center gap-3 transition ${
-            pendAvisos.some(a => a.prioridad === "Urgente")
-              ? "bg-rose-50 border-rose-200 hover:bg-rose-100"
-              : "bg-amber-50 border-amber-200 hover:bg-amber-100"}`}>
-          <Megaphone className={pendAvisos.some(a => a.prioridad === "Urgente") ? "text-rose-600 shrink-0" : "text-amber-600 shrink-0"} size={20} />
-          <div className="flex-1 text-sm">
-            <b>{pendAvisos.length} aviso{pendAvisos.length > 1 ? "s" : ""} pendiente{pendAvisos.length > 1 ? "s" : ""} de enterado.</b>{" "}
-            Consulta los comunicados y confirma que los leíste.
-          </div>
-          <ChevronRight size={16} className="text-slate-400" />
-        </button>
+      {/* Lo que requiere atención */}
+      {(pendAvisos.length > 0 || pendEntregas > 0 || exp.pct < 100 || pendCount > 0) && (
+        <div className="space-y-2">
+          <h3 className="font-bold text-sm">Pendientes</h3>
+
+          {pendAvisos.length > 0 && (
+            <button onClick={() => irA("avisos")}
+              className={`w-full text-left p-3 rounded-2xl border flex items-center gap-3 transition ${
+                pendAvisos.some(a => a.prioridad === "Urgente")
+                  ? "bg-rose-50 border-rose-200 hover:bg-rose-100"
+                  : "bg-amber-50 border-amber-200 hover:bg-amber-100"}`}>
+              <Megaphone className={pendAvisos.some(a => a.prioridad === "Urgente") ? "text-rose-600 shrink-0" : "text-amber-600 shrink-0"} size={20} />
+              <div className="flex-1 text-sm">
+                <b>{pendAvisos.length} aviso{pendAvisos.length > 1 ? "s" : ""} por confirmar.</b>{" "}
+                Consulta los comunicados y marca que los leíste.
+              </div>
+              <ChevronRight size={16} className="text-slate-400" />
+            </button>
+          )}
+
+          {pendEntregas > 0 && (
+            <button onClick={() => irA("mi_asignacion")}
+              className="w-full text-left p-3 rounded-2xl bg-violet-50 border border-violet-200 flex items-center gap-3 hover:bg-violet-100 transition">
+              <FolderOpen className="text-violet-600 shrink-0" size={20} />
+              <div className="flex-1 text-sm text-violet-900">
+                <b>{pendEntregas} entrega{pendEntregas > 1 ? "s" : ""} pendiente{pendEntregas > 1 ? "s" : ""}.</b>{" "}
+                Revisa tus planeaciones, planes de trabajo e informes.
+              </div>
+              <ChevronRight size={16} className="text-violet-400" />
+            </button>
+          )}
+
+          {exp.pct < 100 && (
+            <button onClick={() => irA("expediente")} className="w-full text-left p-3 rounded-2xl bg-sky-50 border border-sky-200 flex items-center gap-3 hover:bg-sky-100 transition">
+              <GraduationCap className="text-sky-600 shrink-0" size={20} />
+              <div className="flex-1 text-sm text-sky-900">
+                <b>Perfil académico al {exp.pct}%.</b> Complétalo para que la escuela conozca tu formación.
+              </div>
+              <ChevronRight size={16} className="text-sky-400" />
+            </button>
+          )}
+
+          {pendCount > 0 && (
+            <button onClick={() => irA("cursos")} className="w-full text-left p-3 rounded-2xl bg-slate-50 border border-slate-200 flex items-center gap-3 hover:bg-slate-100 transition">
+              <Clock className="text-slate-500 shrink-0" size={20} />
+              <div className="flex-1 text-sm text-slate-700">
+                <b>{pendCount} constancia(s) en revisión</b> · {hp} hora(s) por validar.
+              </div>
+              <ChevronRight size={16} className="text-slate-400" />
+            </button>
+          )}
+        </div>
       )}
 
-      {exp.pct < 100 && (
-        <button onClick={() => irA("expediente")} className="w-full text-left p-3 rounded-2xl bg-sky-50 border border-sky-200 flex items-center gap-3 hover:bg-sky-100 transition">
-          <GraduationCap className="text-sky-600 shrink-0" size={20} />
-          <div className="flex-1 text-sm text-sky-900">
-            <b>Perfil académico completado al {exp.pct}%.</b> Completa tu expediente para que la escuela conozca tu formación.
-          </div>
-          <ChevronRight size={16} className="text-sky-400" />
-        </button>
-      )}
-
-      <div className="grid md:grid-cols-3 gap-4">
-        <Card className="p-5 md:col-span-2">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-bold text-sm flex items-center gap-2"><Target size={16} /> Mi meta del ciclo</h3>
-            <span className="text-xs font-bold px-2.5 py-1 rounded-full" style={{ background: SEM_COLORS[sem] + "22", color: SEM_COLORS[sem] }}>
-              {sem === "verde" ? "Meta alcanzada" : sem === "amarillo" ? "En proceso" : "Bajo cumplimiento"}
-            </span>
-          </div>
-          <Progreso actual={h} meta={meta} semaforo={sem} />
-        </Card>
-        <Card className="p-5 flex flex-col items-center justify-center text-center bg-gradient-to-b from-[#1a2340] to-[#2a3660] text-white">
-          <Trophy className="text-[#E8871E] mb-1" size={26} />
-          <div className="text-3xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>{pos > 0 && h > 0 ? `#${pos}` : "—"}</div>
-          <div className="text-xs text-slate-300">Posición en el ranking{db.config.rankingPublico ? "" : " (privado)"}</div>
-        </Card>
-      </div>
-
+      {/* Cifras del ciclo */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Stat icono={BookOpen} label="Cursos validados" valor={validados.filter(c => c.ciclo === ciclo).length} sub={`${validados.length} en total`} />
         <Stat icono={Clock} label="Horas acumuladas" valor={h} sub="este ciclo" />
@@ -1401,6 +1492,7 @@ function DashboardDocente({ db, user, irA }) {
         <Stat icono={Award} label="Insignias del ciclo" valor={misLogros.length} sub={`de ${LOGROS_DEF.length} posibles`} />
       </div>
 
+      {/* Historial */}
       <Card className="p-4">
         <div className="flex items-center justify-between mb-2">
           <h3 className="font-bold text-sm">Historial de cursos</h3>
