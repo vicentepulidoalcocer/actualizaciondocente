@@ -5,7 +5,7 @@ import {
   AlertTriangle, ChevronRight, Users, Target, TrendingUp, FileCheck,
   Download, Filter, Plus, Pencil, Trash2, Eye, Medal, Star, Loader2,
   FolderOpen, User, Activity, ShieldCheck, Menu, X, Megaphone,
-  Paperclip, Link2, Archive, Send, Sparkles, CalendarDays
+  Paperclip, Link2, Archive, Send, Sparkles, CalendarDays, ScanLine
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie,
@@ -24,6 +24,7 @@ import {
   extraerConIA, crearDocente, restablecerPassword, cambiarEmailDocente,
   marcarEnterado, MAX_FILE_B64,
 } from "./lib/nube";
+const Asistencia = React.lazy(() => import("./Asistencia"));
 import {
   soportaPush, esIOS, instaladoEnInicio, permisoActual,
   activarNotificaciones, desactivarNotificaciones, estaActivo, enviarPush, registrarServicio,
@@ -62,10 +63,12 @@ const NOMBRE_ROL = {
   admin: "Administración general",
   jefe_formacion: "Jefe de Formación Docente",
   jefe_academico: "Jefe Académico y de Competencias",
+  administrativo: "Control escolar",
   docente: "Docente",
 };
 const esRolValidador = (r) => r === "admin" || r === "jefe_formacion";
 const esRolAcademico = (r) => r === "admin" || r === "jefe_academico";
+const esRolControlEscolar = (r) => r === "admin" || r === "administrativo";
 const esRolComunicador = (r) => r !== "docente";
 
 /* ---- Programas de estudio ----
@@ -780,6 +783,7 @@ export default function App() {
     // Al iniciar sesión, cada rol aterriza en su pantalla de trabajo;
     // en recargas posteriores no se toca la pantalla en la que esté.
     if (esPrimeraCarga && yo.rol === "docente") setPagina("avisos");
+    if (esPrimeraCarga && yo.rol === "administrativo") setPagina("asistencia");
   }, []);
 
   useEffect(() => {
@@ -886,6 +890,7 @@ export default function App() {
     { id: "calendario", label: "Calendario académico", icono: CalendarDays },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
+    { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
     { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
@@ -902,6 +907,10 @@ export default function App() {
     { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "admin", label: "Metas y ciclos", icono: Settings },
+  ] : user.rol === "administrativo" ? [
+    { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
+    { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
+    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
   ] : user.rol === "jefe_academico" ? [
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
@@ -1012,6 +1021,11 @@ export default function App() {
           {pagina === "avisos" && (esRolComunicador(user.rol)
             ? <Avisos db={db} user={user} mutar={mutar} />
             : <MisAvisos db={db} user={user} recargar={() => recargar(user.id)} />)}
+          {pagina === "asistencia" && esRolControlEscolar(user.rol) && (
+            <React.Suspense fallback={<Card className="p-8 text-center text-sm text-slate-400"><Loader2 size={18} className="animate-spin inline mr-2"/>Cargando control de asistencia…</Card>}>
+              <Asistencia user={user} />
+            </React.Suspense>
+          )}
           {pagina === "calendario" && <CalendarioAcademico db={db} user={user} mutar={mutar} puedeEditar={esRolAcademico(user.rol)} />}
           {pagina === "programas" && (esRolAcademico(user.rol)
             ? <ProgramasEstudio db={db} user={user} mutar={mutar} />
@@ -2704,6 +2718,8 @@ function JefesDepartamento({ db, mutar }) {
       "Avisos, validaciones, expedientes, metas, ciclos, perfil institucional y reportes."],
     ["jefe_academico", "Jefe del Depto. Académico y de Competencias Docentes",
       "Avisos, Programas de Estudio y Asignaciones (planeaciones, planes e informes)."],
+    ["administrativo", "Control escolar (asistencia)",
+      "Registro de asistencia con códigos QR, padrón de alumnos, historial y avisos."],
   ];
 
   const actualDe = (rol) => db.users.find(u => u.rol === rol && u.activo);
@@ -2750,7 +2766,7 @@ function JefesDepartamento({ db, mutar }) {
   return (
     <Card className="p-5 space-y-4">
       <div>
-        <h3 className="font-bold text-sm">Jefes de departamento</h3>
+        <h3 className="font-bold text-sm">Jefes de departamento y control escolar</h3>
         <p className="text-xs text-slate-500 mt-0.5">
           Cuentas con permisos parciales que puedes renovar cuando cambie la persona en el cargo.
           Al registrar un nuevo titular, la cuenta del anterior se desactiva automáticamente.
