@@ -4223,8 +4223,13 @@ function MiAsignacion({ db, user, mutar }) {
         });
         d.users.filter(u => esRolAcademico(u.rol) && u.rol !== "admin" && u.activo).forEach(j =>
           notificar(d, j.id, `📥 ${user.nombre} subió ${NOMBRE_TIPO_ENTREGA[tipo].toLowerCase()} de “${encargo.actividad}”.`));
-        otorgarLogros(d, user.id, asig.ciclo);
       });
+
+      /* Las insignias van en un guardado aparte: si algo fallara al
+         otorgarlas, la entrega del docente ya quedó registrada. */
+      try {
+        await mutar(d => { otorgarLogros(d, user.id, asig.ciclo); });
+      } catch { /* la insignia se otorgará en la siguiente entrega */ }
     } catch (e) { setErr(e.message); }
     setSubiendo(null);
   };
