@@ -4321,13 +4321,28 @@ function colorDeCelda(texto, mapa) {
 
 function HorarioSemanal({ asig }) {
   const [abierto, setAbierto] = useState(true);
+  const [diaSel, setDiaSel] = useState(() => {
+    // En celular abre en el día de hoy; en fin de semana, en lunes
+    const d = new Date().getDay();
+    return d >= 1 && d <= 5 ? DIAS_SEMANA[d - 1][0] : "lunes";
+  });
+
   const filas = (asig?.horario || []).filter(h => h && h.hora);
   if (!filas.length) return null;
 
   const mapa = new Map();
-  // El receso se distingue del resto: ocupa todo el ancho
-  const esReceso = (f) => DIAS_SEMANA.every(([k]) => !f[k]) || /RECESO/i.test(f.hora)
-    || DIAS_SEMANA.some(([k]) => /RECESO/i.test(f[k] || ""));
+
+  /* Receso SOLO cuando el documento lo dice. Un renglón sin clases es
+     una hora libre del docente, no un receso. */
+  const esReceso = (f) =>
+    /RECESO/i.test(f.hora || "") || DIAS_SEMANA.some(([k]) => /RECESO/i.test(f[k] || ""));
+
+  // Vista de celular: las clases del día elegido, en orden
+  const delDia = filas
+    .filter(f => !esReceso(f) && (f[diaSel] || "").trim())
+    .map(f => ({ hora: f.hora, texto: f[diaSel].trim() }));
+
+  const totalDia = (k) => filas.filter(f => !esReceso(f) && (f[k] || "").trim()).length;
 
   return (
     <Card className="p-4">
@@ -4336,8 +4351,43 @@ function HorarioSemanal({ asig }) {
         <span className="text-xs text-slate-400">{abierto ? "Ocultar" : "Mostrar"}</span>
       </button>
 
-      {abierto && (
-        <div className="mt-3 overflow-x-auto">
+      {abierto && (<>
+        {/* ---------- Celular: un día a la vez ---------- */}
+        <div className="md:hidden mt-3">
+          <div className="grid grid-cols-5 gap-1">
+            {DIAS_SEMANA.map(([k, n]) => (
+              <button key={k} onClick={() => setDiaSel(k)}
+                className={`py-2 rounded-xl text-center transition ${diaSel === k ? "bg-[#1a2340] text-white" : "bg-slate-100 text-slate-600"}`}>
+                <div className="text-[11px] font-bold leading-none">{n.slice(0, 3)}</div>
+                <div className={`text-[10px] mt-0.5 ${diaSel === k ? "text-slate-300" : "text-slate-400"}`}>
+                  {totalDia(k) || "—"}
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-3 space-y-1.5">
+            {delDia.length === 0 && (
+              <p className="text-sm text-slate-400 text-center py-6">Sin clases asignadas este día.</p>
+            )}
+            {delDia.map((c, i) => {
+              const color = colorDeCelda(c.texto, mapa);
+              return (
+                <div key={i} className="flex items-stretch gap-2.5">
+                  <div className="text-[11px] text-slate-500 font-medium w-24 shrink-0 pt-2 leading-tight">{c.hora}</div>
+                  <div className="w-1 rounded-full shrink-0" style={{ background: color }} />
+                  <div className="flex-1 rounded-xl px-3 py-2 text-sm font-semibold"
+                    style={{ background: color + "1f", color }}>
+                    {c.texto}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ---------- Pantalla amplia: la semana completa ---------- */}
+        <div className="hidden md:block mt-3 overflow-x-auto">
           <table className="w-full text-xs border-separate" style={{ borderSpacing: "2px" }}>
             <thead>
               <tr>
@@ -4349,15 +4399,20 @@ function HorarioSemanal({ asig }) {
             </thead>
             <tbody>
               {filas.map((f, i) => {
-                const receso = esReceso(f);
-                return (
-                  <tr key={i}>
-                    <td className="whitespace-nowrap text-[11px] text-slate-500 font-medium px-2 py-1.5 align-middle">{f.hora}</td>
-                    {receso ? (
+                if (esReceso(f)) {
+                  return (
+                    <tr key={i}>
+                      <td className="whitespace-nowrap text-[11px] text-slate-500 font-medium px-2 py-1.5">{f.hora}</td>
                       <td colSpan={5} className="text-center text-[11px] font-semibold text-slate-400 bg-slate-50 rounded-lg py-1.5">
                         RECESO
                       </td>
-                    ) : DIAS_SEMANA.map(([k]) => {
+                    </tr>
+                  );
+                }
+                return (
+                  <tr key={i}>
+                    <td className="whitespace-nowrap text-[11px] text-slate-500 font-medium px-2 py-1.5 align-middle">{f.hora}</td>
+                    {DIAS_SEMANA.map(([k]) => {
                       const txt = (f[k] || "").trim();
                       const color = txt ? colorDeCelda(txt, mapa) : null;
                       return (
@@ -4378,12 +4433,13 @@ function HorarioSemanal({ asig }) {
               })}
             </tbody>
           </table>
-          <p className="text-[11px] text-slate-400 mt-2">
-            Tomado del documento de asignaciones del semestre. Si algún dato no coincide,
-            avisa al Departamento Académico.
-          </p>
         </div>
-      )}
+
+        <p className="text-[11px] text-slate-400 mt-2">
+          Tomado del documento de asignaciones del semestre. Los renglones sin materia son horas
+          libres. Si algún dato no coincide, avisa al Departamento Académico.
+        </p>
+      </>)}
     </Card>
   );
 }
