@@ -115,10 +115,12 @@ export default function Asistencia({ user }) {
 
   /* Registra una asistencia: primero en pantalla, luego en la nube */
   const registrar = useCallback(async (datos) => {
-    const { id, nombre, grupo, generacion } = datos;
+    const { id } = datos;
     if (!id) return { ok: false, msg: "Código no reconocido" };
-    if (registrosHoy.some(r => r.alumno_id === id)) {
-      return { ok: false, tipo: "repetido", msg: `Ya registrado hoy: ${nombre || id}` };
+    const yaEsta = registrosHoy.find(r => r.alumno_id === id);
+    if (yaEsta) {
+      return { ok: false, tipo: "repetido",
+        msg: `Ya registrado hoy a las ${(yaEsta.hora || "").slice(0, 5)}: ${yaEsta.nombre}` };
     }
 
     const ahora = new Date();
@@ -127,16 +129,24 @@ export default function Asistencia({ user }) {
     const tarde = ahora.getHours() * 60 + ahora.getMinutes() > lh * 60 + lm;
     const estado = tarde ? "Retardo" : "Asistencia";
 
-    // Si el alumno está en el padrón, se prefieren sus datos oficiales
+    // Los datos vigentes salen del padrón
     const enPadron = alumnos.find(a => a.id === id);
+    if (!enPadron) {
+      return { ok: false, tipo: "desconocido",
+        msg: `El ID ${id} no está en el padrón. Verifica la credencial o actualiza la lista de alumnos.` };
+    }
+    if (enPadron.activo === false) {
+      return { ok: false, tipo: "baja",
+        msg: `${enPadron.nombre} está dado de baja en el padrón.` };
+    }
     const fila = {
       alumno_id: id,
       fecha: hoyISO(),
       hora,
       estado,
-      nombre: enPadron?.nombre || nombre || `(sin nombre) ${id}`,
-      grupo: enPadron?.grupo || grupo || "",
-      generacion: enPadron?.generacion || generacion || "",
+      nombre: enPadron.nombre,
+      grupo: enPadron.grupo || "",
+      semestre: enPadron.semestre || "",
       registrado_por: user.id,
     };
 
@@ -226,11 +236,12 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite }) {
     if (texto === ultimoRef.current.texto && ahora - ultimoRef.current.t < 3000) return;
     ultimoRef.current = { texto, t: ahora };
 
-    // Formato de la credencial: ID|Nombre|Grupo|Generación
-    const partes = texto.split("|");
-    const datos = partes.length >= 2
-      ? { id: partes[0].trim(), nombre: partes[1]?.trim(), grupo: partes[2]?.trim(), generacion: partes[3]?.trim() }
-      : { id: texto.trim(), nombre: "", grupo: "", generacion: "" };
+    /* La credencial lleva ÚNICAMENTE el ID del alumno. El nombre, el
+       grupo y el semestre se consultan en el padrón al escanear, así el
+       dato siempre está vigente aunque la credencial sea de hace años.
+       Las credenciales antiguas traían "ID|Nombre|Grupo|Generación":
+       se sigue leyendo el primer campo y se ignora el resto. */
+    const datos = { id: texto.split("|")[0].trim() };
 
     const r = await registrar(datos);
     setEstado({ msg: r.msg, tipo: !r.ok ? (r.tipo === "repetido" ? "warn" : "err")
@@ -348,7 +359,9 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite }) {
               <span className={`w-2 h-2 rounded-full shrink-0 ${r.estado === "Retardo" ? "bg-amber-500" : "bg-emerald-500"}`} />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium truncate">{r.nombre}</div>
-                <div className="text-xs text-slate-500">{r.grupo || "—"} · ID {r.alumno_id}</div>
+                <div className="text-xs text-slate-500">
+                  {r.semestre ? `${r.semestre}° ` : ""}{r.grupo || "—"} · ID {r.alumno_id}
+                </div>
               </div>
               <div className="text-right shrink-0">
                 <div className="text-xs font-semibold">{(r.hora || "").slice(0, 5)}</div>
@@ -367,27 +380,41 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite }) {
    ================================================================ */
 function PanelDia({ alumnos, registros, fecha }) {
   const [grupo, setGrupo] = useState("todos");
+  const [semestre, setSemestre] = useState("todos");
   const grupos = [...new Set(alumnos.map(a => a.grupo).filter(Boolean))].sort();
+  const semestres = [...new Set(alumnos.map(a => a.semestre).filter(Boolean))]
+    .sort((x, y) => Number(x) - Number(y));
 
-  const delGrupo = (lista) => grupo === "todos" ? lista : lista.filter(x => (x.grupo || "") === grupo);
+  const delGrupo = (lista) => lista
+    .filter(x => grupo === "todos" || (x.grupo || "") === grupo)
+    .filter(x => semestre === "todos" || String(x.semestre || "") === semestre);
   const padron = delGrupo(alumnos.filter(a => a.activo !== false));
   const presentes = delGrupo(registros);
   const idsPresentes = new Set(presentes.map(r => r.alumno_id));
   const ausentes = padron.filter(a => !idsPresentes.has(a.id));
   const pct = padron.length ? Math.round(100 * presentes.length / padron.length) : 0;
 
-  const porGrupo = grupos.map(g => {
-    const total = alumnos.filter(a => a.grupo === g && a.activo !== false).length;
-    const pres = registros.filter(r => r.grupo === g).length;
-    const ret = registros.filter(r => r.grupo === g && r.estado === "Retardo").length;
-    return { grupo: g, total, presentes: pres, retardos: ret, ausentes: Math.max(total - pres, 0),
-      pct: total ? Math.round(100 * pres / total) : 0 };
+  /* Un mismo grupo "A" existe en varios semestres, así que se agrupa
+     por la combinación semestre + grupo. */
+  const combos = [...new Set(alumnos.filter(a => a.activo !== false)
+    .map(a => `${a.semestre || "?"}|${a.grupo || "?"}`))]
+    .sort((x, y) => x.localeCompare(y, "es", { numeric: true }));
+
+  const porGrupo = combos.map(c => {
+    const [sem, gr] = c.split("|");
+    const total = alumnos.filter(a => a.activo !== false
+      && String(a.semestre || "?") === sem && (a.grupo || "?") === gr).length;
+    const pres = registros.filter(r => String(r.semestre || "?") === sem && (r.grupo || "?") === gr).length;
+    const ret = registros.filter(r => String(r.semestre || "?") === sem && (r.grupo || "?") === gr
+      && r.estado === "Retardo").length;
+    return { grupo: `${sem}° ${gr}`, total, presentes: pres, retardos: ret,
+      ausentes: Math.max(total - pres, 0), pct: total ? Math.round(100 * pres / total) : 0 };
   });
 
   const exportarCSV = () => {
-    const filas = [["ID", "Nombre", "Grupo", "Generación", "Fecha", "Hora", "Estado"]];
-    presentes.forEach(r => filas.push([r.alumno_id, r.nombre, r.grupo, r.generacion, r.fecha, r.hora, r.estado]));
-    ausentes.forEach(a => filas.push([a.id, a.nombre, a.grupo, a.generacion, fecha, "", "Ausente"]));
+    const filas = [["ID", "Nombre", "Semestre", "Grupo", "Fecha", "Hora", "Estado"]];
+    presentes.forEach(r => filas.push([r.alumno_id, r.nombre, r.semestre, r.grupo, r.fecha, r.hora, r.estado]));
+    ausentes.forEach(a => filas.push([a.id, a.nombre, a.semestre, a.grupo, fecha, "", "Ausente"]));
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const csv = "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
     const a = document.createElement("a");
@@ -401,17 +428,25 @@ function PanelDia({ alumnos, registros, fecha }) {
     const tel = soloDigitos(al.telefono);
     if (!tel) { alert(`No hay teléfono registrado para el tutor de ${al.nombre}.`); return; }
     const numero = tel.length === 10 ? "52" + tel : tel;
-    const msg = `Buen día. Le informamos que ${al.nombre} (grupo ${al.grupo || "—"}) no registró asistencia hoy ${fmtFechaLarga(fecha)}. CBTA No. 291.`;
+    const ubica = [al.semestre ? `${al.semestre}° semestre` : null, al.grupo ? `grupo ${al.grupo}` : null]
+      .filter(Boolean).join(", ");
+    const msg = `Buen día. Le informamos que ${al.nombre}${ubica ? ` (${ubica})` : ""} no registró asistencia hoy ${fmtFechaLarga(fecha)}. CBTA No. 291.`;
     window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`, "_blank");
   };
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <select className={inputCls + " !mt-0 !w-auto"} value={grupo} onChange={e => setGrupo(e.target.value)}>
-          <option value="todos">Todos los grupos</option>
-          {grupos.map(g => <option key={g} value={g}>Grupo {g}</option>)}
-        </select>
+        <div className="flex flex-wrap gap-2">
+          <select className={inputCls + " !mt-0 !w-auto"} value={semestre} onChange={e => setSemestre(e.target.value)}>
+            <option value="todos">Todos los semestres</option>
+            {semestres.map(s => <option key={s} value={s}>{s}° semestre</option>)}
+          </select>
+          <select className={inputCls + " !mt-0 !w-auto"} value={grupo} onChange={e => setGrupo(e.target.value)}>
+            <option value="todos">Todos los grupos</option>
+            {grupos.map(g => <option key={g} value={g}>Grupo {g}</option>)}
+          </select>
+        </div>
         <button className={btnSec + " !px-3 !py-1.5"} onClick={exportarCSV}><Download size={13} />Exportar a Excel</button>
       </div>
 
@@ -431,7 +466,7 @@ function PanelDia({ alumnos, registros, fecha }) {
 
       {porGrupo.length > 0 && (
         <Card className="p-4">
-          <h3 className="font-bold text-sm mb-3">Asistencia por grupo</h3>
+          <h3 className="font-bold text-sm mb-3">Asistencia por semestre y grupo</h3>
           <ResponsiveContainer width="100%" height={Math.max(180, porGrupo.length * 38)}>
             <BarChart data={porGrupo} layout="vertical" margin={{ top: 4, right: 20, left: 4, bottom: 4 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
@@ -463,7 +498,7 @@ function PanelDia({ alumnos, registros, fecha }) {
                   {a.activo === false && <span className="ml-1.5 text-[10px] font-bold text-slate-400">BAJA</span>}
                 </div>
                 <div className="text-xs text-slate-500">
-                  {a.grupo || "—"} · ID {a.id}
+                  {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · ID {a.id}
                   {a.tutor && <> · Tutor: {a.tutor}</>}
                 </div>
               </div>
@@ -527,8 +562,8 @@ function PanelHistorial({ alumnos, user }) {
   };
 
   const exportarRango = () => {
-    const filas = [["Fecha", "ID", "Nombre", "Grupo", "Generación", "Hora", "Estado"]];
-    datos.forEach(r => filas.push([r.fecha, r.alumno_id, r.nombre, r.grupo, r.generacion, r.hora, r.estado]));
+    const filas = [["Fecha", "ID", "Nombre", "Semestre", "Grupo", "Hora", "Estado"]];
+    datos.forEach(r => filas.push([r.fecha, r.alumno_id, r.nombre, r.semestre, r.grupo, r.hora, r.estado]));
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const csv = "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
     const a = document.createElement("a");
@@ -616,7 +651,9 @@ function PanelHistorial({ alumnos, user }) {
                   <span className={`w-2 h-2 rounded-full shrink-0 ${r.estado === "Retardo" ? "bg-amber-500" : "bg-emerald-500"}`} />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{r.nombre}</div>
-                    <div className="text-xs text-slate-500">{r.grupo || "—"} · ID {r.alumno_id}</div>
+                    <div className="text-xs text-slate-500">
+                  {r.semestre ? `${r.semestre}° ` : ""}{r.grupo || "—"} · ID {r.alumno_id}
+                </div>
                   </div>
                   <div className="text-xs font-semibold shrink-0">{(r.hora || "").slice(0, 5)}</div>
                 </div>
@@ -639,14 +676,18 @@ function PanelPadron({ alumnos, recargar }) {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [modo, setModo] = useState("reemplazar");   // reemplazar | agregar
+  const [semSel, setSemSel] = useState("todos");
   const [verBajas, setVerBajas] = useState(false);
   const [pendiente, setPendiente] = useState(null); // confirmación de bajas
 
   const grupos = [...new Set(alumnos.map(a => a.grupo).filter(Boolean))].sort();
+  const semestres = [...new Set(alumnos.map(a => a.semestre).filter(Boolean))]
+    .sort((x, y) => Number(x) - Number(y));
   const activos = alumnos.filter(a => a.activo !== false);
   const bajas = alumnos.filter(a => a.activo === false);
   const lista = (verBajas ? bajas : activos)
     .filter(a => grupo === "todos" || a.grupo === grupo)
+    .filter(a => semSel === "todos" || String(a.semestre || "") === semSel)
     .filter(a => !q || (a.nombre || "").toLowerCase().includes(q.toLowerCase()) || a.id.includes(q));
 
   const reactivar = async (al) => {
@@ -703,6 +744,7 @@ function PanelPadron({ alumnos, recargar }) {
           id,
           nombre,
           grupo: String(clave(f, "GRUPO")).trim(),
+          semestre: String(clave(f, "SEMESTRE", "SEM")).trim(),
           generacion: String(clave(f, "GENERACION", "GENERACIÓN")).trim(),
           tutor: String(clave(f, "NOMBRE DEL TUTOR", "TUTOR")).trim(),
           telefono: String(clave(f, "TELEFONO DEL TUTOR", "TELÉFONO DEL TUTOR", "TELEFONO", "TELÉFONO")).trim(),
@@ -790,6 +832,10 @@ function PanelPadron({ alumnos, recargar }) {
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
           <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar por nombre o ID…" value={q} onChange={e => setQ(e.target.value)} />
         </div>
+        <select className={inputCls + " !mt-0 !w-auto"} value={semSel} onChange={e => setSemSel(e.target.value)}>
+          <option value="todos">Todos los semestres</option>
+          {semestres.map(s => <option key={s} value={s}>{s}° semestre</option>)}
+        </select>
         <select className={inputCls + " !mt-0 !w-auto"} value={grupo} onChange={e => setGrupo(e.target.value)}>
           <option value="todos">Todos los grupos</option>
           {grupos.map(g => <option key={g} value={g}>Grupo {g}</option>)}
@@ -816,7 +862,7 @@ function PanelPadron({ alumnos, recargar }) {
                   {a.activo === false && <span className="ml-1.5 text-[10px] font-bold text-slate-400">BAJA</span>}
                 </div>
                 <div className="text-xs text-slate-500 truncate">
-                  ID {a.id} · Grupo {a.grupo || "—"} · Gen. {a.generacion || "—"}
+                  ID {a.id} · {a.semestre ? `${a.semestre}° semestre` : "Semestre —"} · Grupo {a.grupo || "—"}
                   {a.tutor && <> · Tutor: {a.tutor}</>}
                 </div>
               </div>
