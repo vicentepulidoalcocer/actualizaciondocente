@@ -30,6 +30,19 @@ const fmtFechaLarga = (iso) => {
 /* Los grupos vienen escritos de varias formas en la asignación:
    «1° "A"», «3° B», «BAETAM 1° A», «5°C». Se extrae el semestre y la
    letra para poder cruzarlos con el padrón, donde son campos aparte. */
+/* Extrae el grupo de una celda del horario: «PM III 3C» → 3° C,
+   «CNET I 1B» → 1° B, «UAC F 5B» → 5° B. Las celdas sin grupo
+   («TUTORÍA», «PARAESCOLARES», «RECESO») devuelven null. */
+export function grupoDeCelda(texto) {
+  const t = (texto || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+  const re = /\b([1-6])\s*°?\s*"?([A-F])"?\b/g;
+  let m, ultimo = null;
+  while ((m = re.exec(t)) !== null) ultimo = m;
+  return ultimo ? { sem: ultimo[1], letra: ultimo[2] } : null;
+}
+
+const DIAS_HORARIO = ["lunes", "martes", "miercoles", "jueves", "viernes"];
+
 export function interpretarGrupo(texto) {
   const t = (texto || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
   const sem = (t.match(/\b([135])\s*°?/) || t.match(/\b([1-6])\b/) || [])[1] || null;
@@ -49,9 +62,19 @@ export default function Ausentes({ db, user }) {
   /* Grupos que atiende el docente, tomados de su asignación vigente.
      Solo cuentan las actividades frente a grupo: una comisión o un
      cargo no implica tener alumnos a cargo. */
-  const misGrupos = useMemo(() => {
-    const asig = db.asignaciones.find(a => a.docenteId === user.id)
-      || null;
+  const asig = useMemo(
+    () => db.asignaciones.find(a => a.docenteId === user.id) || null,
+    [db.asignaciones, user.id]);
+
+  // Día de la semana de la fecha elegida (null en sábado y domingo)
+  const diaSemana = useMemo(() => {
+    const [a, m, d] = fecha.split("-").map(Number);
+    const n = new Date(a, m - 1, d).getDay();   // 0 = domingo
+    return n >= 1 && n <= 5 ? DIAS_HORARIO[n - 1] : null;
+  }, [fecha]);
+
+  /* Todos los grupos del docente, con las materias que imparte en cada uno */
+  const todosMisGrupos = useMemo(() => {
     if (!asig) return [];
     const vistos = new Map();
     (asig.items || []).forEach(it => {
@@ -64,7 +87,29 @@ export default function Ausentes({ db, user }) {
     });
     return [...vistos.values()].sort((a, b) =>
       a.sem.localeCompare(b.sem) || a.letra.localeCompare(b.letra));
-  }, [db.asignaciones, user.id]);
+  }, [asig]);
+
+  /* Grupos a los que REALMENTE da clase el día elegido, según su horario.
+     Sin este filtro aparecerían todos sus grupos incluso en sábado o en
+     días en que no los atiende. */
+  const hayHorario = !!(asig?.horario || []).length;
+  const gruposDelDia = useMemo(() => {
+    if (!diaSemana || !hayHorario) return null;
+    const conClase = new Set();
+    (asig.horario || []).forEach(f => {
+      const celda = (f[diaSemana] || "").trim();
+      if (!celda || /RECESO/i.test(celda)) return;
+      const g = grupoDeCelda(celda);
+      if (g) conClase.add(`${g.sem}|${g.letra}`);
+    });
+    return conClase;
+  }, [asig, diaSemana, hayHorario]);
+
+  const misGrupos = useMemo(() => {
+    if (!diaSemana) return [];                       // fin de semana
+    if (!gruposDelDia) return todosMisGrupos;        // sin horario cargado
+    return todosMisGrupos.filter(g => gruposDelDia.has(`${g.sem}|${g.letra}`));
+  }, [todosMisGrupos, gruposDelDia, diaSemana]);
 
   const consultar = useCallback(async () => {
     if (!misGrupos.length) return;
@@ -121,16 +166,22 @@ export default function Ausentes({ db, user }) {
   };
 
   if (!misGrupos.length) {
+    const motivo = !diaSemana
+      ? "Ese día no hay clases: es fin de semana. Elige un día de lunes a viernes."
+      : !todosMisGrupos.length
+        ? "Aún no hay grupos asociados a tu asignación. Cuando el Departamento Académico publique la asignación del semestre, aquí aparecerán los alumnos de tus grupos."
+        : `Según tu horario no tienes clases el ${diaSemana === "miercoles" ? "miércoles" : diaSemana}. Elige otro día para ver las ausencias de tus grupos.`;
     return (
       <div className="space-y-4">
-        <div>
-          <h2 className="text-xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>Alumnos ausentes</h2>
-          <p className="text-sm text-slate-500">Quién faltó hoy en los grupos que atiendes.</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>Alumnos ausentes</h2>
+            <p className="text-sm text-slate-500 capitalize">{fmtFechaLarga(fecha)}</p>
+          </div>
+          <input type="date" className={inputCls + " !mt-0 !w-auto"} value={fecha} max={hoyISO()}
+            onChange={e => setFecha(e.target.value)} />
         </div>
-        <Card className="p-8 text-center text-sm text-slate-400">
-          Aún no hay grupos asociados a tu asignación. Cuando el Departamento Académico publique
-          la asignación del semestre, aquí aparecerán los alumnos de tus grupos.
-        </Card>
+        <Card className="p-8 text-center text-sm text-slate-400">{motivo}</Card>
       </div>
     );
   }
@@ -140,7 +191,9 @@ export default function Ausentes({ db, user }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>Alumnos ausentes</h2>
-          <p className="text-sm text-slate-500 capitalize">{fmtFechaLarga(fecha)}</p>
+          <p className="text-sm text-slate-500 capitalize">
+            {fmtFechaLarga(fecha)} · {misGrupos.length} grupo(s) con clase
+          </p>
         </div>
         <div className="flex flex-wrap gap-2 items-center">
           <input type="date" className={inputCls + " !mt-0 !w-auto"} value={fecha} max={hoyISO()}
@@ -233,9 +286,16 @@ export default function Ausentes({ db, user }) {
           ))}
 
           <p className="text-[11px] text-slate-400">
-            La ausencia es del registro de entrada al plantel, tomado en la mañana por control
-            escolar. No sustituye tu propio pase de lista por clase.
+            Se muestran solo los grupos a los que das clase este día, según tu horario.
+            La ausencia proviene del registro de entrada al plantel, tomado en la mañana por
+            control escolar: no sustituye tu propio pase de lista por clase.
           </p>
+          {!hayHorario && (
+            <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+              Tu asignación no incluye horario, así que se muestran todos tus grupos. Cuando el
+              Departamento Académico vuelva a cargar las asignaciones, se filtrarán por día.
+            </p>
+          )}
         </>
       )}
     </div>
