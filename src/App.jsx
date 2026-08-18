@@ -5,7 +5,7 @@ import {
   AlertTriangle, ChevronRight, Users, Target, TrendingUp, FileCheck,
   Download, Filter, Plus, Pencil, Trash2, Eye, Medal, Star, Loader2,
   FolderOpen, User, Activity, ShieldCheck, Menu, X, Megaphone,
-  Paperclip, Link2, Archive, Send, Sparkles, CalendarDays, ScanLine
+  Paperclip, Link2, Archive, Send, Sparkles, CalendarDays, ScanLine, RefreshCw
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie,
@@ -22,7 +22,7 @@ import { supabase, configurada } from "./lib/supabase";
 import {
   cargarTodo, sincronizar, guardarArchivo, leerArchivo, eliminarArchivo,
   extraerConIA, crearDocente, restablecerPassword, cambiarEmailDocente,
-  marcarEnterado, MAX_FILE_B64,
+  marcarEnterado, MAX_FILE_B64, registrarAcceso,
 } from "./lib/nube";
 const Asistencia = React.lazy(() => import("./Asistencia"));
 import {
@@ -782,6 +782,7 @@ export default function App() {
     setUser(yo);
     // Al iniciar sesión, cada rol aterriza en su pantalla de trabajo;
     // en recargas posteriores no se toca la pantalla en la que esté.
+    if (esPrimeraCarga) registrarAcceso(yo.id);
     if (esPrimeraCarga && yo.rol === "docente") setPagina("avisos");
     if (esPrimeraCarga && yo.rol === "administrativo") setPagina("asistencia");
   }, []);
@@ -3861,6 +3862,7 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
       const lista = (r.docentes || []).map(d => ({
         nombre: d.nombre || "", titulo: d.titulo || "",
         items: (d.items || []).filter(i => i.actividad),
+        horario: Array.isArray(d.horario) ? d.horario.filter(h => h && h.hora) : [],
         totalHoras: d.total_horas ?? null,
         docenteId: emparejarDocente(db, d.nombre)?.id || "",
       }));
@@ -3896,7 +3898,7 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
             id: uid(), loteId, ciclo: cicloSel, periodo: periodoSel,
             docenteId: x.docenteId || null,
             nombreExtraido: (x.titulo ? x.titulo + " " : "") + x.nombre,
-            items: x.items, totalHoras: x.totalHoras,
+            items: x.items, horario: x.horario || [], totalHoras: x.totalHoras,
             creadoEn: ahora(), creadoPor: user.nombre,
           });
           if (x.docenteId) {
@@ -4297,6 +4299,96 @@ function VerEntregaBtn({ entrega }) {
 }
 
 /* ================================================================
+   HORARIO SEMANAL DEL DOCENTE
+   Se extrae del mismo PDF de asignaciones; cada quien ve solo el suyo.
+   ================================================================ */
+
+const DIAS_SEMANA = [
+  ["lunes", "Lunes"], ["martes", "Martes"], ["miercoles", "Miércoles"],
+  ["jueves", "Jueves"], ["viernes", "Viernes"],
+];
+
+/* Colorea cada materia distinta para poder ubicarla de un vistazo */
+const PALETA_HORARIO = ["#1a2340", "#E8871E", "#059669", "#7c3aed", "#0ea5e9",
+                        "#db2777", "#ca8a04", "#0891b2", "#65a30d", "#e11d48"];
+function colorDeCelda(texto, mapa) {
+  const clave = normTexto(texto);
+  if (!clave) return null;
+  if (/^RECESO/.test(clave)) return "#94a3b8";
+  if (!mapa.has(clave)) mapa.set(clave, PALETA_HORARIO[mapa.size % PALETA_HORARIO.length]);
+  return mapa.get(clave);
+}
+
+function HorarioSemanal({ asig }) {
+  const [abierto, setAbierto] = useState(true);
+  const filas = (asig?.horario || []).filter(h => h && h.hora);
+  if (!filas.length) return null;
+
+  const mapa = new Map();
+  // El receso se distingue del resto: ocupa todo el ancho
+  const esReceso = (f) => DIAS_SEMANA.every(([k]) => !f[k]) || /RECESO/i.test(f.hora)
+    || DIAS_SEMANA.some(([k]) => /RECESO/i.test(f[k] || ""));
+
+  return (
+    <Card className="p-4">
+      <button className="w-full flex items-center justify-between" onClick={() => setAbierto(a => !a)}>
+        <h3 className="font-bold text-sm flex items-center gap-1.5"><CalendarDays size={15}/>Mi horario semanal</h3>
+        <span className="text-xs text-slate-400">{abierto ? "Ocultar" : "Mostrar"}</span>
+      </button>
+
+      {abierto && (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-xs border-separate" style={{ borderSpacing: "2px" }}>
+            <thead>
+              <tr>
+                <th className="text-left font-semibold text-slate-400 uppercase text-[10px] px-2 py-1">Hora</th>
+                {DIAS_SEMANA.map(([k, n]) => (
+                  <th key={k} className="font-semibold text-slate-400 uppercase text-[10px] px-2 py-1">{n}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f, i) => {
+                const receso = esReceso(f);
+                return (
+                  <tr key={i}>
+                    <td className="whitespace-nowrap text-[11px] text-slate-500 font-medium px-2 py-1.5 align-middle">{f.hora}</td>
+                    {receso ? (
+                      <td colSpan={5} className="text-center text-[11px] font-semibold text-slate-400 bg-slate-50 rounded-lg py-1.5">
+                        RECESO
+                      </td>
+                    ) : DIAS_SEMANA.map(([k]) => {
+                      const txt = (f[k] || "").trim();
+                      const color = txt ? colorDeCelda(txt, mapa) : null;
+                      return (
+                        <td key={k} className="px-1 py-0.5 align-middle">
+                          {txt ? (
+                            <div className="rounded-lg px-2 py-1.5 text-[11px] font-semibold text-center leading-tight"
+                              style={{ background: color + "1f", color }}>
+                              {txt}
+                            </div>
+                          ) : (
+                            <div className="rounded-lg py-1.5 bg-slate-50/60" />
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <p className="text-[11px] text-slate-400 mt-2">
+            Tomado del documento de asignaciones del semestre. Si algún dato no coincide,
+            avisa al Departamento Académico.
+          </p>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/* ================================================================
    MI ASIGNACIÓN (docente)
    ================================================================ */
 
@@ -4375,6 +4467,8 @@ function MiAsignacion({ db, user, mutar }) {
             .map(v => <option key={v} value={v}>{nombrePeriodo(v.split("|")[1])} · {v.split("|")[0]}</option>)}
         </select>
       </div>
+
+      {asig && <HorarioSemanal asig={asig} />}
 
       {av && (
         <Card className="p-4">
@@ -5736,27 +5830,179 @@ function PerfilInstitucional({ db }) {
    ================================================================ */
 
 function ActividadReciente({ db }) {
+  const [tab, setTab] = useState("actividad");
+  const [accesos, setAccesos] = useState(null);
+  const [cargando, setCargando] = useState(false);
+  const [err, setErr] = useState("");
+  const [dias, setDias] = useState(30);
+
+  const nombreDe = (id) => db.users.find(u => u.id === id)?.nombre || "Cuenta eliminada";
+  const rolDe = (id) => NOMBRE_ROL[db.users.find(u => u.id === id)?.rol] || "";
+
+  const cargarAccesos = useCallback(async () => {
+    setCargando(true); setErr("");
+    const desde = new Date();
+    desde.setDate(desde.getDate() - dias);
+    const { data, error } = await supabase.from("accesos")
+      .select("id, usuario_id, fecha, dispositivo")
+      .gte("fecha", desde.toISOString())
+      .order("fecha", { ascending: false })
+      .limit(1000);
+    if (error) setErr(error.message); else setAccesos(data || []);
+    setCargando(false);
+  }, [dias]);
+
+  useEffect(() => { if (tab === "accesos") cargarAccesos(); }, [tab, cargarAccesos]);
+
+  /* Resumen por persona: cuántas veces entró y cuándo fue la última.
+     Incluye a quienes NUNCA han entrado, que suele ser lo más útil. */
+  const resumen = useMemo(() => {
+    if (!accesos) return [];
+    const porUsuario = new Map();
+    accesos.forEach(a => {
+      const r = porUsuario.get(a.usuario_id) || { id: a.usuario_id, veces: 0, ultimo: null };
+      r.veces++;
+      if (!r.ultimo || a.fecha > r.ultimo) r.ultimo = a.fecha;
+      porUsuario.set(a.usuario_id, r);
+    });
+    const filas = db.users.filter(u => u.activo).map(u => {
+      const r = porUsuario.get(u.id);
+      return { id: u.id, nombre: u.nombre, rol: u.rol, veces: r?.veces || 0, ultimo: r?.ultimo || null };
+    });
+    return filas.sort((a, b) => {
+      if (!a.ultimo && !b.ultimo) return a.nombre.localeCompare(b.nombre);
+      if (!a.ultimo) return 1;
+      if (!b.ultimo) return -1;
+      return b.ultimo.localeCompare(a.ultimo);
+    });
+  }, [accesos, db.users]);
+
+  const nunca = resumen.filter(r => !r.ultimo).length;
+
+  const exportar = () => {
+    const filas = [["Nombre", "Rol", "Entradas en el periodo", "Último acceso"]];
+    resumen.forEach(r => filas.push([r.nombre, NOMBRE_ROL[r.rol] || r.rol, r.veces,
+      r.ultimo ? new Date(r.ultimo).toLocaleString("es-MX") : "Nunca ha entrado"]));
+    descargarCSV(`accesos_ultimos_${dias}_dias`, filas);
+  };
+
+  const haceCuanto = (iso) => {
+    const min = Math.round((Date.now() - new Date(iso)) / 60000);
+    if (min < 1) return "hace un momento";
+    if (min < 60) return `hace ${min} min`;
+    const h = Math.round(min / 60);
+    if (h < 24) return `hace ${h} h`;
+    const d = Math.round(h / 24);
+    return d === 1 ? "ayer" : `hace ${d} días`;
+  };
+
   return (
     <div className="space-y-4">
       <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Actividad reciente</h2>
-      <Card className="p-4">
-        {db.activity.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">La actividad de la escuela se registrará aquí conforme el sistema se use.</p>}
-        {db.activity.map(a => (
-          <div key={a.id} className="flex gap-3 py-2.5 border-b border-slate-100 last:border-0">
-            <Activity size={15} className="text-[#E8871E] mt-0.5 shrink-0" />
-            <div className="text-sm text-slate-700">{a.texto}
-              <span className="block text-[11px] text-slate-400">{new Date(a.fecha).toLocaleString("es-MX")}</span>
-            </div>
-          </div>
+
+      <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
+        {[["actividad", "Movimientos", Activity], ["accesos", "Quién ha entrado", User]].map(([id, txt, Ico]) => (
+          <button key={id} onClick={() => setTab(id)}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold transition ${tab === id ? "bg-white text-[#1a2340] shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+            <Ico size={14}/>{txt}
+          </button>
         ))}
-      </Card>
+      </div>
+
+      {tab === "actividad" && (
+        <Card className="p-4">
+          {db.activity.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">La actividad de la escuela se registrará aquí conforme el sistema se use.</p>}
+          {db.activity.map(a => (
+            <div key={a.id} className="flex gap-3 py-2.5 border-b border-slate-100 last:border-0">
+              <Activity size={15} className="text-[#E8871E] mt-0.5 shrink-0" />
+              <div className="text-sm text-slate-700">{a.texto}
+                <span className="block text-[11px] text-slate-400">{new Date(a.fecha).toLocaleString("es-MX")}</span>
+              </div>
+            </div>
+          ))}
+        </Card>
+      )}
+
+      {tab === "accesos" && (
+        <>
+          <Card className="p-3 flex flex-wrap gap-2 items-center">
+            <span className="text-sm text-slate-500">Periodo:</span>
+            <select className={inputCls + " !mt-0 !w-auto"} value={dias} onChange={e => setDias(Number(e.target.value))}>
+              <option value={7}>Últimos 7 días</option>
+              <option value={30}>Últimos 30 días</option>
+              <option value={90}>Últimos 3 meses</option>
+              <option value={365}>Último año</option>
+            </select>
+            <button className={btnSec + " !px-3 !py-1.5"} onClick={cargarAccesos} disabled={cargando}>
+              {cargando ? <Loader2 size={13} className="animate-spin"/> : <RefreshCw size={13}/>}Actualizar
+            </button>
+            <button className={btnSec + " !px-3 !py-1.5 ml-auto"} onClick={exportar} disabled={!accesos}>
+              <Download size={13}/>CSV
+            </button>
+          </Card>
+
+          {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
+          {cargando && !accesos && <Card className="p-8 text-center text-sm text-slate-400"><Loader2 size={16} className="animate-spin inline mr-2"/>Consultando…</Card>}
+
+          {accesos && (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <Stat icono={Users} label="Han entrado" valor={resumen.filter(r => r.ultimo).length} sub={`de ${resumen.length} cuentas activas`} />
+                <Stat icono={Activity} label="Entradas registradas" valor={accesos.length} sub={`últimos ${dias} días`} />
+                <Stat icono={AlertTriangle} label="Nunca han entrado" valor={nunca} color={nunca ? "text-amber-600" : "text-slate-900"} />
+              </div>
+
+              {nunca > 0 && (
+                <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-3">
+                  ⚠ Hay {nunca} cuenta(s) que no han entrado en este periodo. Puede ser que la persona
+                  no conozca sus datos de acceso o tenga problemas para entrar; conviene preguntarle.
+                </p>
+              )}
+
+              <Card className="p-4">
+                <h3 className="font-bold text-sm mb-2">Por persona</h3>
+                {resumen.map(r => (
+                  <div key={r.id} className="flex flex-wrap items-center gap-3 py-2.5 border-b border-slate-100 last:border-0">
+                    <div className="flex-1 min-w-[180px]">
+                      <div className="text-sm font-medium">{r.nombre}</div>
+                      <div className="text-xs text-slate-500">{NOMBRE_ROL[r.rol] || r.rol}</div>
+                    </div>
+                    <div className="text-right">
+                      {r.ultimo ? (
+                        <>
+                          <div className="text-xs font-semibold">{new Date(r.ultimo).toLocaleString("es-MX")}</div>
+                          <div className="text-[11px] text-slate-400">{haceCuanto(r.ultimo)} · {r.veces} entrada(s)</div>
+                        </>
+                      ) : (
+                        <span className="text-xs font-bold text-amber-600">Nunca ha entrado</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </Card>
+
+              <Card className="p-4">
+                <h3 className="font-bold text-sm mb-2">Últimas entradas</h3>
+                <div className="max-h-96 overflow-y-auto">
+                  {accesos.slice(0, 200).map(a => (
+                    <div key={a.id} className="flex items-center gap-3 py-2 border-b border-slate-100 last:border-0">
+                      <User size={14} className="text-slate-400 shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm truncate">{nombreDe(a.usuario_id)}</div>
+                        <div className="text-[11px] text-slate-400">{rolDe(a.usuario_id)}{a.dispositivo ? ` · ${a.dispositivo}` : ""}</div>
+                      </div>
+                      <div className="text-xs text-slate-500 shrink-0">{new Date(a.fecha).toLocaleString("es-MX")}</div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }
-
-/* ================================================================
-   ADMINISTRACIÓN Y CONFIGURACIÓN
-   ================================================================ */
 
 function Administracion({ db, user, mutar, esAdmin = true }) {
   const cfg = db.config;
