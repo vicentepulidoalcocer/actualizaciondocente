@@ -25,6 +25,7 @@ import {
   marcarEnterado, MAX_FILE_B64, registrarAcceso,
 } from "./lib/nube";
 const Asistencia = React.lazy(() => import("./Asistencia"));
+const Ausentes = React.lazy(() => import("./Ausentes"));
 import {
   soportaPush, esIOS, instaladoEnInicio, permisoActual,
   activarNotificaciones, desactivarNotificaciones, estaActivo, enviarPush, registrarServicio,
@@ -977,6 +978,7 @@ export default function App() {
     { id: "avisos", label: "Avisos", icono: Megaphone, badge: avisosPendientes(db, user).length },
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "mi_asignacion", label: "Mi asignación", icono: FolderOpen, badge: pendientesEntrega(db, user.id) },
+    { id: "ausentes", label: "Alumnos ausentes", icono: Users },
     { id: "calendario", label: "Calendario académico", icono: CalendarDays },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "cursos", label: "Mis cursos", icono: BookOpen },
@@ -1079,6 +1081,11 @@ export default function App() {
           {pagina === "asistencia" && esRolControlEscolar(user.rol) && (
             <React.Suspense fallback={<Card className="p-8 text-center text-sm text-slate-400"><Loader2 size={18} className="animate-spin inline mr-2"/>Cargando control de asistencia…</Card>}>
               <Asistencia user={user} />
+            </React.Suspense>
+          )}
+          {pagina === "ausentes" && user.rol === "docente" && (
+            <React.Suspense fallback={<Card className="p-8 text-center text-sm text-slate-400"><Loader2 size={18} className="animate-spin inline mr-2"/>Cargando…</Card>}>
+              <Ausentes db={db} user={user} />
             </React.Suspense>
           )}
           {pagina === "calendario" && <CalendarioAcademico db={db} user={user} mutar={mutar} puedeEditar={esRolAcademico(user.rol)} />}
@@ -1434,6 +1441,7 @@ function DashboardDocente({ db, user, irA }) {
   const accesos = [
     { id: "avisos", label: "Avisos", icono: Megaphone, color: "#E8871E", badge: pendAvisos.length },
     { id: "mi_asignacion", label: "Mi asignación", icono: FolderOpen, color: "#7c3aed", badge: pendEntregas },
+    { id: "ausentes", label: "Alumnos ausentes", icono: Users, color: "#e11d48" },
     { id: "subir", label: "Subir constancia", icono: Upload, color: "#059669" },
     { id: "calendario", label: "Calendario", icono: CalendarDays, color: "#0ea5e9" },
     { id: "programas", label: "Programas", icono: BookOpen, color: "#2563eb" },
