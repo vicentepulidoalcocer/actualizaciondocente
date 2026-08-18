@@ -388,36 +388,90 @@ const asignaturasDe = (p) => Array.isArray(p.asignaturas) ? p.asignaturas : [];
 const todasLasAsignaturas = (db) =>
   db.programas.flatMap(p => asignaturasDe(p).map((a, i) => ({ ...a, programa: p, idx: i })));
 
+/* Separa un nombre en su parte descriptiva y su numeral romano.
+   "Ciencias Sociales I. Estado, ciudadanía y relaciones de poder"
+   se convierte en { base: "CIENCIAS SOCIALES", num: "I" }.        */
+const ROMANOS = new Set(["I", "II", "III", "IV", "V", "VI", "VII", "VIII"]);
+
+/* Palabras que no aportan al formar una sigla */
+const VACIAS = new Set(["DE", "DEL", "LA", "LAS", "EL", "LOS", "Y", "E", "EN", "A", "AL", "UN", "UNA", "PARA", "CON"]);
+
+/* Siglas posibles de un nombre. Las asignaciones suelen venir abreviadas
+   ("CNET I") mientras el programa trae el nombre completo ("Ciencias
+   Naturales, Experimentales y Tecnología I"), así que se generan las
+   variantes usuales y basta con que una coincida:
+     - iniciales de todas las palabras      → PFYH, LYC, CS
+     - iniciales sin palabras vacías        → CNET, TSM
+     - primera palabra + palabras con peso  → LEPVD                */
+function siglasDe(tokens) {
+  if (!tokens.length) return new Set();
+  const inicial = (w) => w[0];
+  const todas = tokens.map(inicial).join("");
+  const significativas = tokens.filter(t => !VACIAS.has(t));
+  const soloFuertes = significativas.map(inicial).join("");
+  const conPrimera = (VACIAS.has(tokens[0]) ? [tokens[0], ...significativas] : significativas)
+    .map(inicial).join("");
+  return new Set([todas, soloFuertes, conPrimera].filter(x => x.length >= 2));
+}
+function partesNombre(texto) {
+  const toks = normTexto(texto).split(" ").filter(Boolean);
+  let idx = -1;
+  for (let i = 0; i < toks.length; i++) if (ROMANOS.has(toks[i])) { idx = i; break; }
+  const num = idx >= 0 ? toks[idx] : null;
+  const base = (idx >= 0 ? toks.slice(0, idx) : toks);
+  return { base, num, toks };
+}
+
 /* Busca la asignatura del repositorio que corresponde a una actividad.
-   Cuando se conoce el semestre, se prioriza el rubro que le toca
-   (propósitos para 1.º y 3.º, progresiones para 5.º); si ahí no aparece,
-   se busca en el resto para no dejar al docente sin referencia.
-   Dentro de cada grupo gana la coincidencia exacta y, si no la hay, la
-   más específica: así "Pensamiento Matemático III" no se confunde con
-   "Pensamiento Matemático I". */
+
+   El numeral tiene que coincidir EXACTAMENTE: "Ciencias Sociales I" no
+   puede emparejarse con "Ciencias Sociales III" aunque una cadena
+   contenga a la otra. Ese descuido hacía que una asignatura de primer
+   semestre tomara el número de planeaciones de la de tercero.
+
+   Cuando se conoce el semestre se prioriza su rubro: propósitos para
+   1.º y 3.º, progresiones para 5.º.                                  */
 function buscarPrograma(db, actividad, semestre) {
-  const n = normTexto(actividad);
-  if (!n) return null;
+  const a = partesNombre(actividad);
+  if (!a.base.length && !a.num) return null;
   const todas = todasLasAsignaturas(db);
   const rubro = rubroDeSemestre(semestre);
 
-  const buscarEn = (lista) => {
-    for (const a of lista) if (normTexto(a.nombre) === n) return a;
-    let mejor = null, mejorLen = 0;
-    for (const a of lista) {
-      const an = normTexto(a.nombre);
-      if (!an) continue;
-      if ((n.includes(an) || an.includes(n)) && an.length > mejorLen) { mejor = a; mejorLen = an.length; }
+  const puntuar = (cand) => {
+    const c = partesNombre(cand.nombre);
+    // El numeral manda: si difieren, no son la misma asignatura
+    if ((a.num || null) !== (c.num || null)) return 0;
+    if (!a.base.length || !c.base.length) return a.num ? 0.5 : 0;
+
+    // Coincidencia exacta de la parte descriptiva
+    if (a.base.join(" ") === c.base.join(" ")) return 1;
+
+    /* Una de las dos puede venir abreviada: "CNET I" contra
+       "Ciencias Naturales, Experimentales y Tecnología I". */
+    if (a.base.length === 1 && siglasDe(c.base).has(a.base[0])) return 0.98;
+    if (c.base.length === 1 && siglasDe(a.base).has(c.base[0])) return 0.98;
+
+    const setA = new Set(a.base), setC = new Set(c.base);
+    let comunes = 0;
+    for (const t of setA) if (setC.has(t)) comunes++;
+    return comunes / Math.max(setA.size, setC.size);
+  };
+
+  const elegir = (lista) => {
+    let mejor = null, mejorP = 0;
+    for (const cand of lista) {
+      const p = puntuar(cand);
+      if (p > mejorP) { mejorP = p; mejor = cand; }
     }
-    return mejor;
+    return mejorP >= 0.6 ? mejor : null;   // por debajo de eso no es fiable
   };
 
   if (rubro) {
-    const delRubro = todas.filter(a => (a.programa?.rubro || "propositos") === rubro);
-    const hallado = buscarEn(delRubro);
+    const delRubro = todas.filter(x => (x.programa?.rubro || "propositos") === rubro);
+    const hallado = elegir(delRubro);
     if (hallado) return hallado;
   }
-  return buscarEn(todas);
+  return elegir(todas);
 }
 
 /* Agrupa los renglones de una asignación por actividad y calcula qué debe
