@@ -11,6 +11,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Camera, CameraOff, Users, Clock, CheckCircle2, AlertTriangle, Download,
   Upload, Search, Loader2, TrendingUp, MessageCircle, CalendarDays, X, RefreshCw,
+  Trash2, UserMinus, UserCheck,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
@@ -201,7 +202,7 @@ export default function Asistencia({ user }) {
       {!cargando && tab === "dashboard" && (
         <PanelDia alumnos={alumnos} registros={registrosHoy} fecha={fecha} />
       )}
-      {!cargando && tab === "historial" && <PanelHistorial alumnos={alumnos} />}
+      {!cargando && tab === "historial" && <PanelHistorial alumnos={alumnos} user={user} />}
       {!cargando && tab === "padron" && <PanelPadron alumnos={alumnos} recargar={cargar} />}
     </div>
   );
@@ -455,9 +456,12 @@ function PanelDia({ alumnos, registros, fecha }) {
         {ausentes.length === 0 && <p className="text-sm text-emerald-700 py-6 text-center">Asistencia completa. No hay ausentes.</p>}
         <div className="max-h-96 overflow-y-auto">
           {ausentes.map(a => (
-            <div key={a.id} className="flex items-center gap-3 py-2 border-b border-slate-100 last:border-0">
+            <div key={a.id} className={`flex items-center gap-3 py-2 border-b border-slate-100 last:border-0 ${a.activo === false ? "opacity-60" : ""}`}>
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium truncate">{a.nombre}</div>
+                <div className="text-sm font-medium truncate">
+                  {a.nombre}
+                  {a.activo === false && <span className="ml-1.5 text-[10px] font-bold text-slate-400">BAJA</span>}
+                </div>
                 <div className="text-xs text-slate-500">
                   {a.grupo || "—"} · ID {a.id}
                   {a.tutor && <> · Tutor: {a.tutor}</>}
@@ -478,7 +482,7 @@ function PanelDia({ alumnos, registros, fecha }) {
 /* ================================================================
    HISTORIAL: consulta de días anteriores
    ================================================================ */
-function PanelHistorial({ alumnos }) {
+function PanelHistorial({ alumnos, user }) {
   const [desde, setDesde] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() - 14);
     return d.toISOString().slice(0, 10);
@@ -488,6 +492,7 @@ function PanelHistorial({ alumnos }) {
   const [cargando, setCargando] = useState(false);
   const [err, setErr] = useState("");
   const [detalle, setDetalle] = useState(null);
+  const [borrando, setBorrando] = useState(null);
 
   const consultar = useCallback(async () => {
     setCargando(true); setErr("");
@@ -505,6 +510,21 @@ function PanelHistorial({ alumnos }) {
     return { fecha: f, presentes: del.length, retardos: del.filter(r => r.estado === "Retardo").length,
       pct: totalPadron ? Math.round(100 * del.length / totalPadron) : 0 };
   });
+
+  /* Borra todos los registros de un día. Se pide confirmación escrita
+     porque no hay forma de recuperarlos después. */
+  const borrarDia = async (fecha, cuantos) => {
+    const texto = window.prompt(
+      `Se eliminarán los ${cuantos} registro(s) del ${fmtFechaLarga(fecha)}.\n\n` +
+      `Esta acción no se puede deshacer. Escribe BORRAR para confirmar:`);
+    if (texto !== "BORRAR") return;
+    setBorrando(fecha);
+    const { error } = await supabase.from("asistencias").delete().eq("fecha", fecha);
+    setBorrando(null);
+    if (error) { setErr("No se pudo borrar: " + error.message); return; }
+    setDatos(prev => prev.filter(r => r.fecha !== fecha));
+    setDetalle(null);
+  };
 
   const exportarRango = () => {
     const filas = [["Fecha", "ID", "Nombre", "Grupo", "Generación", "Hora", "Estado"]];
@@ -556,12 +576,12 @@ function PanelHistorial({ alumnos }) {
         <h3 className="font-bold text-sm mb-2">Días registrados · {porDia.length}</h3>
         {porDia.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">No hay registros en este periodo.</p>}
         {porDia.map(d => (
-          <button key={d.fecha} onClick={() => setDetalle(d.fecha)}
-            className="w-full text-left flex flex-wrap items-center gap-3 py-2.5 border-b border-slate-100 last:border-0 hover:bg-slate-50 px-2 -mx-2 rounded-lg transition">
-            <div className="flex-1 min-w-[160px]">
+          <div key={d.fecha}
+            className="flex flex-wrap items-center gap-3 py-2.5 border-b border-slate-100 last:border-0 hover:bg-slate-50 px-2 -mx-2 rounded-lg transition">
+            <button onClick={() => setDetalle(d.fecha)} className="flex-1 min-w-[160px] text-left">
               <div className="text-sm font-medium capitalize">{fmtFechaLarga(d.fecha)}</div>
               <div className="text-xs text-slate-500">{d.presentes} presentes · {d.retardos} retardo(s)</div>
-            </div>
+            </button>
             <div className="w-28">
               <div className="text-[11px] text-slate-500 text-right mb-0.5">{d.pct}%</div>
               <div className="w-full h-1.5 rounded-full bg-slate-200 overflow-hidden">
@@ -569,7 +589,12 @@ function PanelHistorial({ alumnos }) {
                   style={{ width: Math.min(d.pct, 100) + "%" }} />
               </div>
             </div>
-          </button>
+            <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500 shrink-0"
+              title="Eliminar este día del historial" disabled={borrando === d.fecha}
+              onClick={() => borrarDia(d.fecha, d.presentes)}>
+              {borrando === d.fecha ? <Loader2 size={15} className="animate-spin"/> : <Trash2 size={15}/>}
+            </button>
+          </div>
         ))}
       </Card>
 
@@ -579,7 +604,11 @@ function PanelHistorial({ alumnos }) {
           <div className="bg-white rounded-2xl w-full max-w-2xl mt-8" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between p-4 border-b border-slate-100">
               <h3 className="font-bold text-sm capitalize">{fmtFechaLarga(detalle)}</h3>
-              <button onClick={() => setDetalle(null)} className="p-1 rounded-lg hover:bg-slate-100"><X size={18} /></button>
+              <div className="flex items-center gap-1">
+                <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500" title="Eliminar este día"
+                  onClick={() => borrarDia(detalle, datos.filter(r => r.fecha === detalle).length)}><Trash2 size={16}/></button>
+                <button onClick={() => setDetalle(null)} className="p-1 rounded-lg hover:bg-slate-100"><X size={18} /></button>
+              </div>
             </div>
             <div className="p-4 max-h-[70vh] overflow-y-auto">
               {datos.filter(r => r.fecha === detalle).map(r => (
@@ -609,11 +638,37 @@ function PanelPadron({ alumnos, recargar }) {
   const [subiendo, setSubiendo] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
+  const [modo, setModo] = useState("reemplazar");   // reemplazar | agregar
+  const [verBajas, setVerBajas] = useState(false);
+  const [pendiente, setPendiente] = useState(null); // confirmación de bajas
 
   const grupos = [...new Set(alumnos.map(a => a.grupo).filter(Boolean))].sort();
-  const lista = alumnos
+  const activos = alumnos.filter(a => a.activo !== false);
+  const bajas = alumnos.filter(a => a.activo === false);
+  const lista = (verBajas ? bajas : activos)
     .filter(a => grupo === "todos" || a.grupo === grupo)
     .filter(a => !q || (a.nombre || "").toLowerCase().includes(q.toLowerCase()) || a.id.includes(q));
+
+  const reactivar = async (al) => {
+    const { error } = await supabase.from("alumnos").update({ activo: true }).eq("id", al.id);
+    if (error) { setErr(error.message); return; }
+    await recargar();
+  };
+
+  /* Eliminar definitivamente solo tiene sentido para altas equivocadas.
+     Si el alumno ya tiene asistencias registradas, conviene dejarlo
+     dado de baja para no dejar huecos en el historial. */
+  const eliminar = async (al) => {
+    const { count } = await supabase.from("asistencias")
+      .select("id", { count: "exact", head: true }).eq("alumno_id", al.id);
+    const aviso = count
+      ? `${al.nombre} tiene ${count} registro(s) de asistencia. Si lo eliminas, esos registros quedarán sin nombre en el padrón.\n\n`
+      : "";
+    if (!window.confirm(`${aviso}¿Eliminar definitivamente a ${al.nombre} del padrón?`)) return;
+    const { error } = await supabase.from("alumnos").delete().eq("id", al.id);
+    if (error) { setErr(error.message); return; }
+    await recargar();
+  };
 
   /* Carga desde el mismo Excel que usas para generar las credenciales:
      ID, apellidos, nombre(s), generación, grupo, tutor y teléfono. */
@@ -663,7 +718,25 @@ function PanelPadron({ alumnos, recargar }) {
       // Se actualiza por ID: los alumnos existentes se corrigen, no se duplican
       const { error } = await supabase.from("alumnos").upsert(registros, { onConflict: "id" });
       if (error) throw new Error(error.message);
-      setMsg(`${registros.length} alumno(s) cargados o actualizados.`);
+
+      /* Los que estaban en el padrón y ya no vienen en el archivo:
+         en modo "reemplazar" se dan de baja (no se borran, para que su
+         historial de asistencia siga teniendo sentido). */
+      const idsNuevos = new Set(registros.map(r => r.id));
+      const sobrantes = alumnos.filter(a => a.activo !== false && !idsNuevos.has(a.id));
+
+      if (modo === "reemplazar" && sobrantes.length) {
+        const { error: e2 } = await supabase.from("alumnos")
+          .update({ activo: false }).in("id", sobrantes.map(a => a.id));
+        if (e2) throw new Error(e2.message);
+        setMsg(`${registros.length} alumno(s) cargados o actualizados. ` +
+          `${sobrantes.length} que ya no aparecen en la lista fueron dados de baja.`);
+      } else if (sobrantes.length) {
+        setMsg(`${registros.length} alumno(s) cargados o actualizados. ` +
+          `${sobrantes.length} del padrón no venían en el archivo y se conservaron activos.`);
+      } else {
+        setMsg(`${registros.length} alumno(s) cargados o actualizados.`);
+      }
       await recargar();
     } catch (e) { setErr("No se pudo leer el archivo: " + e.message); }
     setSubiendo(false);
@@ -680,6 +753,28 @@ function PanelPadron({ alumnos, recargar }) {
             en lugar de duplicarse.
           </p>
         </div>
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-slate-600">¿Qué hacer con los alumnos que ya no aparezcan en el archivo?</p>
+          <label className="flex items-start gap-2 text-sm cursor-pointer">
+            <input type="radio" className="mt-1" checked={modo === "reemplazar"} onChange={() => setModo("reemplazar")} />
+            <span>
+              <b>Darlos de baja</b> — la lista queda igual al archivo.
+              <span className="block text-xs text-slate-500">Úsalo cuando subas el padrón completo del plantel.</span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm cursor-pointer">
+            <input type="radio" className="mt-1" checked={modo === "agregar"} onChange={() => setModo("agregar")} />
+            <span>
+              <b>Conservarlos</b> — solo agrega y corrige.
+              <span className="block text-xs text-slate-500">Úsalo si subes la lista de un solo grupo o generación.</span>
+            </span>
+          </label>
+          <p className="text-[11px] text-slate-400">
+            Dar de baja no borra a nadie: el alumno deja de contar para la asistencia, pero su
+            historial se conserva y puedes reactivarlo cuando quieras.
+          </p>
+        </div>
+
         <label className={btnPrim + " cursor-pointer w-fit" + (subiendo ? " opacity-50 pointer-events-none" : "")}>
           {subiendo ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
           {subiendo ? "Cargando…" : "Cargar lista desde Excel"}
@@ -699,22 +794,48 @@ function PanelPadron({ alumnos, recargar }) {
           <option value="todos">Todos los grupos</option>
           {grupos.map(g => <option key={g} value={g}>Grupo {g}</option>)}
         </select>
-        <span className="text-xs text-slate-400">{lista.length} de {alumnos.length}</span>
+        <button onClick={() => setVerBajas(v => !v)}
+          className={`px-3 py-2 rounded-xl text-xs font-semibold border transition ${verBajas ? "bg-[#1a2340] text-white border-[#1a2340]" : "bg-white border-slate-300 text-slate-600 hover:bg-slate-50"}`}>
+          {verBajas ? `Viendo bajas (${bajas.length})` : `Ver bajas (${bajas.length})`}
+        </button>
+        <span className="text-xs text-slate-400">{lista.length} de {verBajas ? bajas.length : activos.length}</span>
       </Card>
 
       <Card className="p-4">
-        {lista.length === 0 && <p className="text-sm text-slate-400 py-8 text-center">No hay alumnos que coincidan.</p>}
+        {lista.length === 0 && (
+          <p className="text-sm text-slate-400 py-8 text-center">
+            {verBajas ? "No hay alumnos dados de baja." : "No hay alumnos que coincidan."}
+          </p>
+        )}
         <div className="max-h-[32rem] overflow-y-auto">
           {lista.map(a => (
-            <div key={a.id} className="flex items-center gap-3 py-2 border-b border-slate-100 last:border-0">
+            <div key={a.id} className={`flex items-center gap-3 py-2 border-b border-slate-100 last:border-0 ${a.activo === false ? "opacity-60" : ""}`}>
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium truncate">{a.nombre}</div>
+                <div className="text-sm font-medium truncate">
+                  {a.nombre}
+                  {a.activo === false && <span className="ml-1.5 text-[10px] font-bold text-slate-400">BAJA</span>}
+                </div>
                 <div className="text-xs text-slate-500 truncate">
                   ID {a.id} · Grupo {a.grupo || "—"} · Gen. {a.generacion || "—"}
                   {a.tutor && <> · Tutor: {a.tutor}</>}
                 </div>
               </div>
               {!a.telefono && <span className="text-[10px] font-bold text-amber-600 shrink-0">SIN TELÉFONO</span>}
+              {a.activo === false ? (
+                <button className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 shrink-0"
+                  onClick={() => reactivar(a)} title="Volver a incluirlo en el padrón">
+                  <UserCheck size={12}/>Reactivar
+                </button>
+              ) : (
+                <button className="p-1.5 rounded-lg hover:bg-amber-50 text-amber-600 shrink-0" title="Dar de baja"
+                  onClick={async () => {
+                    if (!window.confirm(`¿Dar de baja a ${a.nombre}? Dejará de contar para la asistencia, pero su historial se conserva.`)) return;
+                    await supabase.from("alumnos").update({ activo: false }).eq("id", a.id);
+                    await recargar();
+                  }}><UserMinus size={14}/></button>
+              )}
+              <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500 shrink-0" title="Eliminar del padrón"
+                onClick={() => eliminar(a)}><Trash2 size={14}/></button>
             </div>
           ))}
         </div>
