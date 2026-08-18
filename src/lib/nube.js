@@ -297,6 +297,19 @@ async function llamarAdmin(body) {
   return data;
 }
 
+/* Deja constancia de que la persona entró al portal. Si falla, no se
+   interrumpe el inicio de sesión: es un dato de bitácora, no crítico. */
+export async function registrarAcceso(uid) {
+  try {
+    const ua = navigator.userAgent || "";
+    const dispositivo = /Android/i.test(ua) ? "Android"
+      : /iPhone|iPad|iPod/i.test(ua) ? "iPhone o iPad"
+      : /Windows/i.test(ua) ? "Windows"
+      : /Mac/i.test(ua) ? "Mac" : "Otro";
+    await supabase.from("accesos").insert({ usuario_id: uid, dispositivo });
+  } catch { /* sin conexión o tabla no creada aún */ }
+}
+
 export const crearDocente = ({ email, password, nombre, area, asignaturas, rol }) =>
   llamarAdmin({ accion: "crear", email, password, nombre, area, asignaturas, rol });
 
