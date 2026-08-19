@@ -796,6 +796,43 @@ function Login() {
    RAÍZ DE LA APLICACIÓN
    ================================================================ */
 
+/* Grupo del menú lateral con secciones dentro. Se abre solo cuando la
+   pantalla activa pertenece al grupo, para que el docente o el
+   administrador siempre vea dónde está parado. */
+function GrupoMenu({ item, pagina, irA }) {
+  const activo = item.hijos.some(h => h.id === pagina);
+  const [abierto, setAbierto] = useState(activo);
+  useEffect(() => { if (activo) setAbierto(true); }, [activo]);
+  const pendientes = item.hijos.reduce((n, h) => n + (h.badge || 0), 0);
+
+  return (
+    <div>
+      <button onClick={() => setAbierto(a => !a)}
+        className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium transition ${activo && !abierto ? "bg-slate-100 text-[#1a2340]" : "text-slate-600 hover:bg-slate-100"}`}>
+        <item.icono size={17} />
+        <span className="flex-1 text-left">{item.label}</span>
+        {pendientes > 0 && !abierto && (
+          <span className="min-w-[20px] h-5 px-1 rounded-full bg-[#E8871E] text-white text-[11px] font-bold flex items-center justify-center">{pendientes}</span>
+        )}
+        <ChevronRight size={15} className={`transition-transform ${abierto ? "rotate-90" : ""} text-slate-400`} />
+      </button>
+
+      {abierto && (
+        <div className="ml-3 pl-3 border-l border-slate-200 mt-1 space-y-1">
+          {item.hijos.map(h => (
+            <button key={h.id} onClick={() => irA(h.id)}
+              className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[13px] font-medium transition ${pagina === h.id ? "bg-[#1a2340] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+              <h.icono size={15} />
+              <span className="flex-1 text-left">{h.label}</span>
+              {h.badge > 0 && <span className="min-w-[18px] h-4.5 px-1 rounded-full bg-[#E8871E] text-white text-[10px] font-bold flex items-center justify-center">{h.badge}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const [db, setDb] = useState(null);
   const [user, setUser] = useState(null);
@@ -939,17 +976,22 @@ export default function App() {
     + db.comp.filter(x => x.estado === "pendiente").length;
 
   const nav = user.rol === "admin" ? [
-    { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
-    { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: pendValidacion },
+    { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "docentes", label: "Docentes", icono: Users },
-    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
-    { id: "programas", label: "Programas de Estudio", icono: BookOpen },
-    { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
+    { id: "g_formacion", label: "Formación Docente", icono: Award, hijos: [
+      { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: pendValidacion },
+      { id: "metas", label: "Metas y ciclos", icono: Target },
+      { id: "perfil_inst", label: "Perfil institucional", icono: GraduationCap },
+      { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
+    ]},
+    { id: "g_academico", label: "Académico y Competencias", icono: BookOpen, hijos: [
+      { id: "calendario", label: "Calendario académico", icono: CalendarDays },
+      { id: "programas", label: "Programas de Estudio", icono: BookOpen },
+      { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
+      { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
+    ]},
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
-    { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
-    { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
-    { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
     { id: "ranking_general", label: "Ranking general", icono: Medal },
     { id: "actividad", label: "Actividad reciente", icono: Activity },
     { id: "respaldo", label: "Respaldo", icono: Download },
@@ -962,7 +1004,7 @@ export default function App() {
     { id: "calendario", label: "Calendario académico", icono: CalendarDays },
     { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
-    { id: "admin", label: "Metas y ciclos", icono: Settings },
+    { id: "metas", label: "Metas y ciclos", icono: Target },
   ] : user.rol === "administrativo" ? [
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
@@ -1045,7 +1087,9 @@ export default function App() {
         {/* Navegación lateral */}
         <aside className={`${menuAbierto ? "block" : "hidden"} lg:block w-60 shrink-0 bg-white border-r border-slate-200 min-h-[calc(100vh-52px)] fixed lg:static z-30`}>
           <nav className="p-3 space-y-1">
-            {nav.map(item => (
+            {nav.filter(Boolean).map(item => item.hijos ? (
+              <GrupoMenu key={item.id} item={item} pagina={pagina} irA={irA} />
+            ) : (
               <button key={item.id} onClick={() => irA(item.id)}
                 className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium transition ${pagina === item.id ? "bg-[#1a2340] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
                 <item.icono size={17} />
@@ -1066,8 +1110,8 @@ export default function App() {
                 ? <DashboardAdmin db={db} irA={irA} />
                 : <DashboardDocente db={db} user={user} irA={irA} />)}
           {pagina === "panel_entregas" && esRolAcademico(user.rol) && <DashboardAcademico db={db} irA={irA} />}
-          {pagina === "subir" && <SubirConstancia db={db} user={user} mutar={mutar} irA={irA} />}
-          {pagina === "cursos" && <MisCursos db={db} user={user} mutar={mutar} />}
+          {pagina === "subir" && <MisCursos db={db} user={user} mutar={mutar} irA={irA} />}
+          {pagina === "cursos" && <MisCursos db={db} user={user} mutar={mutar} irA={irA} />}
           {pagina === "expediente" && <PerfilAcademico db={db} user={user} docenteId={user.id} mutar={mutar} editable />}
           {pagina === "ranking" && (user.rol === "docente"
             ? <RankingGeneral db={db} user={user} />
@@ -1101,7 +1145,8 @@ export default function App() {
           {pagina === "perfil_inst" && esRolValidador(user.rol) && <PerfilInstitucional db={db} />}
           {pagina === "actividad" && esAdmin && <ActividadReciente db={db} />}
           {pagina === "respaldo" && esAdmin && <Respaldo db={db} user={user} />}
-          {pagina === "admin" && esRolValidador(user.rol) && <Administracion db={db} user={user} mutar={mutar} esAdmin={esAdmin} />}
+          {pagina === "metas" && esRolValidador(user.rol) && <Administracion db={db} user={user} mutar={mutar} esAdmin={esAdmin} modo="metas" />}
+          {pagina === "admin" && esRolValidador(user.rol) && <Administracion db={db} user={user} mutar={mutar} esAdmin={esAdmin} modo={esAdmin ? "sistema" : "todo"} />}
         </main>
       </div>
     </div>
@@ -1442,10 +1487,9 @@ function DashboardDocente({ db, user, irA }) {
     { id: "avisos", label: "Avisos", icono: Megaphone, color: "#E8871E", badge: pendAvisos.length },
     { id: "mi_asignacion", label: "Mi asignación", icono: FolderOpen, color: "#7c3aed", badge: pendEntregas },
     { id: "ausentes", label: "Alumnos ausentes", icono: Users, color: "#e11d48" },
-    { id: "subir", label: "Subir constancia", icono: Upload, color: "#059669" },
+    { id: "cursos", label: "Subir constancia", icono: Upload, color: "#059669" },
     { id: "calendario", label: "Calendario", icono: CalendarDays, color: "#0ea5e9" },
     { id: "programas", label: "Programas", icono: BookOpen, color: "#2563eb" },
-    { id: "cursos", label: "Mis cursos", icono: FileText, color: "#64748b" },
     { id: "expediente", label: "Mi perfil", icono: GraduationCap, color: "#db2777" },
     ...(db.config.rankingPublico ? [{ id: "ranking", label: "Ranking", icono: Trophy, color: "#ca8a04" }] : []),
     { id: "logros", label: "Logros", icono: Award, color: "#e11d48" },
@@ -1662,7 +1706,7 @@ function FormularioConstancia({ cert, onChange }) {
   );
 }
 
-function SubirConstancia({ db, user, mutar, irA }) {
+function SubirConstancia({ db, user, mutar, irA, compacto = false }) {
   const [fase, setFase] = useState("elegir"); // elegir | subiendo | ia | revisar | enviado | error
   const [progreso, setProgreso] = useState(0);
   const [cert, setCert] = useState(null);
@@ -1728,8 +1772,8 @@ function SubirConstancia({ db, user, mutar, irA }) {
   const noDetectados = cert ? camposConstancia.map(([k]) => k).concat(["categoria"]).filter(k => !(cert.detectados || []).includes(k)) : [];
 
   return (
-    <div className="max-w-3xl mx-auto space-y-4">
-      <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Subir constancia</h2>
+    <div className={compacto ? "space-y-4" : "max-w-3xl mx-auto space-y-4"}>
+      {!compacto && <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Subir constancia</h2>}
       <div className="flex items-center gap-1 text-[11px] font-semibold text-slate-400 flex-wrap">
         {["Subir", "Extraer con IA", "Revisar", "Enviar a validación"].map((p, i) => (
           <React.Fragment key={p}>
@@ -1834,7 +1878,7 @@ function VerArchivoBtn({ certId, guardado }) {
   return <button onClick={abrir} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Ver documento">{abriendo ? <Loader2 size={15} className="animate-spin"/> : <Eye size={15} />}</button>;
 }
 
-function MisCursos({ db, user, mutar }) {
+function MisCursos({ db, user, mutar, irA }) {
   const [cicloF, setCicloF] = useState("todos");
   const [estado, setEstado] = useState("todos");
   const [cat, setCat] = useState("todas");
@@ -1868,10 +1912,47 @@ function MisCursos({ db, user, mutar }) {
     setEditando(null);
   };
 
+  const ciclo = db.config.cicloActual;
+  const hValidadas = horasValidadas(db, user.id, ciclo);
+  const hPend = horasPendientes(db, user.id, ciclo);
+  const meta = metaDe(db, user.id);
+  const pct = meta ? Math.round(100 * hValidadas / meta) : 0;
+  const sem = semaforoDe(db, pct);
+  const nValidadas = db.certs.filter(c => c.docenteId === user.id && c.estado === "validada").length;
+  const nPend = db.certs.filter(c => c.docenteId === user.id
+    && ["pendiente_validacion", "revision_docente"].includes(c.estado)).length;
+
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="space-y-5">
+      <div>
         <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Mis cursos</h2>
+        <p className="text-sm text-slate-500">
+          Sube aquí tus constancias de capacitación y consulta abajo tu historial.
+        </p>
+      </div>
+
+      {/* Subida de constancias */}
+      <SubirConstancia db={db} user={user} mutar={mutar} irA={irA} compacto />
+
+      {/* Resumen del ciclo en curso */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Stat icono={Clock} label="Horas validadas" valor={hValidadas} sub={`meta: ${meta} h`} />
+        <Stat icono={FileCheck} label="Horas por validar" valor={hPend} sub={`${nPend} constancia(s)`}
+          color={hPend > 0 ? "text-amber-600" : "text-slate-900"} />
+        <Stat icono={BookOpen} label="Cursos validados" valor={nValidadas} sub="en total" />
+        <Card className="p-4">
+          <div className="flex items-center gap-2 text-slate-400 mb-1">
+            <Target size={15} /><span className="text-[11px] uppercase font-semibold">Avance del ciclo</span>
+          </div>
+          <div className="text-2xl font-bold" style={{fontFamily:"'Archivo', sans-serif", color: SEM_COLORS[sem]}}>{pct}%</div>
+          <div className="w-full h-1.5 rounded-full bg-slate-200 overflow-hidden mt-1.5">
+            <div className="h-full rounded-full" style={{ width: Math.min(pct, 100) + "%", background: SEM_COLORS[sem] }} />
+          </div>
+        </Card>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+        <h3 className="font-bold text-sm">Historial de constancias</h3>
         <div className="flex flex-wrap gap-2">
           <select className={inputCls + " !mt-0 !w-auto"} value={cicloF} onChange={e => setCicloF(e.target.value)}>
             <option value="todos">Todos los ciclos</option>{misCiclos.map(a => <option key={a} value={a}>Ciclo {a}</option>)}
@@ -6122,7 +6203,11 @@ function ActividadReciente({ db }) {
   );
 }
 
-function Administracion({ db, user, mutar, esAdmin = true }) {
+/* La pantalla sirve para dos cosas distintas:
+   - modo "metas": lo académico (metas, semáforo, ciclos), que vive en
+     el área de Formación Docente;
+   - modo completo: la administración del sistema (cuentas, reglas). */
+function Administracion({ db, user, mutar, esAdmin = true, modo = "todo" }) {
   const cfg = db.config;
   const [meta, setMeta] = useState(cfg.metaAnual);
   const [verde, setVerde] = useState(cfg.semVerde);
@@ -6143,11 +6228,22 @@ function Administracion({ db, user, mutar, esAdmin = true }) {
     setNuevoCiclo("");
   };
 
+  const verMetas = modo !== "sistema";
+  const verSistema = modo !== "metas";
+
   return (
     <div className="space-y-4 max-w-3xl">
-      <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Administración</h2>
+      <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>
+        {modo === "metas" ? "Metas y ciclos escolares" : "Administración"}
+      </h2>
+      {modo === "metas" && (
+        <p className="text-sm text-slate-500 -mt-2">
+          Meta anual de capacitación, umbrales del semáforo y ciclos escolares.
+        </p>
+      )}
       {msg && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2">{msg}</p>}
 
+      {verMetas && (<>
       <Card className="p-5 space-y-3">
         <h3 className="font-bold text-sm">Metas y semáforo</h3>
         <div className="grid sm:grid-cols-3 gap-3">
@@ -6205,7 +6301,9 @@ function Administracion({ db, user, mutar, esAdmin = true }) {
         )}
       </Card>
 
-      {esAdmin && (
+      </>)}
+
+      {verSistema && esAdmin && (
         <Card className="p-5 space-y-3">
           <h3 className="font-bold text-sm">Visibilidad y reglas</h3>
           <label className="flex items-center gap-3 text-sm">
@@ -6219,10 +6317,10 @@ function Administracion({ db, user, mutar, esAdmin = true }) {
         </Card>
       )}
 
-      {esAdmin && <JefesDepartamento db={db} mutar={mutar} />}
+      {verSistema && esAdmin && <JefesDepartamento db={db} mutar={mutar} />}
 
-      <NotificacionesCelular user={user} />
-      <MiCuenta user={user} soloTarjeta />
+      {verSistema && <NotificacionesCelular user={user} />}
+      {verSistema && <MiCuenta user={user} soloTarjeta />}
     </div>
   );
 }
