@@ -4225,12 +4225,12 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
       )}
 
       {detalle && <DetalleAsignacion db={db} asig={detalle} docentes={docentes} mutar={mutar}
-        onClose={() => setDetalle(null)} esAdmin={user.rol === "admin"} />}
+        onClose={() => setDetalle(null)} esAdmin={user.rol === "admin"} puedeEditarHorario={esRolAcademico(user.rol)} />}
     </div>
   );
 }
 
-function DetalleAsignacion({ db, asig, docentes, mutar, onClose, esAdmin = false }) {
+function DetalleAsignacion({ db, asig, docentes, mutar, onClose, esAdmin = false, puedeEditarHorario = false }) {
   const encargos = encargosDe(db, asig);
   const [editando, setEditando] = useState(null);
   const [editandoHorario, setEditandoHorario] = useState(false);
@@ -4319,7 +4319,7 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose, esAdmin = false
           </div>
         </div>
 
-        {esAdmin && (asig.horario || []).length > 0 && (
+        {puedeEditarHorario && (asig.horario || []).length > 0 && (
           <div className="flex items-center justify-between bg-slate-50 rounded-xl p-3">
             <span className="text-xs text-slate-500">
               La IA extrajo un horario semanal para esta persona. Compáralo contra el PDF original;
