@@ -29,6 +29,18 @@ const CONFIG_DEFECTO = {
 
 /* ---------- utilidades internas ---------- */
 
+/* Añade a `lista` (ya con el detalle propio o completo, según el rol)
+   los registros públicos de las demás personas que aún no estén
+   presentes, para que cálculos como el ranking general den el mismo
+   resultado sin importar quién los consulte. Nunca sobrescribe un
+   registro que ya se tenía con más detalle. */
+function completarConPublico(lista, filasPublicas) {
+  const yaEstan = new Set(lista.map((r) => r.id));
+  for (const r of filasPublicas || []) {
+    if (r.data && !yaEstan.has(r.data.id)) lista.push(r.data);
+  }
+}
+
 const aplanarPerfil = (p) => ({
   id: p.id,
   email: p.email,
@@ -103,8 +115,10 @@ export async function cargarTodo(uid) {
       supabase.from("asignaciones").select("data"),
       supabase.from("entregas").select("data"),
       supabase.from("calendarios").select("data"),
+      supabase.from("asignaciones_ranking").select("*"),
+      supabase.from("entregas_ranking").select("*"),
     ]);
-    for (const r of [pf, ce, gr, co, no, ac, lo, av, aq, pr, asg, en, cal]) lanzar(r.error, "No se pudieron cargar los datos");
+    for (const r of [pf, ce, gr, co, no, ac, lo, av, aq, pr, asg, en, cal, asgPub, enPub]) lanzar(r.error, "No se pudieron cargar los datos");
     db.users = pf.data.map(aplanarPerfil);
     db.certs = ce.data.map((r) => r.data);
     db.grados = gr.data.map((r) => r.data);
@@ -118,6 +132,15 @@ export async function cargarTodo(uid) {
     db.asignaciones = asg.data.map((r) => r.data);
     db.entregas = en.data.map((r) => r.data);
     db.calendarios = cal.data.map((r) => r.data);
+    /* Solo el administrador y el jefe académico ven el detalle completo
+       de las asignaciones y entregas de todos por las reglas de
+       seguridad; el resto del personal (jefe de formación, control
+       escolar) solo veía las propias. Estas dos vistas públicas —sin
+       el nombre de archivo de cada entrega, que sigue siendo privado—
+       completan lo que falte, para que el ranking general salga igual
+       para cualquier persona que lo consulte. */
+    completarConPublico(db.asignaciones, asgPub.data);
+    completarConPublico(db.entregas, enPub.data);
   } else {
     const [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en, cal] = await Promise.all([
       supabase.from("publico_docentes").select("*"),
@@ -133,8 +156,10 @@ export async function cargarTodo(uid) {
       supabase.from("asignaciones").select("data").eq("docente_id", uid),
       supabase.from("entregas").select("data").eq("docente_id", uid),
       supabase.from("calendarios").select("data"),
+      supabase.from("asignaciones_ranking").select("*"),
+      supabase.from("entregas_ranking").select("*"),
     ]);
-    for (const r of [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en, cal]) lanzar(r.error, "No se pudieron cargar los datos");
+    for (const r of [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en, cal, asgPub, enPub]) lanzar(r.error, "No se pudieron cargar los datos");
     db.users = pub.data.map((p) =>
       p.id === uid ? yo : { id: p.id, nombre: p.nombre || "Docente", rol: p.rol, activo: p.activo, _publico: true }
     );
@@ -165,6 +190,10 @@ export async function cargarTodo(uid) {
     db.asignaciones = asg.data.map((r) => r.data);
     db.entregas = en.data.map((r) => r.data);
     db.calendarios = cal.data.map((r) => r.data);
+    // Igual que para el personal: completa con los datos públicos de
+    // las demás personas, sin exponer el archivo que cada quien subió.
+    completarConPublico(db.asignaciones, asgPub.data);
+    completarConPublico(db.entregas, enPub.data);
   }
 
   // orden estable: lo más reciente primero donde aplica
