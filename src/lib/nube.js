@@ -101,7 +101,7 @@ export async function cargarTodo(uid) {
                programas: [], asignaciones: [], entregas: [], calendarios: [], config };
 
   if (esStaff) {
-    const [pf, ce, gr, co, no, ac, lo, av, aq, pr, asg, en, cal] = await Promise.all([
+    const [pf, ce, gr, co, no, ac, lo, av, aq, pr, asg, en, cal, asgPub, enPub] = await Promise.all([
       supabase.from("perfiles").select("*"),
       supabase.from("certs").select("data"),
       supabase.from("grados").select("data"),
@@ -142,7 +142,7 @@ export async function cargarTodo(uid) {
     completarConPublico(db.asignaciones, asgPub.data);
     completarConPublico(db.entregas, enPub.data);
   } else {
-    const [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en, cal] = await Promise.all([
+    const [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en, cal, asgPub, enPub] = await Promise.all([
       supabase.from("publico_docentes").select("*"),
       supabase.from("publico_horas").select("*"),
       supabase.from("certs").select("data").eq("docente_id", uid),
