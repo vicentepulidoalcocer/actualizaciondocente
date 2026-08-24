@@ -4233,6 +4233,7 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
 function DetalleAsignacion({ db, asig, docentes, mutar, onClose, esAdmin = false }) {
   const encargos = encargosDe(db, asig);
   const [editando, setEditando] = useState(null);
+  const [editandoHorario, setEditandoHorario] = useState(false);
   const cambiarVinculo = (id) => mutar(d => {
     const a = d.asignaciones.find(x => x.id === asig.id);
     if (a) a.docenteId = id || null;
@@ -4317,6 +4318,19 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose, esAdmin = false
             </select>
           </div>
         </div>
+
+        {esAdmin && (asig.horario || []).length > 0 && (
+          <div className="flex items-center justify-between bg-slate-50 rounded-xl p-3">
+            <span className="text-xs text-slate-500">
+              La IA extrajo un horario semanal para esta persona. Compáralo contra el PDF original;
+              en filas con una sola clase al día es donde con más frecuencia se equivoca de columna.
+            </span>
+            <button className={btnSec + " !px-3 !py-1.5 shrink-0 ml-3"} onClick={() => setEditandoHorario(true)}>
+              <Pencil size={13}/>Corregir horario
+            </button>
+          </div>
+        )}
+
         {encargos.map(e => {
           const filas = [
             ["planeacion", e.requisitos.planeacion],
@@ -4417,6 +4431,136 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose, esAdmin = false
           </div>
         </Modal>
       )}
+
+      {editandoHorario && (
+        <EditorHorario asig={asig} mutar={mutar} onClose={() => setEditandoHorario(false)} />
+      )}
+    </Modal>
+  );
+}
+
+/* ================================================================
+   CORRECCIÓN MANUAL DEL HORARIO
+   La IA lee el PDF de asignaciones y a veces confunde la columna de
+   una celda, sobre todo en renglones donde solo hay una clase en
+   medio de varios días vacíos. Esta pantalla permite corregir esos
+   casos directamente, comparando contra el documento original.
+   ================================================================ */
+function EditorHorario({ asig, mutar, onClose }) {
+  const [filas, setFilas] = useState(() =>
+    (asig.horario || []).map(f => ({ ...f })));
+  const [guardando, setGuardando] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const cambiarCelda = (i, dia, valor) => {
+    setFilas(prev => prev.map((f, idx) => idx === i ? { ...f, [dia]: valor || null } : f));
+  };
+
+  // Mueve el contenido de una celda a otro día de la MISMA fila, para
+  // el error más común: la clase quedó en la columna vecina equivocada.
+  const moverA = (i, diaOrigen, diaDestino) => {
+    setFilas(prev => prev.map((f, idx) => {
+      if (idx !== i) return f;
+      const valor = f[diaOrigen];
+      return { ...f, [diaOrigen]: null, [diaDestino]: valor };
+    }));
+  };
+
+  const marcarReceso = (i) => {
+    setFilas(prev => prev.map((f, idx) => idx === i
+      ? { ...f, lunes: "RECESO", martes: "RECESO", miercoles: "RECESO", jueves: "RECESO", viernes: "RECESO" }
+      : f));
+  };
+
+  const guardar = async () => {
+    setGuardando(true);
+    await mutar(d => {
+      const a = d.asignaciones.find(x => x.id === asig.id);
+      if (a) a.horario = filas;
+    });
+    setGuardando(false);
+    setMsg("Horario actualizado.");
+    setTimeout(onClose, 700);
+  };
+
+  // Filas con una sola clase entre varios días vacíos: donde más se
+  // equivoca la lectura automática, así que se resaltan para revisar primero.
+  const esSospechosa = (f) => {
+    if (/RECESO/i.test(f.hora || "")) return false;
+    const llenos = DIAS_SEMANA.filter(([k]) => (f[k] || "").trim()).length;
+    return llenos === 1;
+  };
+
+  return (
+    <Modal titulo={`Corregir horario · ${asig.nombreExtraido}`} onClose={onClose} ancho="max-w-4xl">
+      <div className="space-y-3">
+        <p className="text-xs text-slate-500">
+          Compara cada renglón contra el documento original. Las filas en ámbar tienen una sola
+          clase entre varios días vacíos: son las que con más frecuencia quedan en la columna
+          equivocada. Usa las flechas para moverla al día correcto, o edita el texto directamente.
+        </p>
+
+        <div className="overflow-x-auto -mx-1">
+          <table className="w-full text-xs border-separate" style={{ borderSpacing: "3px" }}>
+            <thead>
+              <tr>
+                <th className="text-left font-semibold text-slate-400 uppercase text-[10px] px-2 py-1 w-24">Hora</th>
+                {DIAS_SEMANA.map(([k, n]) => (
+                  <th key={k} className="font-semibold text-slate-400 uppercase text-[10px] px-1 py-1">{n.slice(0, 3)}</th>
+                ))}
+                <th className="w-8"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f, i) => {
+                const receso = /RECESO/i.test(f.hora || "");
+                const sospechosa = esSospechosa(f);
+                return (
+                  <tr key={i} className={sospechosa ? "bg-amber-50" : ""}>
+                    <td className="whitespace-nowrap text-[11px] text-slate-500 font-medium px-2 py-1 align-middle">
+                      {f.hora} {sospechosa && <span title="Revisar: una sola clase esta fila">⚠</span>}
+                    </td>
+                    {DIAS_SEMANA.map(([k], di) => (
+                      <td key={k} className="px-0.5 py-0.5 align-middle">
+                        <input
+                          className="w-full text-[11px] px-1.5 py-1.5 rounded-lg border border-slate-200 text-center focus:outline-none focus:ring-2 focus:ring-[#1a2340]/20"
+                          value={f[k] || ""}
+                          placeholder="—"
+                          onChange={e => cambiarCelda(i, k, e.target.value)}
+                        />
+                        {!receso && di < DIAS_SEMANA.length - 1 && f[k] && (
+                          <button type="button" title={`Mover a ${DIAS_SEMANA[di + 1][1]}`}
+                            className="text-[9px] text-indigo-500 hover:text-indigo-700 mt-0.5 block mx-auto"
+                            onClick={() => moverA(i, k, DIAS_SEMANA[di + 1][0])}>
+                            → {DIAS_SEMANA[di + 1][1].slice(0, 3)}
+                          </button>
+                        )}
+                      </td>
+                    ))}
+                    <td className="align-middle">
+                      {!receso && (
+                        <button type="button" title="Marcar toda la fila como receso"
+                          className="p-1 rounded hover:bg-slate-100 text-slate-400"
+                          onClick={() => marcarReceso(i)}>
+                          <Clock size={13}/>
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {msg && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2">{msg}</p>}
+      </div>
+      <div className="flex justify-end gap-2 mt-4">
+        <button className={btnSec} onClick={onClose}>Cancelar</button>
+        <button className={btnPrim} disabled={guardando} onClick={guardar}>
+          {guardando && <Loader2 size={14} className="animate-spin"/>}Guardar horario
+        </button>
+      </div>
     </Modal>
   );
 }
