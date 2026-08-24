@@ -165,14 +165,37 @@ const semaforoDe = (db, pct) =>
 
 const SEM_COLORS = { verde: "#2E7D5B", amarillo: "#D9A404", rojo: "#C9463D" };
 
+/* Desempate final de todos los rankings: orden alfabético.
+   Sin esto, quienes empatan en todos los criterios quedaban en el
+   orden en que venían los datos, que es arbitrario y da la impresión
+   de que el sistema favorece a alguien. */
+const porNombre = (a, b) =>
+  (a.nombre || "").localeCompare(b.nombre || "", "es", { sensitivity: "base" });
+
+/* Asigna el lugar a cada persona reconociendo los empates: quienes
+   tienen el mismo valor comparten lugar, y el siguiente salta según
+   cuántos iban empatados (1, 1, 3…), como en los rankings deportivos. */
+function conLugares(lista, valorDe) {
+  let lugar = 0, previo = null;
+  return lista.map((r, i) => {
+    const v = valorDe(r);
+    if (previo === null || v !== previo) { lugar = i + 1; previo = v; }
+    return { ...r, lugar, empatado: false };
+  }).map((r, i, arr) => ({
+    ...r,
+    empatado: arr.filter(x => x.lugar === r.lugar).length > 1,
+  }));
+}
+
 const rankingDe = (db, ciclo) =>
   db.users.filter(u => u.rol === "docente" && u.activo)
     .map(u => ({ ...u, horas: horasValidadas(db, u.id, ciclo) }))
-    .sort((a, b) => b.horas - a.horas);
+    .sort((a, b) => b.horas - a.horas || porNombre(a, b));
 
 /* Ranking de cumplimiento de entregas (planeaciones, planes e informes).
    Ordena por porcentaje de avance; a igual porcentaje, gana quien más
-   entregas haya cubierto en términos absolutos. */
+   entregas haya cubierto en términos absolutos, y si aun así empatan,
+   se ordena alfabéticamente. */
 const rankingEntregas = (db, ciclo, periodo) =>
   db.users.filter(u => u.rol === "docente" && u.activo)
     .map(u => {
@@ -180,7 +203,7 @@ const rankingEntregas = (db, ciclo, periodo) =>
       const av = asig ? avanceDe(db, asig) : { requeridas: 0, entregadas: 0, pct: 0, indeterminado: false };
       return { ...u, ...av, conAsignacion: !!asig };
     })
-    .sort((a, b) => b.pct - a.pct || b.entregadas - a.entregadas);
+    .sort((a, b) => b.pct - a.pct || b.entregadas - a.entregadas || porNombre(a, b));
 
 /* Ranking general del docente: combina capacitación y entregas.
    Ambas mitades valen lo mismo (50 y 50) para que ninguna eclipse a la
@@ -199,7 +222,7 @@ function rankingGeneral(db, ciclo, periodo) {
       const puntos = pctEnt === null ? pctCap : Math.round(0.5 * pctCap + 0.5 * pctEnt);
       return { ...u, horas, pctCap, pctEnt, av, puntos };
     })
-    .sort((a, b) => b.puntos - a.puntos || b.horas - a.horas);
+    .sort((a, b) => b.puntos - a.puntos || b.horas - a.horas || porNombre(a, b));
 }
 
 function detectarDuplicado(db, cert) {
@@ -236,7 +259,11 @@ function otorgarLogros(db, docenteId, cicloRef) {
   if (h >= 50) dar("h50");
   if (h >= 100) dar("h100");
   if (h >= metaDe(db, docenteId)) dar("meta");
-  const top3 = rankingDe(db, ciclo).slice(0, 3).map(r => r.id);
+  /* La insignia se otorga a quien esté en los tres primeros LUGARES.
+     Si varias personas empatan en el tercero, la reciben todas: negarla
+     por el orden en que aparecen en la lista sería arbitrario. */
+  const top3 = conLugares(rankingDe(db, ciclo), r => r.horas)
+    .filter(r => r.lugar <= 3).map(r => r.id);
   if (top3.includes(docenteId) && h > 0) dar("top3");
 
   /* --- Insignias de planeaciones, planes de trabajo e informes ---
@@ -1485,8 +1512,8 @@ function DashboardDocente({ db, user, irA }) {
   const meta = metaDe(db, user.id);
   const pct = meta ? Math.round(100 * h / meta) : 0;
   const sem = semaforoDe(db, pct);
-  const rank = rankingDe(db, ciclo);
-  const pos = rank.findIndex(r => r.id === user.id) + 1;
+  const rank = conLugares(rankingDe(db, ciclo), r => r.horas);
+  const pos = rank.find(r => r.id === user.id)?.lugar || 0;
   const misCerts = db.certs.filter(c => c.docenteId === user.id);
   const validados = misCerts.filter(c => c.estado === "validada");
   const pendCount = misCerts.filter(c => ["pendiente_validacion", "revision_docente"].includes(c.estado)).length;
@@ -2016,14 +2043,16 @@ function MisCursos({ db, user, mutar, irA }) {
 
 function RankingEntregas({ db }) {
   const [ciclo, setCiclo] = useState(db.config.cicloActual);
-  const rank = rankingEntregas(db, ciclo).filter(r => r.conAsignacion);
+  const rank = conLugares(
+    rankingEntregas(db, ciclo).filter(r => r.conAsignacion),
+    r => r.pct);
   const podio = rank.slice(0, 3);
   const resto = rank.slice(3);
   const medallas = ["🥇", "🥈", "🥉"];
 
   const exportar = () => {
     const filas = [["Lugar", "Docente", "Área", "Entregas requeridas", "Entregas recibidas", "% de cumplimiento"]];
-    rank.forEach((r, i) => filas.push([i + 1, r.nombre, r.area || "", r.requeridas, r.entregadas, r.pct + "%"]));
+    rank.forEach(r => filas.push([r.lugar, r.nombre, r.area || "", r.requeridas, r.entregadas, r.pct + "%"]));
     descargarCSV(`ranking_entregas_${ciclo}`, filas);
   };
 
@@ -2055,9 +2084,11 @@ function RankingEntregas({ db }) {
             if (!r) return <div key={pos} />;
             return (
               <Card key={pos} className={`p-4 text-center ${pos === 0 ? "ring-2 ring-[#E8871E]" : ""}`}>
-                <div className="text-3xl">{medallas[pos]}</div>
+                <div className="text-3xl">{medallas[r.lugar - 1] || "🏅"}</div>
                 <div className="font-bold text-sm mt-1 truncate">{r.nombre}</div>
-                <div className="text-xs text-slate-500">{r.area || "Sin área"}</div>
+                <div className="text-xs text-slate-500">
+                  {r.area || "Sin área"}{r.empatado ? " · empatado" : ""}
+                </div>
                 <div className="text-2xl font-bold text-[#1a2340] mt-2">{r.pct}%</div>
                 <div className="text-[11px] text-slate-500">{r.entregadas} de {r.requeridas} entregas</div>
               </Card>
@@ -2070,7 +2101,7 @@ function RankingEntregas({ db }) {
         <Card className="p-4">
           {resto.map((r, i) => (
             <div key={r.id} className="flex items-center gap-3 py-2 border-b border-slate-100 last:border-0">
-              <span className="w-6 text-sm font-bold text-slate-400">{i + 4}</span>
+              <span className="w-6 text-sm font-bold text-slate-400">{r.lugar}</span>
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium truncate">{r.nombre}</div>
                 <div className="text-xs text-slate-500">{r.entregadas} de {r.requeridas} entregas{r.indeterminado && " · algunos requisitos por definir"}</div>
@@ -2101,12 +2132,12 @@ function RankingGeneral({ db, user }) {
   if (!esStaff && !db.config.rankingPublico) return (
     <Card className="p-8 text-center text-sm text-slate-500">La administración ha desactivado la visualización pública del ranking.</Card>
   );
-  const rank = rankingGeneral(db, ciclo, periodo);
+  const rank = conLugares(rankingGeneral(db, ciclo, periodo), r => r.puntos);
 
   const exportar = () => {
     const filas = [["Lugar", "Docente", "Área", "Horas de capacitación", "% capacitación",
       "Entregas recibidas", "Entregas requeridas", "% entregas", "Puntaje general"]];
-    rank.forEach((r, i) => filas.push([i + 1, r.nombre, r.area || "", r.horas, r.pctCap + "%",
+    rank.forEach(r => filas.push([r.lugar, r.nombre, r.area || "", r.horas, r.pctCap + "%",
       r.av?.entregadas ?? "", r.av?.requeridas ?? "", r.pctEnt === null ? "sin asignación" : r.pctEnt + "%", r.puntos]));
     descargarCSV(`ranking_general_${ciclo}_${periodo}`, filas);
   };
@@ -2146,8 +2177,10 @@ function RankingGeneral({ db, user }) {
         <Card className="p-4 bg-[#1a2340] text-white">
           <div className="flex flex-wrap items-center gap-4">
             <div className="text-center">
-              <div className="text-3xl font-bold">#{yo + 1}</div>
-              <div className="text-[11px] text-slate-300">de {rank.length}</div>
+              <div className="text-3xl font-bold">#{rank[yo].lugar}</div>
+              <div className="text-[11px] text-slate-300">
+                de {rank.length}{rank[yo].empatado ? " · empatado" : ""}
+              </div>
             </div>
             <div className="flex-1 min-w-[180px] grid grid-cols-3 gap-3 text-center">
               <div>
@@ -2178,10 +2211,13 @@ function RankingGeneral({ db, user }) {
           if (!r) return <div key={pos} />;
           return (
             <Card key={pos} className={`p-4 text-center ${r.id === user.id ? "ring-2 ring-[#E8871E]" : ""}`}>
-              <div className="text-3xl">{medallas[pos]}</div>
+              <div className="text-3xl">{medallas[r.lugar - 1] || "🏅"}</div>
               <div className="font-bold text-sm mt-1 truncate">{r.nombre}</div>
               <div className="text-2xl font-bold text-[#1a2340] mt-2">{r.puntos}</div>
-              <div className="text-[11px] text-slate-500">{r.horas} h · {r.pctEnt === null ? "sin asignación" : r.pctEnt + "% entregas"}</div>
+              <div className="text-[11px] text-slate-500">
+                {r.horas} h · {r.pctEnt === null ? "sin asignación" : r.pctEnt + "% entregas"}
+                {r.empatado ? " · empatado" : ""}
+              </div>
             </Card>
           );
         })}
@@ -2191,7 +2227,7 @@ function RankingGeneral({ db, user }) {
         <Card className="p-4">
           {resto.map((r, i) => (
             <div key={r.id} className={`flex items-center gap-3 py-2 border-b border-slate-100 last:border-0 ${r.id === user.id ? "bg-amber-50 -mx-4 px-4" : ""}`}>
-              <span className="w-6 text-sm font-bold text-slate-400">{i + 4}</span>
+              <span className="w-6 text-sm font-bold text-slate-400">{r.lugar}</span>
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium truncate">{r.nombre}</div>
                 <div className="text-xs text-slate-500">{r.horas} h de capacitación · {r.pctEnt === null ? "sin asignación" : `${r.entregadas ?? r.av?.entregadas ?? 0} de ${r.av?.requeridas ?? 0} entregas`}</div>
@@ -2216,7 +2252,7 @@ function Ranking({ db, user }) {
   if (!db.config.rankingPublico && !esAdmin) return (
     <Card className="p-8 text-center text-sm text-slate-500">La administración ha desactivado la visualización pública del ranking.</Card>
   );
-  const rank = rankingDe(db, ciclo);
+  const rank = conLugares(rankingDe(db, ciclo), r => r.horas);
   const podio = rank.slice(0, 3);
   const resto = rank.slice(3);
   const alturas = ["h-32", "h-24", "h-20"];
@@ -2239,10 +2275,12 @@ function Ranking({ db, user }) {
           : <div className="flex items-end justify-center gap-3 sm:gap-6">
               {orden.map(i => podio[i] && (
                 <div key={podio[i].id} className="flex flex-col items-center flex-1 max-w-[160px]">
-                  <div className="text-3xl mb-1">{medallas[i]}</div>
+                  <div className="text-3xl mb-1">{medallas[podio[i].lugar - 1] || "🏅"}</div>
                   <div className="text-white text-sm font-bold text-center leading-tight mb-0.5">{podio[i].nombre}</div>
-                  <div className="text-[#E8871E] text-xs font-bold mb-2">{podio[i].horas} horas</div>
-                  <div className={`w-full ${alturas[i]} rounded-t-xl bg-gradient-to-b from-[#E8871E] to-[#c26d10] flex items-start justify-center pt-2 text-white font-bold text-xl`} style={{fontFamily:"'Archivo', sans-serif"}}>{i + 1}</div>
+                  <div className="text-[#E8871E] text-xs font-bold mb-2">
+                    {podio[i].horas} horas{podio[i].empatado ? " · empatado" : ""}
+                  </div>
+                  <div className={`w-full ${alturas[i]} rounded-t-xl bg-gradient-to-b from-[#E8871E] to-[#c26d10] flex items-start justify-center pt-2 text-white font-bold text-xl`} style={{fontFamily:"'Archivo', sans-serif"}}>{podio[i].lugar}</div>
                 </div>
               ))}
             </div>}
@@ -6214,7 +6252,8 @@ function ExpedienteIntegral({ db, docenteId, mutar, user, volver }) {
   const ciclo = db.config.cicloActual;
   const h = horasValidadas(db, docenteId, ciclo);
   const meta = metaDe(db, docenteId);
-  const pos = rankingDe(db, ciclo).findIndex(r => r.id === docenteId) + 1;
+  const pos = conLugares(rankingDe(db, ciclo), r => r.horas)
+    .find(r => r.id === docenteId)?.lugar || 0;
   const exp = completitudExpediente(db, docenteId);
   const certs = db.certs.filter(c => c.docenteId === docenteId);
   return (
