@@ -5,7 +5,8 @@ import {
   AlertTriangle, ChevronRight, Users, Target, TrendingUp, FileCheck,
   Download, Filter, Plus, Pencil, Trash2, Eye, Medal, Star, Loader2,
   FolderOpen, User, Activity, ShieldCheck, Menu, X, Megaphone,
-  Paperclip, Link2, Archive, Send, Sparkles, CalendarDays, ScanLine, RefreshCw
+  Paperclip, Link2, Archive, Send, Sparkles, CalendarDays, ScanLine, RefreshCw,
+  Image as ImageIcon
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie,
@@ -530,6 +531,17 @@ const entregasDe = (db, docenteId, ciclo, clave, tipo, periodo) =>
     && e.encargoClave === clave && e.tipo === tipo);
 
 // Avance total de un docente sobre su asignación de un ciclo
+/* Clave con la que se guarda la captura de seguimiento institucional.
+   No pertenece a ningún encargo en particular: es una sola por
+   semestre, así que se agrupa bajo esta clave fija. */
+const CLAVE_CAPTURA = "__captura__";
+
+// La captura del docente para un semestre, o null si aún no la sube
+const capturaDe = (db, docenteId, ciclo, periodo) =>
+  db.entregas.find(e => e.docenteId === docenteId && e.ciclo === ciclo
+    && (e.periodo || "ago-ene") === (periodo || "ago-ene")
+    && e.tipo === "captura") || null;
+
 function avanceDe(db, asig) {
   if (!asig) return { requeridas: 0, entregadas: 0, pct: 0, indeterminado: false };
   let req = 0, ent = 0, indeterminado = false;
@@ -541,6 +553,9 @@ function avanceDe(db, asig) {
       ent += Math.min(entregasDe(db, asig.docenteId, asig.ciclo, e.clave, t, asig.periodo || "ago-ene").length, n);
     }
   }
+  // La captura de seguimiento es obligatoria: una por semestre
+  req += 1;
+  if (capturaDe(db, asig.docenteId, asig.ciclo, asig.periodo)) ent += 1;
   return { requeridas: req, entregadas: ent, pct: req ? Math.round(100 * ent / req) : 0, indeterminado };
 }
 
@@ -576,7 +591,7 @@ function emparejarDocente(db, nombreExtraido) {
   return mejorPunt >= 0.6 ? mejor : null;
 }
 
-const NOMBRE_TIPO_ENTREGA = { planeacion: "Planeación", plan: "Plan de trabajo", informe: "Informe" };
+const NOMBRE_TIPO_ENTREGA = { planeacion: "Planeación", plan: "Plan de trabajo", informe: "Informe", captura: "Captura de seguimiento" };
 const NOMBRE_TIPO_ENCARGO = {
   asignatura: "Frente a grupo",
   modulo: "Módulo profesional",
@@ -4232,7 +4247,10 @@ function Asignaciones({ db, user, mutar, irAPanel }) {
               return (
                 <div key={a.id} className="flex flex-wrap items-center gap-3 py-3 border-b border-slate-100 last:border-0">
                   <div className="flex-1 min-w-[200px]">
-                    <div className="font-medium text-sm">{a.nombreExtraido}</div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-sm">{a.nombreExtraido}</span>
+                      <VerCapturaBtn db={db} asig={a} />
+                    </div>
                     <div className="text-xs text-slate-500">
                       {a.docenteId ? (docentes.find(d => d.id === a.docenteId)?.nombre || "Cuenta desactivada")
                         : <span className="text-amber-600 font-semibold">⚠ Sin cuenta vinculada</span>}
@@ -4765,6 +4783,175 @@ function HorarioSemanal({ asig }) {
    MI ASIGNACIÓN (docente)
    ================================================================ */
 
+/* ================================================================
+   CAPTURA DE SEGUIMIENTO INSTITUCIONAL
+   Una imagen por semestre, tomada de la plataforma de seguimiento.
+   Cuenta como una entrega obligatoria dentro del avance.
+   ================================================================ */
+
+function CapturaSeguimiento({ db, user, asig, mutar }) {
+  const captura = capturaDe(db, user.id, asig.ciclo, asig.periodo);
+  const [subiendo, setSubiendo] = useState(false);
+  const [err, setErr] = useState("");
+  const [verGrande, setVerGrande] = useState(false);
+
+  const subir = async (file) => {
+    if (!file) return;
+    setErr(""); setSubiendo(true);
+    try {
+      const b64 = await leerComoBase64(file);
+      if (b64.length > MAX_FILE_B64) {
+        setErr("La imagen supera el límite (~7.5 MB). Redúcela e inténtalo de nuevo.");
+        setSubiendo(false); return;
+      }
+      const id = uid();
+      const r = await guardarArchivo("ent_" + id, b64, file.type || "image/png", file.name);
+      if (!r.guardado) { setErr("No se pudo guardar la imagen. Inténtalo de nuevo."); setSubiendo(false); return; }
+      await mutar(d => {
+        // Solo puede haber una por semestre: se reemplaza la anterior
+        d.entregas = d.entregas.filter(e => !(e.docenteId === user.id && e.ciclo === asig.ciclo
+          && (e.periodo || "ago-ene") === (asig.periodo || "ago-ene") && e.tipo === "captura"));
+        d.entregas.push({
+          id, docenteId: user.id, ciclo: asig.ciclo, periodo: asig.periodo || "ago-ene",
+          encargoClave: CLAVE_CAPTURA, actividad: "Seguimiento institucional",
+          tipo: "captura", titulo: file.name, estado: "entregada", fecha: ahora(),
+        });
+        d.users.filter(u => esRolAcademico(u.rol) && u.rol !== "admin" && u.activo).forEach(j =>
+          notificar(d, j.id, `🖼️ ${user.nombre} subió su captura de seguimiento institucional.`));
+      });
+      try { await mutar(d => { otorgarLogros(d, user.id, asig.ciclo); }); } catch { /* no crítico */ }
+    } catch (e) { setErr(e.message); }
+    setSubiendo(false);
+  };
+
+  const quitar = async () => {
+    if (!window.confirm("¿Quitar la captura? Podrás subir otra en su lugar.")) return;
+    const id = captura.id;
+    await mutar(d => { d.entregas = d.entregas.filter(x => x.id !== id); });
+    await eliminarArchivo("ent_" + id);
+  };
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
+        <div>
+          <h3 className="font-bold text-sm flex items-center gap-1.5">
+            <ImageIcon size={15}/>Captura de seguimiento institucional
+          </h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Sube la captura de pantalla de la plataforma de seguimiento. Es obligatoria y cuenta
+            dentro de tu avance; se sube una por semestre y puedes reemplazarla cuando quieras.
+          </p>
+        </div>
+        <span className={`text-[11px] font-bold px-2 py-1 rounded-full shrink-0 ${captura ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-amber-50 text-amber-700 border border-amber-200"}`}>
+          {captura ? "ENTREGADA" : "PENDIENTE"}
+        </span>
+      </div>
+
+      {err && <p className="text-sm text-rose-600 flex items-start gap-1.5 mb-2"><AlertTriangle size={14} className="mt-0.5 shrink-0"/>{err}</p>}
+
+      {captura ? (
+        <div className="space-y-2">
+          <button className="block w-full" onClick={() => setVerGrande(true)} title="Ver en grande">
+            <VistaCaptura entregaId={captura.id} alto="max-h-72" />
+          </button>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+            <FileText size={13} className="text-slate-400"/>
+            <span className="truncate flex-1">{captura.titulo}</span>
+            <span>{fmtFecha((captura.fecha || "").slice(0, 10))}</span>
+            <label className="inline-flex items-center gap-1.5 font-semibold cursor-pointer px-2.5 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-50">
+              {subiendo ? <Loader2 size={13} className="animate-spin"/> : <Upload size={13}/>}Reemplazar
+              <input type="file" accept="image/*" className="hidden" disabled={subiendo}
+                onChange={ev => { subir(ev.target.files[0]); ev.target.value = ""; }} />
+            </label>
+            <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500" title="Quitar" onClick={quitar}>
+              <Trash2 size={13}/>
+            </button>
+          </div>
+        </div>
+      ) : (
+        <label className={`flex flex-col items-center justify-center gap-2 py-8 rounded-xl border-2 border-dashed cursor-pointer transition ${subiendo ? "border-slate-200 text-slate-400" : "border-slate-300 text-slate-500 hover:border-[#E8871E] hover:bg-amber-50/40"}`}>
+          {subiendo ? <Loader2 size={22} className="animate-spin"/> : <Upload size={22}/>}
+          <span className="text-sm font-semibold">{subiendo ? "Subiendo…" : "Subir captura de pantalla"}</span>
+          <span className="text-[11px]">Formato de imagen (JPG, PNG). Máximo ~7.5 MB.</span>
+          <input type="file" accept="image/*" className="hidden" disabled={subiendo}
+            onChange={ev => { subir(ev.target.files[0]); ev.target.value = ""; }} />
+        </label>
+      )}
+
+      {verGrande && captura && (
+        <Modal titulo="Captura de seguimiento" onClose={() => setVerGrande(false)} ancho="max-w-4xl">
+          <VistaCaptura entregaId={captura.id} alto="max-h-[75vh]" />
+        </Modal>
+      )}
+    </Card>
+  );
+}
+
+/* Muestra una imagen guardada en el almacenamiento, a partir del id de
+   la entrega. Se usa tanto en el panel del docente como en el del
+   jefe académico. */
+function VistaCaptura({ entregaId, alto = "max-h-72" }) {
+  const [url, setUrl] = useState(null);
+  const [err, setErr] = useState(false);
+
+  useEffect(() => {
+    let vivo = true, creada = null;
+    (async () => {
+      try {
+        const f = await leerArchivo("ent_" + entregaId);
+        if (!f || !vivo) { if (vivo) setErr(true); return; }
+        const bytes = atob(f.base64);
+        const arr = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+        creada = URL.createObjectURL(new Blob([arr], { type: f.mime }));
+        setUrl(creada);
+      } catch { if (vivo) setErr(true); }
+    })();
+    return () => { vivo = false; if (creada) URL.revokeObjectURL(creada); };
+  }, [entregaId]);
+
+  if (err) return <p className="text-sm text-slate-400 py-6 text-center">La imagen no está disponible.</p>;
+  if (!url) return (
+    <div className="h-40 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 text-sm gap-2">
+      <Loader2 size={16} className="animate-spin"/>Cargando…
+    </div>
+  );
+  return <img src={url} alt="Captura de seguimiento" className={`w-full ${alto} object-contain rounded-xl border border-slate-200 bg-slate-50`} />;
+}
+
+/* Botón que abre la captura de un docente. Lo usan el jefe académico y
+   la administración desde la lista de asignaciones. */
+function VerCapturaBtn({ db, asig }) {
+  const [abierto, setAbierto] = useState(false);
+  const captura = asig.docenteId
+    ? capturaDe(db, asig.docenteId, asig.ciclo, asig.periodo) : null;
+
+  if (!captura) return (
+    <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 shrink-0"
+      title="Este docente aún no sube su captura de seguimiento">
+      SIN CAPTURA
+    </span>
+  );
+
+  return (
+    <>
+      <button className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 shrink-0"
+        onClick={() => setAbierto(true)} title="Ver la captura de seguimiento que subió">
+        <ImageIcon size={12}/>Captura
+      </button>
+      {abierto && (
+        <Modal titulo={`Captura de seguimiento · ${asig.nombreExtraido}`} onClose={() => setAbierto(false)} ancho="max-w-4xl">
+          <VistaCaptura entregaId={captura.id} alto="max-h-[75vh]" />
+          <p className="text-xs text-slate-500 mt-2">
+            {captura.titulo} · subida el {fmtFecha((captura.fecha || "").slice(0, 10))}
+          </p>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 function MiAsignacion({ db, user, mutar }) {
   const misAsigs = db.asignaciones.filter(a => a.docenteId === user.id)
     .sort((a, b) => (b.ciclo + (b.periodo || "")).localeCompare(a.ciclo + (a.periodo || "")));
@@ -4854,6 +5041,8 @@ function MiAsignacion({ db, user, mutar }) {
           </div>
         </Card>
       )}
+
+      {asig && <CapturaSeguimiento db={db} user={user} asig={asig} mutar={mutar} />}
 
       {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
 
