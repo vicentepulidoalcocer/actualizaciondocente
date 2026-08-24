@@ -2255,7 +2255,11 @@ function Ranking({ db, user }) {
   const rank = conLugares(rankingDe(db, ciclo), r => r.horas);
   const podio = rank.slice(0, 3);
   const resto = rank.slice(3);
-  const alturas = ["h-32", "h-24", "h-20"];
+  /* La altura de la columna depende del LUGAR, no de la posición en la
+     lista: si tres personas empatan en el primero, las tres columnas
+     miden lo mismo. Antes se veían escalonadas y contradecía el texto
+     que decía "empatado". */
+  const alturaDeLugar = { 1: "h-32", 2: "h-24", 3: "h-20" };
   const orden = [1, 0, 2]; // 2do, 1ro, 3ro visual
   const medallas = ["🥇", "🥈", "🥉"];
   return (
@@ -2280,7 +2284,7 @@ function Ranking({ db, user }) {
                   <div className="text-[#E8871E] text-xs font-bold mb-2">
                     {podio[i].horas} horas{podio[i].empatado ? " · empatado" : ""}
                   </div>
-                  <div className={`w-full ${alturas[i]} rounded-t-xl bg-gradient-to-b from-[#E8871E] to-[#c26d10] flex items-start justify-center pt-2 text-white font-bold text-xl`} style={{fontFamily:"'Archivo', sans-serif"}}>{podio[i].lugar}</div>
+                  <div className={`w-full ${alturaDeLugar[podio[i].lugar] || "h-20"} rounded-t-xl bg-gradient-to-b from-[#E8871E] to-[#c26d10] flex items-start justify-center pt-2 text-white font-bold text-xl`} style={{fontFamily:"'Archivo', sans-serif"}}>{podio[i].lugar}</div>
                 </div>
               ))}
             </div>}
@@ -2293,9 +2297,13 @@ function Ranking({ db, user }) {
           const sem = semaforoDe(db, m ? Math.round(100 * r.horas / m) : 0);
           return (
             <div key={r.id} className={`flex items-center gap-3 py-2 border-b border-slate-100 last:border-0 ${r.id === user.id ? "bg-amber-50 -mx-2 px-2 rounded-lg" : ""}`}>
-              <span className="w-8 text-center font-bold text-slate-400" style={{fontFamily:"'Archivo', sans-serif"}}>{i + 1}</span>
+              <span className="w-8 text-center font-bold text-slate-400" style={{fontFamily:"'Archivo', sans-serif"}}>{r.lugar}</span>
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium truncate">{r.nombre}{r.id === user.id && <span className="text-[10px] text-[#E8871E] font-bold ml-1.5">TÚ</span>}</div>
+                <div className="text-sm font-medium truncate">
+                  {r.nombre}
+                  {r.id === user.id && <span className="text-[10px] text-[#E8871E] font-bold ml-1.5">TÚ</span>}
+                  {r.empatado && <span className="text-[10px] text-slate-400 font-semibold ml-1.5">empatado</span>}
+                </div>
                 <div className="h-1.5 rounded-full bg-slate-200 mt-1 overflow-hidden"><div className="h-full rounded-full" style={{ width: pct + "%", background: SEM_COLORS[sem] }} /></div>
               </div>
               <span className="text-sm font-bold w-16 text-right">{r.horas} h</span>
@@ -6312,8 +6320,8 @@ function Reportes({ db, dentroDeTablero = false }) {
     ...CATEGORIAS.map(cat => { const cs = certsC.filter(c => c.datos.categoria === cat);
       return [cat, cs.length, cs.reduce((s, c) => s + (Number(c.datos.horas)||0), 0)]; }).filter(f => f[1] > 0)];
 
-  const filasRanking = () => [["Posición","Docente","Horas validadas"],
-    ...rankingDe(db, ciclo).map((r, i) => [i + 1, r.nombre, r.horas])];
+  const filasRanking = () => [["Lugar","Docente","Horas validadas"],
+    ...conLugares(rankingDe(db, ciclo), r => r.horas).map(r => [r.lugar, r.nombre, r.horas])];
 
   const filasMeta = (cumple) => [["Docente","Área","Horas","Meta","% cumplimiento"],
     ...docentes.map(d => { const h = horasValidadas(db, d.id, ciclo); const m = metaDe(db, d.id); return { d, h, m, pct: m ? Math.round(100*h/m) : 0 }; })
