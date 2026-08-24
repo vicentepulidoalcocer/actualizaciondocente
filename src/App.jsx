@@ -1132,7 +1132,7 @@ export default function App() {
               <Ausentes db={db} user={user} />
             </React.Suspense>
           )}
-          {pagina === "calendario" && <CalendarioAcademico db={db} user={user} mutar={mutar} puedeEditar={esRolAcademico(user.rol)} />}
+          {pagina === "calendario" && <PantallaCalendarios db={db} user={user} mutar={mutar} puedeEditar={esRolAcademico(user.rol)} />}
           {pagina === "programas" && (esRolAcademico(user.rol)
             ? <ProgramasEstudio db={db} user={user} mutar={mutar} />
             : <ProgramasDocente db={db} />)}
@@ -3158,12 +3158,42 @@ function VisorCalendario({ cal }) {
   );
 }
 
-function CalendarioAcademico({ db, user, mutar, puedeEditar }) {
+/* Los dos calendarios (académico y de homenajes) comparten la misma
+   mecánica; solo cambia el tipo de registro y los textos. Los
+   calendarios que ya existían no tenían "tipo" guardado: se tratan
+   como "academico" para no perder lo ya publicado. */
+const TIPOS_CALENDARIO = [
+  ["academico", "Calendario académico", "Fechas del ciclo: exámenes, entregas, vacaciones y eventos institucionales."],
+  ["homenajes", "Calendario de Homenajes", "Quién organiza el homenaje cívico de cada fecha del mes."],
+];
+
+function PantallaCalendarios({ db, user, mutar, puedeEditar }) {
+  const [tipo, setTipo] = useState("academico");
+  const info = TIPOS_CALENDARIO.find(t => t[0] === tipo);
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
+        {TIPOS_CALENDARIO.map(([id, txt]) => (
+          <button key={id} onClick={() => setTipo(id)}
+            className={`px-3 py-2 rounded-lg text-sm font-semibold transition ${tipo === id ? "bg-white text-[#1a2340] shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+            {txt}
+          </button>
+        ))}
+      </div>
+      <CalendarioAcademico db={db} user={user} mutar={mutar} puedeEditar={puedeEditar}
+        tipo={tipo} titulo={info[1]} descripcion={info[2]} />
+    </div>
+  );
+}
+
+function CalendarioAcademico({ db, user, mutar, puedeEditar, tipo = "academico", titulo: tituloPantalla = "Calendario académico", descripcion }) {
   const [form, setForm] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [err, setErr] = useState("");
 
-  const lista = [...db.calendarios].sort((a, b) =>
+  const tipoDe = (c) => c.tipo || "academico"; // compatibilidad con lo ya publicado
+  const lista = db.calendarios.filter(c => tipoDe(c) === tipo)
+    .sort((a, b) =>
     (b.ciclo || "").localeCompare(a.ciclo || "") || (b.creadoEn || "").localeCompare(a.creadoEn || ""));
   const [verId, setVerId] = useState(null);
   const actual = lista.find(c => c.id === verId) || lista[0] || null;
@@ -3175,26 +3205,27 @@ function CalendarioAcademico({ db, user, mutar, puedeEditar }) {
     setGuardando(true); setErr("");
     try {
       const id = f.id || uid();
-      let guardado = f.archivoGuardado, tipo = f.archivoTipo, nombreArch = f.archivoNombre;
+      let guardado = f.archivoGuardado, archTipo = f.archivoTipo, nombreArch = f.archivoNombre;
       if (f._archivo) {
         const b64 = await leerComoBase64(f._archivo);
         if (b64.length > MAX_FILE_B64) { setErr("El archivo supera el límite (~7.5 MB). Comprímelo e inténtalo de nuevo."); setGuardando(false); return; }
         const r = await guardarArchivo("cal_" + id, b64, f._archivo.type || "application/pdf", f._archivo.name);
         if (!r.guardado) { setErr("No se pudo guardar el archivo."); setGuardando(false); return; }
-        guardado = true; tipo = f._archivo.type || ""; nombreArch = f._archivo.name;
+        guardado = true; archTipo = f._archivo.type || ""; nombreArch = f._archivo.name;
       }
       const esNuevo = !db.calendarios.some(c => c.id === id);
       await mutar(d => {
-        const base = { id, titulo: f.titulo.trim(), ciclo: f.ciclo, periodo: f.periodo || "",
-          nota: f.nota || "", archivoNombre: nombreArch, archivoTipo: tipo,
+        const base = { id, tipo, titulo: f.titulo.trim(), ciclo: f.ciclo, periodo: f.periodo || "",
+          nota: f.nota || "", archivoNombre: nombreArch, archivoTipo: archTipo,
           archivoGuardado: guardado, creadoEn: f.creadoEn || ahora(), publicadoPor: user.nombre };
         const i = d.calendarios.findIndex(c => c.id === id);
         if (i >= 0) d.calendarios[i] = { ...d.calendarios[i], ...base };
         else d.calendarios.push(base);
         if (esNuevo) {
+          const emoji = tipo === "homenajes" ? "🎖️" : "🗓️";
           d.users.filter(u => u.rol === "docente" && u.activo).forEach(u =>
-            notificar(d, u.id, `🗓️ Se publicó el calendario académico “${base.titulo}”.`));
-          registrarActividad(d, `Se publicó el calendario académico “${base.titulo}”.`);
+            notificar(d, u.id, `${emoji} Se publicó “${base.titulo}” (${tituloPantalla}).`));
+          registrarActividad(d, `Se publicó “${base.titulo}” (${tituloPantalla}).`);
         }
       });
       setVerId(id);
@@ -3204,7 +3235,7 @@ function CalendarioAcademico({ db, user, mutar, puedeEditar }) {
   };
 
   const eliminar = async (c) => {
-    if (!window.confirm(`¿Eliminar el calendario “${c.titulo}”?`)) return;
+    if (!window.confirm(`¿Eliminar “${c.titulo}”?`)) return;
     await mutar(d => { d.calendarios = d.calendarios.filter(x => x.id !== c.id); });
     await eliminarArchivo("cal_" + c.id);
     setVerId(null);
@@ -3214,22 +3245,21 @@ function CalendarioAcademico({ db, user, mutar, puedeEditar }) {
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Calendario académico</h2>
+          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>{tituloPantalla}</h2>
           <p className="text-sm text-slate-500">
-            {puedeEditar ? "Publica el calendario del ciclo; los docentes lo verán en pantalla y podrán descargarlo."
-              : "Calendario oficial del plantel. Puedes verlo aquí mismo o descargarlo."}
+            {descripcion} {puedeEditar ? " Los docentes lo verán en pantalla y podrán descargarlo." : " Puedes verlo aquí mismo o descargarlo."}
           </p>
         </div>
         {puedeEditar && (
           <button className={btnPrim} onClick={() => { setForm({ titulo: "", ciclo: db.config.cicloActual, periodo: "", nota: "", _archivo: null }); setErr(""); }}>
-            <Plus size={15}/>Publicar calendario
+            <Plus size={15}/>Publicar
           </button>
         )}
       </div>
 
       {lista.length === 0 && (
         <Card className="p-8 text-center text-sm text-slate-400">
-          {puedeEditar ? "Aún no has publicado ningún calendario." : "El calendario académico aún no ha sido publicado."}
+          {puedeEditar ? "Aún no has publicado nada aquí." : "Todavía no se ha publicado nada en esta sección."}
         </Card>
       )}
 
@@ -3267,10 +3297,10 @@ function CalendarioAcademico({ db, user, mutar, puedeEditar }) {
       )}
 
       {form && (
-        <Modal titulo={form.id ? "Editar calendario" : "Publicar calendario académico"} onClose={() => setForm(null)}>
+        <Modal titulo={form.id ? "Editar" : `Publicar · ${tituloPantalla}`} onClose={() => setForm(null)}>
           <div className="space-y-3">
             <Campo label="Título">
-              <input className={inputCls} placeholder="Calendario académico 2026–2027"
+              <input className={inputCls} placeholder={tipo === "homenajes" ? "Homenajes — septiembre 2026" : "Calendario académico 2026–2027"}
                 value={form.titulo} onChange={e => setForm({ ...form, titulo: e.target.value })} />
             </Campo>
             <div className="grid sm:grid-cols-2 gap-3">
