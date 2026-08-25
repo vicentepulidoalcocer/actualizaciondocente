@@ -249,15 +249,33 @@ export async function sincronizar(prev, next) {
 const BUCKET = "archivos";
 export const MAX_FILE_B64 = 10_000_000; // ~10 MB en base64 (~7.5 MB reales)
 
+/* Corta una operación que se quede colgada, para que la interfaz no
+   se quede esperando para siempre cuando la red no responde. */
+function conTiempoLimite(promesa, ms, mensaje) {
+  return Promise.race([
+    promesa,
+    new Promise((_, rechazar) => setTimeout(() => rechazar(new Error(mensaje)), ms)),
+  ]);
+}
+
 export async function guardarArchivo(id, base64, mime, nombre) {
-  if (!base64 || base64.length > MAX_FILE_B64) return { guardado: false };
+  if (!base64) return { guardado: false, error: "El archivo llegó vacío." };
+  if (base64.length > MAX_FILE_B64) {
+    return { guardado: false, error: "El archivo supera el límite de ~7.5 MB." };
+  }
   try {
     const blob = new Blob([JSON.stringify({ base64, mime, nombre })], { type: "application/json" });
-    const { error } = await supabase.storage.from(BUCKET).upload(`${id}.json`, blob, { upsert: true });
-    if (error) return { guardado: false };
+    const { error } = await conTiempoLimite(
+      supabase.storage.from(BUCKET).upload(`${id}.json`, blob, { upsert: true }),
+      90000,
+      "La subida tardó demasiado. Revisa tu conexión e inténtalo de nuevo.",
+    );
+    // Antes se descartaba el motivo del error, así que un problema de
+    // permisos o de espacio se veía igual que un fallo de red.
+    if (error) return { guardado: false, error: error.message || "Error al guardar el archivo." };
     return { guardado: true };
-  } catch {
-    return { guardado: false };
+  } catch (e) {
+    return { guardado: false, error: e.message || "No se pudo contactar al almacenamiento." };
   }
 }
 
