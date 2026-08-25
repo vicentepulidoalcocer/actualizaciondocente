@@ -310,6 +310,24 @@ async function subirDirecto(id, blob, mime) {
   return { error: detalle };
 }
 
+/* Comprueba si un archivo ya está en el almacenamiento.
+   Hace falta porque la conexión puede cortarse DESPUÉS de que el
+   servidor guardó el archivo pero antes de que la respuesta llegue de
+   vuelta: sin esta comprobación, una subida exitosa se tomaba por
+   fallida y el registro nunca se creaba. */
+async function archivoExiste(id) {
+  try {
+    const { data, error } = await supabase.storage.from(BUCKET).list("", {
+      limit: 1,
+      search: id,
+    });
+    if (error || !data) return false;
+    return data.some((f) => f.name === id);
+  } catch {
+    return false;
+  }
+}
+
 export async function guardarArchivo(id, base64, mime, nombre) {
   if (!base64) return { guardado: false, error: "El archivo llegó vacío." };
   if (base64.length > MAX_FILE_B64) {
@@ -321,6 +339,16 @@ export async function guardarArchivo(id, base64, mime, nombre) {
   const bytes = base64ABytes(base64);
   const blob = new Blob([bytes], { type: mime || "application/octet-stream" });
 
+  const guardarNombre = async () => {
+    try {
+      await subirDirecto(
+        `${id}.meta`,
+        new Blob([JSON.stringify({ mime, nombre })], { type: "application/json" }),
+        "application/json",
+      );
+    } catch { /* si falla, se usa el nombre del registro */ }
+  };
+
   let ultimoError = "";
   for (let intento = 1; intento <= 3; intento++) {
     try {
@@ -330,22 +358,23 @@ export async function guardarArchivo(id, base64, mime, nombre) {
         "La subida tardó demasiado. Revisa tu conexión e inténtalo de nuevo.",
       );
       if (!error) {
-        // El nombre original se guarda aparte, en un archivo pequeño
-        try {
-          await subirDirecto(
-            `${id}.meta`,
-            new Blob([JSON.stringify({ mime, nombre })], { type: "application/json" }),
-            "application/json",
-          );
-        } catch { /* si falla, se usa el nombre del registro */ }
+        await guardarNombre();
         return { guardado: true };
       }
       ultimoError = error;
     } catch (e) {
       ultimoError = e.message || "No se pudo contactar al almacenamiento.";
     }
-    // Espera creciente antes de reintentar: la mayoría de estos fallos
-    // son cortes momentáneos de red y el segundo intento funciona.
+
+    /* Antes de reintentar, se comprueba si el archivo llegó de todos
+       modos: es lo que ocurre cuando la conexión se corta justo después
+       de que el servidor lo guardó. */
+    if (await archivoExiste(id)) {
+      await guardarNombre();
+      return { guardado: true };
+    }
+
+    // Espera creciente: la mayoría de estos cortes son momentáneos.
     if (intento < 3) await new Promise((r) => setTimeout(r, intento * 1500));
   }
   return { guardado: false, error: ultimoError };
