@@ -258,28 +258,94 @@ function conTiempoLimite(promesa, ms, mensaje) {
   ]);
 }
 
+/* Convierte texto base64 a bytes reales, para poder subir el archivo
+   en su formato original en vez de como texto. */
+function base64ABytes(base64) {
+  const crudo = atob(base64);
+  const bytes = new Uint8Array(crudo.length);
+  for (let i = 0; i < crudo.length; i++) bytes[i] = crudo.charCodeAt(i);
+  return bytes;
+}
+
+const bytesABase64 = (bytes) => {
+  let s = "";
+  const trozo = 8192; // por partes, para no saturar la memoria
+  for (let i = 0; i < bytes.length; i += trozo) {
+    s += String.fromCharCode(...bytes.subarray(i, i + trozo));
+  }
+  return btoa(s);
+};
+
 export async function guardarArchivo(id, base64, mime, nombre) {
   if (!base64) return { guardado: false, error: "El archivo llegó vacío." };
   if (base64.length > MAX_FILE_B64) {
     return { guardado: false, error: "El archivo supera el límite de ~7.5 MB." };
   }
-  try {
-    const blob = new Blob([JSON.stringify({ base64, mime, nombre })], { type: "application/json" });
-    const { error } = await conTiempoLimite(
-      supabase.storage.from(BUCKET).upload(`${id}.json`, blob, { upsert: true }),
-      90000,
-      "La subida tardó demasiado. Revisa tu conexión e inténtalo de nuevo.",
-    );
-    // Antes se descartaba el motivo del error, así que un problema de
-    // permisos o de espacio se veía igual que un fallo de red.
-    if (error) return { guardado: false, error: error.message || "Error al guardar el archivo." };
-    return { guardado: true };
-  } catch (e) {
-    return { guardado: false, error: e.message || "No se pudo contactar al almacenamiento." };
+
+  /* Antes el archivo se enviaba codificado como texto dentro de un JSON,
+     lo que lo hacía cerca de un 33% más pesado. Esa petición inflada era
+     la que fallaba en conexiones inestables (ERR_HTTP2_PROTOCOL_ERROR).
+     Ahora se sube en binario, tal como es, y el nombre original viaja
+     aparte en los metadatos. */
+  const bytes = base64ABytes(base64);
+  const blob = new Blob([bytes], { type: mime || "application/octet-stream" });
+
+  let ultimoError = "";
+  for (let intento = 1; intento <= 3; intento++) {
+    try {
+      const { error } = await conTiempoLimite(
+        supabase.storage.from(BUCKET).upload(id, blob, {
+          upsert: true,
+          contentType: mime || "application/octet-stream",
+        }),
+        120000,
+        "La subida tardó demasiado. Revisa tu conexión e inténtalo de nuevo.",
+      );
+      if (!error) {
+        // El nombre original se guarda aparte, en un archivo pequeño
+        try {
+          await supabase.storage.from(BUCKET).upload(
+            `${id}.meta`,
+            new Blob([JSON.stringify({ mime, nombre })], { type: "application/json" }),
+            { upsert: true },
+          );
+        } catch { /* si falla, se usa el nombre del registro */ }
+        return { guardado: true };
+      }
+      ultimoError = error.message || "Error al guardar el archivo.";
+    } catch (e) {
+      ultimoError = e.message || "No se pudo contactar al almacenamiento.";
+    }
+    // Espera creciente antes de reintentar: la mayoría de estos fallos
+    // son cortes momentáneos de red y el segundo intento funciona.
+    if (intento < 3) await new Promise((r) => setTimeout(r, intento * 1500));
   }
+  return { guardado: false, error: ultimoError };
 }
 
 export async function leerArchivo(id) {
+  // Formato nuevo: el archivo en binario, con su nombre en un archivo
+  // aparte. Se intenta primero porque es el que se usa desde ahora.
+  try {
+    const { data, error } = await supabase.storage.from(BUCKET).download(id);
+    if (!error && data) {
+      let mime = data.type || "application/octet-stream";
+      let nombre = "";
+      try {
+        const m = await supabase.storage.from(BUCKET).download(`${id}.meta`);
+        if (m.data) {
+          const info = JSON.parse(await m.data.text());
+          mime = info.mime || mime;
+          nombre = info.nombre || "";
+        }
+      } catch { /* sin metadatos: se usa el tipo del propio archivo */ }
+      const bytes = new Uint8Array(await data.arrayBuffer());
+      return { base64: bytesABase64(bytes), mime, nombre };
+    }
+  } catch { /* se intenta con el formato anterior */ }
+
+  // Formato anterior: todo dentro de un JSON. Se conserva para que los
+  // documentos subidos antes de este cambio sigan abriéndose.
   try {
     const { data, error } = await supabase.storage.from(BUCKET).download(`${id}.json`);
     if (error || !data) return null;
@@ -290,7 +356,10 @@ export async function leerArchivo(id) {
 }
 
 export async function eliminarArchivo(id) {
-  try { await supabase.storage.from(BUCKET).remove([`${id}.json`]); } catch { /* sin efecto */ }
+  // Se borran las tres variantes posibles: el binario nuevo, su archivo
+  // de nombre, y el formato anterior en JSON.
+  try { await supabase.storage.from(BUCKET).remove([id, `${id}.meta`, `${id}.json`]); }
+  catch { /* sin efecto */ }
 }
 
 /* ---------- extracción con IA (función Edge → Gemini) ---------- */
