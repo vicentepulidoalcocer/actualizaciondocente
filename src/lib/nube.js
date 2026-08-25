@@ -276,17 +276,48 @@ const bytesABase64 = (bytes) => {
   return btoa(s);
 };
 
+/* Sube el archivo con una petición HTTP directa en lugar de usar la
+   librería. La causa del ERR_HTTP2_PROTOCOL_ERROR es la conexión HTTP/2
+   que la librería reutiliza: cuando esa conexión se corta a media
+   transferencia, la subida falla sin dar detalle. Al hacer la petición
+   por separado, el navegador abre una conexión propia para el archivo,
+   que es lo que resuelve el problema en la práctica. */
+async function subirDirecto(id, blob, mime) {
+  const base = import.meta.env.VITE_SUPABASE_URL;
+  const { data: s } = await supabase.auth.getSession();
+  const token = s?.session?.access_token;
+  if (!token) return { error: "Tu sesión expiró. Vuelve a iniciar sesión." };
+
+  const r = await fetch(`${base}/storage/v1/object/${BUCKET}/${encodeURIComponent(id)}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      "Content-Type": mime || "application/octet-stream",
+      "x-upsert": "true",
+      "cache-control": "3600",
+    },
+    body: blob,
+  });
+
+  if (r.ok) return { error: null };
+  let detalle = `El servidor respondió ${r.status}.`;
+  try {
+    const j = await r.json();
+    if (j?.message) detalle = j.message;
+    else if (j?.error) detalle = j.error;
+  } catch { /* la respuesta no traía detalle */ }
+  return { error: detalle };
+}
+
 export async function guardarArchivo(id, base64, mime, nombre) {
   if (!base64) return { guardado: false, error: "El archivo llegó vacío." };
   if (base64.length > MAX_FILE_B64) {
     return { guardado: false, error: "El archivo supera el límite de ~7.5 MB." };
   }
 
-  /* Antes el archivo se enviaba codificado como texto dentro de un JSON,
-     lo que lo hacía cerca de un 33% más pesado. Esa petición inflada era
-     la que fallaba en conexiones inestables (ERR_HTTP2_PROTOCOL_ERROR).
-     Ahora se sube en binario, tal como es, y el nombre original viaja
-     aparte en los metadatos. */
+  /* El archivo se envía en binario, tal como es. Antes viajaba
+     codificado como texto, cerca de un 33% más pesado. */
   const bytes = base64ABytes(base64);
   const blob = new Blob([bytes], { type: mime || "application/octet-stream" });
 
@@ -294,25 +325,22 @@ export async function guardarArchivo(id, base64, mime, nombre) {
   for (let intento = 1; intento <= 3; intento++) {
     try {
       const { error } = await conTiempoLimite(
-        supabase.storage.from(BUCKET).upload(id, blob, {
-          upsert: true,
-          contentType: mime || "application/octet-stream",
-        }),
+        subirDirecto(id, blob, mime),
         120000,
         "La subida tardó demasiado. Revisa tu conexión e inténtalo de nuevo.",
       );
       if (!error) {
         // El nombre original se guarda aparte, en un archivo pequeño
         try {
-          await supabase.storage.from(BUCKET).upload(
+          await subirDirecto(
             `${id}.meta`,
             new Blob([JSON.stringify({ mime, nombre })], { type: "application/json" }),
-            { upsert: true },
+            "application/json",
           );
         } catch { /* si falla, se usa el nombre del registro */ }
         return { guardado: true };
       }
-      ultimoError = error.message || "Error al guardar el archivo.";
+      ultimoError = error;
     } catch (e) {
       ultimoError = e.message || "No se pudo contactar al almacenamiento.";
     }
