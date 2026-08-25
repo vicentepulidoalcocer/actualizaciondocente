@@ -4852,7 +4852,7 @@ function CapturaSeguimiento({ db, user, asig, mutar }) {
       }
       const id = uid();
       const r = await guardarArchivo("ent_" + id, b64, file.type || "image/png", file.name);
-      if (!r.guardado) { setErr("No se pudo guardar la imagen. Inténtalo de nuevo."); setSubiendo(false); return; }
+      if (!r.guardado) { setErr("No se pudo guardar la imagen: " + (r.error || "inténtalo de nuevo.")); return; }
       await mutar(d => {
         // Solo puede haber una por semestre: se reemplaza la anterior
         d.entregas = d.entregas.filter(e => !(e.docenteId === user.id && e.ciclo === asig.ciclo
@@ -4866,8 +4866,11 @@ function CapturaSeguimiento({ db, user, asig, mutar }) {
           notificar(d, j.id, `🖼️ ${user.nombre} subió su captura de seguimiento institucional.`));
       });
       try { await mutar(d => { otorgarLogros(d, user.id, asig.ciclo); }); } catch { /* no crítico */ }
-    } catch (e) { setErr(e.message); }
-    setSubiendo(false);
+    } catch (e) {
+      setErr("No se pudo completar la subida: " + (e.message || "error desconocido"));
+    } finally {
+      setSubiendo(false);
+    }
   };
 
   const quitar = async () => {
@@ -5016,10 +5019,10 @@ function MiAsignacion({ db, user, mutar }) {
     setSubiendo(slot);
     try {
       const b64 = await leerComoBase64(file);
-      if (b64.length > MAX_FILE_B64) { setErr("El archivo supera el límite (~7.5 MB)."); setSubiendo(null); return; }
+      if (b64.length > MAX_FILE_B64) { setErr("El archivo supera el límite (~7.5 MB)."); return; }
       const id = uid();
       const r = await guardarArchivo("ent_" + id, b64, file.type || "application/pdf", file.name);
-      if (!r.guardado) { setErr("No se pudo guardar el archivo. Inténtalo de nuevo."); setSubiendo(null); return; }
+      if (!r.guardado) { setErr("No se pudo guardar el archivo: " + (r.error || "inténtalo de nuevo.")); return; }
       await mutar(d => {
         d.entregas.push({
           id, docenteId: user.id, ciclo: asig.ciclo, periodo: asig.periodo || "ago-ene",
@@ -5036,8 +5039,13 @@ function MiAsignacion({ db, user, mutar }) {
       try {
         await mutar(d => { otorgarLogros(d, user.id, asig.ciclo); });
       } catch { /* la insignia se otorgará en la siguiente entrega */ }
-    } catch (e) { setErr(e.message); }
-    setSubiendo(null);
+    } catch (e) {
+      setErr("No se pudo completar la subida: " + (e.message || "error desconocido"));
+    } finally {
+      // Pase lo que pase, el botón vuelve a su estado normal: antes se
+      // quedaba girando indefinidamente si algo no respondía.
+      setSubiendo(null);
+    }
   };
 
   const quitar = async (entrega) => {
