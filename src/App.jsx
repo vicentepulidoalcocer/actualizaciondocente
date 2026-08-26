@@ -967,9 +967,20 @@ export default function App() {
 
   // Mutación central: aplica cambios en memoria y sincroniza solo las
   // diferencias con Supabase (altas, cambios y bajas por tabla).
+  /* Referencia siempre actualizada a los datos. Sin esto, dos guardados
+     seguidos usaban la misma copia inicial: el segundo trabajaba sobre
+     datos viejos y borraba de la pantalla lo que acababa de agregar el
+     primero. Por eso una entrega recién subida desaparecía hasta
+     recargar, aunque en la base de datos sí estuviera. */
+  const dbRef = useRef(db);
+  useEffect(() => { dbRef.current = db; }, [db]);
+
   const mutar = useCallback(async (fn) => {
-    const nuevo = JSON.parse(JSON.stringify(db));
+    const base = dbRef.current;
+    if (!base) return null;
+    const nuevo = JSON.parse(JSON.stringify(base));
     await fn(nuevo);
+    dbRef.current = nuevo;   // queda disponible de inmediato para el siguiente guardado
     setDb(nuevo);
     try {
       await sincronizar(snapRef.current, nuevo);
@@ -979,7 +990,7 @@ export default function App() {
       alert("No se pudieron guardar los cambios: " + e.message);
     }
     return nuevo;
-  }, [db]);
+  }, []);
 
   if (!configurada) return (
     <div className="min-h-screen flex items-center justify-center bg-[#1a2340] text-white p-6">
