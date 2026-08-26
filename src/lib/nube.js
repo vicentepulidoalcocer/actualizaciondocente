@@ -220,6 +220,12 @@ export async function sincronizar(prev, next) {
     }
     const bajas = [...antes.keys()].filter((id) => !despues.has(id));
 
+    /* Las entregas se escriben y borran directamente desde la pantalla,
+       no por este mecanismo. Excluirlas aquí evita que una diferencia
+       momentánea entre lo que hay en memoria y lo guardado provoque un
+       borrado no deseado del trabajo de un docente. */
+    if (col === "entregas") continue;
+
     if (upserts.length) tareas.push(supabase.from(tabla).upsert(upserts).then((r) => lanzar(r.error, `Guardando ${tabla}`)));
     if (bajas.length) tareas.push(supabase.from(tabla).delete().in("id", bajas).then((r) => lanzar(r.error, `Eliminando en ${tabla}`)));
   }
@@ -445,6 +451,35 @@ export async function extraerConIA({ base64, mime, tipo, rubro }) {
    servidor (columnas con DEFAULT auth.uid() y now()), y la restricción
    UNIQUE(aviso_id, usuario_id) impide duplicados. Aunque alguien alterara
    la petición, la política RLS rechaza cualquier acuse a nombre de otro. */
+
+/* Guarda una entrega (planeación, plan de trabajo, informe o captura)
+   escribiendo DIRECTAMENTE en la tabla, sin pasar por la sincronización
+   en bloque. Se hace así porque en el guardado por lotes la fila se
+   perdía sin dejar rastro ni mensaje de error. Aquí cualquier problema
+   se devuelve tal cual para poder mostrarlo. */
+export async function guardarEntrega(entrega) {
+  const { data, error } = await supabase
+    .from("entregas")
+    .insert({
+      id: entrega.id,
+      docente_id: entrega.docenteId,
+      estado: entrega.estado || "entregada",
+      data: entrega,
+    })
+    .select();
+
+  if (error) return { ok: false, error: error.message || "No se pudo registrar la entrega." };
+  if (!data || !data.length) {
+    return { ok: false, error: "La entrega no quedó registrada. Vuelve a intentarlo." };
+  }
+  return { ok: true };
+}
+
+/* Borra una entrega directamente, por el mismo motivo. */
+export async function borrarEntrega(id) {
+  const { error } = await supabase.from("entregas").delete().eq("id", id);
+  return error ? { ok: false, error: error.message } : { ok: true };
+}
 
 export async function marcarEnterado(avisoId) {
   const { data, error } = await supabase
