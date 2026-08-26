@@ -23,7 +23,7 @@ import { supabase, configurada } from "./lib/supabase";
 import {
   cargarTodo, sincronizar, guardarArchivo, leerArchivo, eliminarArchivo,
   extraerConIA, crearDocente, restablecerPassword, cambiarEmailDocente,
-  marcarEnterado, MAX_FILE_B64, registrarAcceso,
+  marcarEnterado, MAX_FILE_B64, registrarAcceso, guardarEntrega, borrarEntrega,
 } from "./lib/nube";
 const Asistencia = React.lazy(() => import("./Asistencia"));
 const Ausentes = React.lazy(() => import("./Ausentes"));
@@ -4853,15 +4853,21 @@ function CapturaSeguimiento({ db, user, asig, mutar }) {
       const id = uid();
       const r = await guardarArchivo("ent_" + id, b64, file.type || "image/png", file.name);
       if (!r.guardado) { setErr("No se pudo guardar la imagen: " + (r.error || "inténtalo de nuevo.")); return; }
+
+      const anterior = capturaDe(db, user.id, asig.ciclo, asig.periodo);
+      const fila = {
+        id, docenteId: user.id, ciclo: asig.ciclo, periodo: asig.periodo || "ago-ene",
+        encargoClave: CLAVE_CAPTURA, actividad: "Seguimiento institucional",
+        tipo: "captura", titulo: file.name, estado: "entregada", fecha: ahora(),
+      };
+      const g = await guardarEntrega(fila);
+      if (!g.ok) { setErr("La imagen se guardó, pero no se pudo registrar: " + g.error); return; }
+      // Solo puede haber una por semestre: se retira la anterior
+      if (anterior) { await borrarEntrega(anterior.id); await eliminarArchivo("ent_" + anterior.id); }
+
       await mutar(d => {
-        // Solo puede haber una por semestre: se reemplaza la anterior
-        d.entregas = d.entregas.filter(e => !(e.docenteId === user.id && e.ciclo === asig.ciclo
-          && (e.periodo || "ago-ene") === (asig.periodo || "ago-ene") && e.tipo === "captura"));
-        d.entregas.push({
-          id, docenteId: user.id, ciclo: asig.ciclo, periodo: asig.periodo || "ago-ene",
-          encargoClave: CLAVE_CAPTURA, actividad: "Seguimiento institucional",
-          tipo: "captura", titulo: file.name, estado: "entregada", fecha: ahora(),
-        });
+        d.entregas = d.entregas.filter(e => !(anterior && e.id === anterior.id));
+        if (!d.entregas.some(e => e.id === fila.id)) d.entregas.push(fila);
         d.users.filter(u => esRolAcademico(u.rol) && u.rol !== "admin" && u.activo).forEach(j =>
           notificar(d, j.id, `🖼️ ${user.nombre} subió su captura de seguimiento institucional.`));
       });
@@ -4876,6 +4882,8 @@ function CapturaSeguimiento({ db, user, asig, mutar }) {
   const quitar = async () => {
     if (!window.confirm("¿Quitar la captura? Podrás subir otra en su lugar.")) return;
     const id = captura.id;
+    const b = await borrarEntrega(id);
+    if (!b.ok) { setErr("No se pudo quitar: " + b.error); return; }
     await mutar(d => { d.entregas = d.entregas.filter(x => x.id !== id); });
     await eliminarArchivo("ent_" + id);
   };
@@ -5023,13 +5031,21 @@ function MiAsignacion({ db, user, mutar }) {
       const id = uid();
       const r = await guardarArchivo("ent_" + id, b64, file.type || "application/pdf", file.name);
       if (!r.guardado) { setErr("No se pudo guardar el archivo: " + (r.error || "inténtalo de nuevo.")); return; }
+
+      const fila = {
+        id, docenteId: user.id, ciclo: asig.ciclo, periodo: asig.periodo || "ago-ene",
+        encargoClave: encargo.clave,
+        actividad: encargo.actividad, tipo, titulo: file.name,
+        estado: "entregada", fecha: ahora(),
+      };
+
+      /* Se escribe directamente en la tabla: si algo falla, aquí se ve
+         el motivo en vez de perderse silenciosamente. */
+      const g = await guardarEntrega(fila);
+      if (!g.ok) { setErr("El archivo se guardó, pero no se pudo registrar la entrega: " + g.error); return; }
+
       await mutar(d => {
-        d.entregas.push({
-          id, docenteId: user.id, ciclo: asig.ciclo, periodo: asig.periodo || "ago-ene",
-          encargoClave: encargo.clave,
-          actividad: encargo.actividad, tipo, titulo: file.name,
-          estado: "entregada", fecha: ahora(),
-        });
+        if (!d.entregas.some(e => e.id === fila.id)) d.entregas.push(fila);
         d.users.filter(u => esRolAcademico(u.rol) && u.rol !== "admin" && u.activo).forEach(j =>
           notificar(d, j.id, `📥 ${user.nombre} subió ${NOMBRE_TIPO_ENTREGA[tipo].toLowerCase()} de “${encargo.actividad}”.`));
       });
@@ -5050,6 +5066,8 @@ function MiAsignacion({ db, user, mutar }) {
 
   const quitar = async (entrega) => {
     if (!window.confirm(`¿Quitar “${entrega.titulo}”? Podrás subir otro archivo en su lugar.`)) return;
+    const b = await borrarEntrega(entrega.id);
+    if (!b.ok) { setErr("No se pudo quitar: " + b.error); return; }
     await mutar(d => { d.entregas = d.entregas.filter(x => x.id !== entrega.id); });
     await eliminarArchivo("ent_" + entrega.id);
   };
