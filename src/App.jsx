@@ -542,7 +542,12 @@ function encargosDe(db, asig) {
     const a = ajustes[clave];
     if (!a) return req;
     const val = (t) => (a[t] === undefined || a[t] === null || a[t] === "") ? req[t] : Number(a[t]);
-    return { planeacion: val("planeacion"), plan: val("plan"), informe: val("informe") };
+    /* Se conservan todos los tipos del cálculo automático, incluida la
+       ficha de identificación. Antes se perdía: los ajustes guardados
+       antes de que existiera ese requisito lo anulaban sin querer. */
+    const salida = { planeacion: val("planeacion"), plan: val("plan"), informe: val("informe") };
+    if (req.ficha !== undefined || a.ficha !== undefined) salida.ficha = val("ficha");
+    return salida;
   };
 
   return [...mapa.values()].map(e => {
@@ -4587,6 +4592,9 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose, esAdmin = false
     planeacion: e.requisitos.planeacion ?? "",
     plan: e.requisitos.plan ?? "",
     informe: e.requisitos.informe ?? "",
+    ficha: e.requisitos.ficha ?? "",
+    // Solo las tutorías piden ficha de identificación
+    esTutoria: e.tipo === "tutoria",
   });
 
   const guardarEdicion = async () => {
@@ -4623,6 +4631,7 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose, esAdmin = false
         planeacion: ed.planeacion === "" ? null : Number(ed.planeacion),
         plan: ed.plan === "" ? null : Number(ed.plan),
         informe: ed.informe === "" ? null : Number(ed.informe),
+        ficha: ed.ficha === "" ? null : Number(ed.ficha),
       };
 
       // 3. Si cambió el nombre, mover las entregas ya subidas a la clave nueva
@@ -4755,6 +4764,14 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose, esAdmin = false
                     onChange={e => setEditando({ ...editando, informe: e.target.value })} />
                 </Campo>
               </div>
+              {(editando.esTutoria || editando.ficha !== "") && (
+                <div className="grid grid-cols-3 gap-2 mt-2">
+                  <Campo label="Fichas de identificación">
+                    <input type="number" min="0" className={inputCls} value={editando.ficha}
+                      onChange={e => setEditando({ ...editando, ficha: e.target.value })} />
+                  </Campo>
+                </div>
+              )}
               <p className="text-[11px] text-slate-400 mt-1">
                 Puedes poner <b>0</b> para que no se pida ese tipo de entrega. Deja el campo vacío
                 para volver al cálculo automático de ese renglón.
