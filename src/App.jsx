@@ -601,6 +601,9 @@ function avanceDe(db, asig) {
   for (const e of encargosDe(db, asig)) {
     for (const t of ["planeacion", "plan", "informe", "ficha"]) {
       const n = e.requisitos[t];
+      // Sin definir (null) queda pendiente de calcular; ausente
+      // (undefined) significa que ese tipo no aplica a este encargo.
+      if (n === undefined) continue;
       if (n === null) { indeterminado = true; continue; }
       req += n;
       ent += Math.min(entregasDe(db, asig.docenteId, asig.ciclo, e.clave, t, asig.periodo || "ago-ene").length, n);
