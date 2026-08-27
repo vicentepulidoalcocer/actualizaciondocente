@@ -66,11 +66,13 @@ const NOMBRE_ROL = {
   jefe_formacion: "Jefe de Formación Docente",
   jefe_academico: "Jefe Académico y de Competencias",
   administrativo: "Control escolar",
+  coord_tutorias: "Coordinación de Tutorías",
   docente: "Docente",
 };
 const esRolValidador = (r) => r === "admin" || r === "jefe_formacion";
 const esRolAcademico = (r) => r === "admin" || r === "jefe_academico";
 const esRolControlEscolar = (r) => r === "admin" || r === "administrativo";
+const esRolTutorias = (r) => r === "admin" || r === "coord_tutorias";
 const esRolComunicador = (r) => r !== "docente";
 
 /* ---- Programas de estudio ----
@@ -300,7 +302,9 @@ function otorgarLogros(db, docenteId, cicloRef) {
     }));
   };
   if (cubierto(["planeacion"], e => e.tipo === "asignatura" || e.tipo === "modulo" || e.tipo === "baetam")) dar("planeaciones_completas");
-  if (cubierto(["plan", "informe"], e => e.tipo === "comision")) dar("comisiones_completas");
+  // Las tutorías cuentan como comisión para esta insignia, e incluyen
+  // además su ficha de identificación.
+  if (cubierto(["plan", "informe", "ficha"], e => e.tipo === "comision" || e.tipo === "tutoria")) dar("comisiones_completas");
 }
 
 function notificar(db, userId, texto) {
@@ -400,10 +404,25 @@ const PALABRAS_COMISION = /(TUTOR|ORIENTACION EDUCATIVA|ACTIVACION FISICA|PARAES
 const esBaetam = (actividad, grupos = []) =>
   /BAETAM/.test(normTexto(actividad)) || grupos.some(g => /BAETAM/.test(normTexto(g)));
 
+/* La tutoría es una comisión con requisitos propios: además del plan de
+   trabajo y los informes, el tutor entrega una ficha de identificación
+   de su grupo. Se detecta por separado para no alterar el resto de las
+   comisiones, que siguen igual.
+
+   Importante: el cargo de COORDINADOR DE TUTORÍAS no es una tutoría de
+   grupo, sino una comisión administrativa; a esa persona no le toca
+   entregar ficha de identificación. */
+const esTutoria = (nombre) => {
+  const n = normTexto(nombre);
+  if (/COORDINAD|ENCARGAD|JEFE|RESPONSABLE|OFICINA|DEPARTAMENTO/.test(n)) return false;
+  return /\bTUTOR/.test(n);
+};
+
 function clasificarActividad(nombre, grupos = []) {
   if (esBaetam(nombre, grupos)) return "baetam";
   const n = normTexto(nombre);
   if (/MODULO/.test(n)) return "modulo";
+  if (esTutoria(nombre)) return "tutoria";
   if (PALABRAS_COMISION.test(n)) return "comision";
   return "asignatura";
 }
@@ -539,6 +558,13 @@ function encargosDe(db, asig) {
       return { ...e, tipo, ajustado, semestre, programa: buscarPrograma(db, e.actividad),
         requisitos: aplicarAjuste(e.clave, { planeacion: 3, plan: 0, informe: 0 }) };
     }
+    if (tipo === "tutoria") {
+      /* Mismo plan e informes que cualquier comisión, más la ficha de
+         identificación del grupo. Los planes e informes que los tutores
+         ya subieron siguen contando: solo se suma el requisito nuevo. */
+      return { ...e, tipo, ajustado, semestre: null, programa: null,
+        requisitos: aplicarAjuste(e.clave, { planeacion: 0, plan: 1, informe: 3, ficha: 1 }) };
+    }
     if (tipo === "comision") {
       return { ...e, tipo, ajustado, semestre: null, programa: null,
         requisitos: aplicarAjuste(e.clave, { planeacion: 0, plan: 1, informe: 3 }) };
@@ -573,7 +599,7 @@ function avanceDe(db, asig) {
   if (!asig) return { requeridas: 0, entregadas: 0, pct: 0, indeterminado: false };
   let req = 0, ent = 0, indeterminado = false;
   for (const e of encargosDe(db, asig)) {
-    for (const t of ["planeacion", "plan", "informe"]) {
+    for (const t of ["planeacion", "plan", "informe", "ficha"]) {
       const n = e.requisitos[t];
       if (n === null) { indeterminado = true; continue; }
       req += n;
@@ -618,14 +644,15 @@ function emparejarDocente(db, nombreExtraido) {
   return mejorPunt >= 0.6 ? mejor : null;
 }
 
-const NOMBRE_TIPO_ENTREGA = { planeacion: "Planeación", plan: "Plan de trabajo", informe: "Informe", captura: "Captura de seguimiento" };
+const NOMBRE_TIPO_ENTREGA = { planeacion: "Planeación", plan: "Plan de trabajo", informe: "Informe", ficha: "Ficha de identificación", captura: "Captura de seguimiento" };
 const NOMBRE_TIPO_ENCARGO = {
   asignatura: "Frente a grupo",
   modulo: "Módulo profesional",
   comision: "Comisión / cargo",
+  tutoria: "Tutoría",
   baetam: "BAETAM",
 };
-const PLURAL_TIPO_ENTREGA = { planeacion: "Planeaciones", plan: "Planes de trabajo", informe: "Informes" };
+const PLURAL_TIPO_ENTREGA = { planeacion: "Planeaciones", plan: "Planes de trabajo", informe: "Informes", ficha: "Fichas de identificación" };
 // Devuelve singular o plural según la cantidad
 const tipoEntrega = (t, n) => (n === 1 ? NOMBRE_TIPO_ENTREGA[t] : PLURAL_TIPO_ENTREGA[t]) || t;
 // "1 planeación" / "8 planeaciones"
@@ -919,6 +946,7 @@ export default function App() {
     if (esPrimeraCarga) registrarAcceso(yo.id);
     if (esPrimeraCarga && yo.rol === "docente") setPagina("avisos");
     if (esPrimeraCarga && yo.rol === "administrativo") setPagina("asistencia");
+    if (esPrimeraCarga && yo.rol === "coord_tutorias") setPagina("tutorias");
   }, []);
 
   useEffect(() => {
@@ -1043,6 +1071,7 @@ export default function App() {
       { id: "programas", label: "Programas de Estudio", icono: BookOpen },
       { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
       { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
+      { id: "tutorias", label: "Tutorías", icono: Users },
     ]},
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
     { id: "ranking_general", label: "Ranking general", icono: Medal },
@@ -1058,6 +1087,10 @@ export default function App() {
     { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "metas", label: "Metas y ciclos", icono: Target },
+  ] : user.rol === "coord_tutorias" ? [
+    { id: "tutorias", label: "Tutorías", icono: Users },
+    { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
+    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
   ] : user.rol === "administrativo" ? [
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
@@ -1185,6 +1218,7 @@ export default function App() {
               <Ausentes db={db} user={user} />
             </React.Suspense>
           )}
+          {pagina === "tutorias" && esRolTutorias(user.rol) && <PanelTutorias db={db} irA={irA} />}
           {pagina === "calendario" && <PantallaCalendarios db={db} user={user} mutar={mutar} puedeEditar={esRolAcademico(user.rol)} />}
           {pagina === "programas" && (esRolAcademico(user.rol)
             ? <ProgramasEstudio db={db} user={user} mutar={mutar} />
@@ -2051,6 +2085,200 @@ function MisCursos({ db, user, mutar, irA }) {
 /* ================================================================
    RANKING DE ENTREGAS (jefe académico y administrador)
    ================================================================ */
+
+/* ================================================================
+   PANEL DE TUTORÍAS (coordinador de tutorías y administración)
+   Reúne lo que entregan los tutores: plan de trabajo, ficha de
+   identificación e informes. Solo consulta: el coordinador revisa y
+   descarga, no modifica el trabajo de nadie.
+   ================================================================ */
+
+const TIPOS_TUTORIA = [
+  ["plan", "Plan de trabajo"],
+  ["ficha", "Ficha de identificación"],
+  ["informe", "Informes"],
+];
+
+function PanelTutorias({ db, irA }) {
+  const [ciclo, setCiclo] = useState(db.config.cicloActual);
+  const [periodo, setPeriodo] = useState(periodoDeFecha());
+  const [q, setQ] = useState("");
+  const [soloPendientes, setSoloPendientes] = useState(false);
+
+  /* Tutores del semestre: quienes tienen una actividad de tutoría en su
+     asignación. De cada uno se toma únicamente ese encargo. */
+  const tutores = useMemo(() => {
+    return db.asignaciones
+      .filter(a => a.ciclo === ciclo && (a.periodo || "ago-ene") === periodo)
+      .map(a => {
+        const encargo = encargosDe(db, a).find(e => e.tipo === "tutoria");
+        if (!encargo) return null;
+        const req = encargo.requisitos;
+        const detalle = TIPOS_TUTORIA.map(([t, etiqueta]) => {
+          const n = t === "informe" ? (req.informe ?? 0) : (req[t] ?? 0);
+          const subidas = a.docenteId
+            ? entregasDe(db, a.docenteId, ciclo, encargo.clave, t, periodo) : [];
+          return { tipo: t, etiqueta, requeridas: n, entregas: subidas, completo: n > 0 && subidas.length >= n };
+        }).filter(d => d.requeridas > 0);
+
+        const req_total = detalle.reduce((s, d) => s + d.requeridas, 0);
+        const ent_total = detalle.reduce((s, d) => s + Math.min(d.entregas.length, d.requeridas), 0);
+        return {
+          asig: a, encargo, detalle,
+          grupos: [...new Set(encargo.grupos)],
+          requeridas: req_total, entregadas: ent_total,
+          pct: req_total ? Math.round(100 * ent_total / req_total) : 0,
+        };
+      })
+      .filter(Boolean)
+      .filter(t => !q || normTexto(t.asig.nombreExtraido).includes(normTexto(q)))
+      .filter(t => !soloPendientes || t.pct < 100)
+      .sort((a, b) => a.pct - b.pct || a.asig.nombreExtraido.localeCompare(b.asig.nombreExtraido));
+  }, [db, ciclo, periodo, q, soloPendientes]);
+
+  const totalReq = tutores.reduce((s, t) => s + t.requeridas, 0);
+  const totalEnt = tutores.reduce((s, t) => s + t.entregadas, 0);
+  const alCorriente = tutores.filter(t => t.pct >= 100).length;
+  const sinNada = tutores.filter(t => t.entregadas === 0).length;
+
+  // Avance por tipo de documento, para ver dónde está el rezago
+  const porTipo = TIPOS_TUTORIA.map(([t, etiqueta]) => {
+    let req = 0, ent = 0;
+    tutores.forEach(x => {
+      const d = x.detalle.find(y => y.tipo === t);
+      if (!d) return;
+      req += d.requeridas;
+      ent += Math.min(d.entregas.length, d.requeridas);
+    });
+    return { nombre: etiqueta, requeridas: req, entregadas: ent,
+      pendientes: Math.max(req - ent, 0), pct: req ? Math.round(100 * ent / req) : 0 };
+  }).filter(x => x.requeridas > 0);
+
+  const exportar = () => {
+    const filas = [["Tutor", "Grupo(s)", "Documento", "Requeridos", "Entregados", "Archivos"]];
+    tutores.forEach(t => t.detalle.forEach(d => filas.push([
+      t.asig.nombreExtraido, t.grupos.join(" "), d.etiqueta,
+      d.requeridas, d.entregas.length, d.entregas.map(e => e.titulo).join(" | "),
+    ])));
+    descargarCSV(`tutorias_${ciclo}_${periodo}`, filas);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Tutorías</h2>
+          <p className="text-sm text-slate-500">
+            Documentos que entregan los tutores: plan de trabajo, ficha de identificación e informes.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button className={btnSec + " !px-3 !py-1.5"} onClick={exportar} disabled={!tutores.length}>
+            <Download size={13}/>CSV
+          </button>
+          <select className={inputCls + " !mt-0 !w-auto"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
+            {ciclosDisponibles(db).map(c => <option key={c} value={c}>Ciclo {c}</option>)}
+          </select>
+          <select className={inputCls + " !mt-0 !w-auto"} value={periodo} onChange={e => setPeriodo(e.target.value)}>
+            {PERIODOS.map(([v, n]) => <option key={v} value={v}>{n}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {tutores.length === 0 ? (
+        <Card className="p-8 text-center text-sm text-slate-400">
+          No hay tutores con asignación en {nombrePeriodo(periodo)} del ciclo {ciclo}.
+          {irA && <> Revisa que las asignaciones estén cargadas en <button className="underline font-semibold" onClick={() => irA("asignaciones")}>Asignaciones</button>.</>}
+        </Card>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Stat icono={Users} label="Tutores" valor={tutores.length} />
+            <Stat icono={FileCheck} label="Documentos recibidos" valor={`${totalEnt}/${totalReq}`} />
+            <Stat icono={Award} label="Al corriente" valor={alCorriente} />
+            <Stat icono={AlertTriangle} label="Sin entregar nada" valor={sinNada}
+              color={sinNada ? "text-rose-600" : "text-slate-900"} />
+          </div>
+
+          {porTipo.length > 0 && (
+            <Card className="p-4">
+              <h3 className="font-bold text-sm mb-3">Avance por tipo de documento</h3>
+              <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={porTipo} margin={{ top: 4, right: 8, left: -18, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                  <XAxis dataKey="nombre" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                  <Tooltip formatter={(v, n) => [v, n === "entregadas" ? "Recibidos" : "Pendientes"]} />
+                  <Legend formatter={v => v === "entregadas" ? "Recibidos" : "Pendientes"} wrapperStyle={{ fontSize: 12 }} />
+                  <Bar dataKey="entregadas" stackId="a" fill="#059669" />
+                  <Bar dataKey="pendientes" stackId="a" fill="#e2e8f0" radius={[6, 6, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </Card>
+          )}
+
+          <Card className="p-3 flex flex-wrap gap-2 items-center">
+            <div className="relative flex-1 min-w-[180px]">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar tutor…" value={q} onChange={e => setQ(e.target.value)} />
+            </div>
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" checked={soloPendientes} onChange={e => setSoloPendientes(e.target.checked)} />
+              Solo con pendientes
+            </label>
+          </Card>
+
+          {tutores.map(t => (
+            <Card key={t.asig.id} className="p-4">
+              <div className="flex flex-wrap items-center gap-2 mb-2">
+                <div className="flex-1 min-w-[200px]">
+                  <div className="font-bold text-sm">{t.asig.nombreExtraido}</div>
+                  <div className="text-xs text-slate-500">
+                    {t.grupos.length ? `Grupo ${t.grupos.join(", ")}` : "Sin grupo indicado"}
+                    {!t.asig.docenteId && <span className="text-amber-600 font-semibold"> · ⚠ sin cuenta vinculada</span>}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className={`text-sm font-bold ${t.pct >= 100 ? "text-emerald-700" : t.pct > 0 ? "text-[#E8871E]" : "text-rose-600"}`}>
+                    {t.entregadas}/{t.requeridas}
+                  </div>
+                  <div className="w-24 h-1.5 rounded-full bg-slate-200 overflow-hidden mt-1">
+                    <div className={`h-full ${t.pct >= 100 ? "bg-emerald-600" : t.pct >= 50 ? "bg-[#E8871E]" : "bg-rose-500"}`}
+                      style={{ width: Math.min(t.pct, 100) + "%" }} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                {t.detalle.map(d => (
+                  <div key={d.tipo} className="flex flex-wrap items-center gap-2 text-sm border border-slate-100 rounded-xl p-2.5">
+                    <span className="w-44 font-medium text-slate-700 shrink-0">{d.etiqueta}</span>
+                    <span className={`text-xs font-bold shrink-0 ${d.completo ? "text-emerald-700" : "text-slate-500"}`}>
+                      {d.entregas.length} de {d.requeridas}{d.completo && " ✓"}
+                    </span>
+                    <div className="flex flex-wrap gap-1.5 flex-1">
+                      {d.entregas.map(e => (
+                        <span key={e.id} className="inline-flex items-center gap-1 text-xs bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
+                          <FileText size={11} className="text-slate-400"/>
+                          <span className="truncate max-w-[160px]">{e.titulo}</span>
+                          <span className="text-slate-400">{fmtFecha((e.fecha || "").slice(0, 10))}</span>
+                          <VerEntregaBtn entrega={e} />
+                        </span>
+                      ))}
+                      {d.entregas.length === 0 && (
+                        <span className="text-xs text-amber-700">Sin entregar</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
 
 function RankingEntregas({ db }) {
   const [ciclo, setCiclo] = useState(db.config.cicloActual);
@@ -2936,6 +3164,8 @@ function JefesDepartamento({ db, mutar }) {
       "Avisos, Programas de Estudio y Asignaciones (planeaciones, planes e informes)."],
     ["administrativo", "Control escolar (asistencia)",
       "Registro de asistencia con códigos QR, padrón de alumnos, historial y avisos."],
+    ["coord_tutorias", "Coordinación de Tutorías",
+      "Revisa planes de trabajo, fichas de identificación e informes de los tutores; publica avisos."],
   ];
 
   const actualDe = (rol) => db.users.find(u => u.rol === rol && u.activo);
@@ -3875,7 +4105,7 @@ function DashboardAcademico({ db, irA, compacto = false }) {
 
   /* Reparto por tipo de entrega: muestra dónde está el rezago
      (planeaciones, planes de trabajo o informes). */
-  const porTipo = ["planeacion", "plan", "informe"].map(t => {
+  const porTipo = ["planeacion", "plan", "informe", "ficha"].map(t => {
     let req = 0, ent = 0;
     filas.forEach(f => f.encargos.forEach(e => {
       const n = e.requisitos[t];
@@ -3922,7 +4152,8 @@ function DashboardAcademico({ db, irA, compacto = false }) {
   const exportarDetalle = () => {
     const fs = [["Docente", "Ciclo", "Semestre", "Actividad", "Tipo", "Grupos", "Horas", "Tipo de entrega", "Requeridas", "Recibidas", "Archivos recibidos"]];
     filas.forEach(f => f.encargos.forEach(e => {
-      [["planeacion", e.requisitos.planeacion], ["plan", e.requisitos.plan], ["informe", e.requisitos.informe]]
+      [["planeacion", e.requisitos.planeacion], ["plan", e.requisitos.plan],
+       ["informe", e.requisitos.informe], ["ficha", e.requisitos.ficha]]
         .filter(([, n]) => n === null || n > 0)
         .forEach(([t, n]) => {
           const ent = f.asig.docenteId ? entregasDe(db, f.asig.docenteId, cicloSel, e.clave, t, periodoSel) : [];
@@ -4441,6 +4672,7 @@ function DetalleAsignacion({ db, asig, docentes, mutar, onClose, esAdmin = false
             ["planeacion", e.requisitos.planeacion],
             ["plan", e.requisitos.plan],
             ["informe", e.requisitos.informe],
+            ["ficha", e.requisitos.ficha],
           ].filter(([, n]) => n === null || n > 0);
           return (
             <Card key={e.clave} className="p-4">
@@ -5134,6 +5366,7 @@ function MiAsignacion({ db, user, mutar }) {
           ["planeacion", e.requisitos.planeacion],
           ["plan", e.requisitos.plan],
           ["informe", e.requisitos.informe],
+          ["ficha", e.requisitos.ficha],
         ].filter(([, n]) => n === null || n > 0);
         return (
           <Card key={e.clave} className="p-4">
