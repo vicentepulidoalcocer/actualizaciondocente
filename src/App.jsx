@@ -6022,13 +6022,19 @@ function Validaciones({ db, user, mutar }) {
       c.historial.push({ fecha: ahora(), accion: "Validada por la administración", por: user.nombre });
       notificar(d, c.docenteId, `✅ Tu constancia “${c.datos.curso}” fue validada. Se sumaron ${c.datos.horas || 0} horas a tu historial.`);
       registrarActividad(d, `Se validó la constancia “${c.datos.curso}” de ${nombreDe(c.docenteId)} (${c.datos.horas || 0} h).`);
-      otorgarLogros(d, c.docenteId, c.ciclo);
       avisarAlCelular = { id: c.docenteId, ok: true, curso: c.datos.curso };
       const h = horasValidadas(d, c.docenteId, d.config.cicloActual);
       const m = metaDe(d, c.docenteId);
       if (h >= m) registrarActividad(d, `🎉 ${nombreDe(c.docenteId)} alcanzó ${h} horas y cumplió su meta del ciclo.`);
       else if (h >= 20 && h - (Number(c.datos.horas)||0) < 20) registrarActividad(d, `${nombreDe(c.docenteId)} alcanzó ${h} horas de capacitación.`);
     });
+
+    /* Las insignias se otorgan en un guardado aparte: si algo fallara
+       ahí, la validación y las horas ya quedaron registradas y no se
+       interrumpe el trabajo de quien valida. */
+    try {
+      await mutar(d => { otorgarLogros(d, cert.docenteId, cert.ciclo); });
+    } catch { /* se otorgarán en la siguiente validación */ }
     if (avisarAlCelular) {
       enviarPush({
         destinatarios: [avisarAlCelular.id],
