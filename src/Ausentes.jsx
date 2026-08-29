@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Users, AlertTriangle, CheckCircle2, Clock, Loader2, RefreshCw, Download, CalendarDays,
+  ClipboardCheck,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
@@ -26,6 +27,7 @@ const fmtFechaLarga = (iso) => {
   return new Date(a, m - 1, d).toLocaleDateString("es-MX",
     { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 };
+const TIPOS_JUSTIFICACION = { medica: "Médica", personal: "Personal", otra: "Otra" };
 
 /* Los grupos vienen escritos de varias formas en la asignación:
    «1° "A"», «3° B», «BAETAM 1° A», «5°C». Se extrae el semestre y la
@@ -56,6 +58,7 @@ export default function Ausentes({ db, user }) {
   const [fecha, setFecha] = useState(hoyISO());
   const [alumnos, setAlumnos] = useState(null);
   const [registros, setRegistros] = useState([]);
+  const [justificaciones, setJustificaciones] = useState([]);
   const [cargando, setCargando] = useState(false);
   const [err, setErr] = useState("");
 
@@ -115,14 +118,17 @@ export default function Ausentes({ db, user }) {
     if (!misGrupos.length) return;
     setCargando(true); setErr("");
     try {
-      const [al, as] = await Promise.all([
+      const [al, as, ju] = await Promise.all([
         supabase.from("alumnos_basico").select("*"),
         supabase.from("asistencias_basico").select("*").eq("fecha", fecha),
+        supabase.from("justificaciones_basico").select("*").eq("fecha", fecha),
       ]);
       if (al.error) throw new Error(al.error.message);
       if (as.error) throw new Error(as.error.message);
+      if (ju.error) throw new Error(ju.error.message);
       setAlumnos(al.data || []);
       setRegistros(as.data || []);
+      setJustificaciones(ju.data || []);
     } catch (e) { setErr(e.message); }
     setCargando(false);
   }, [fecha, misGrupos.length]);
@@ -132,20 +138,26 @@ export default function Ausentes({ db, user }) {
   const porGrupo = useMemo(() => {
     if (!alumnos) return [];
     const presentes = new Set(registros.map(r => r.alumno_id));
+    const justificados = new Set(justificaciones.map(j => j.alumno_id));
+    const tipoDe = new Map(justificaciones.map(j => [j.alumno_id, j.tipo]));
     return misGrupos.map(g => {
       const delGrupo = alumnos.filter(a => a.activo !== false
         && String(a.semestre || "") === g.sem && (a.grupo || "") === g.letra);
-      const ausentes = delGrupo.filter(a => !presentes.has(a.id))
+      const faltantes = delGrupo.filter(a => !presentes.has(a.id))
         .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"));
+      const ausentes = faltantes.filter(a => !justificados.has(a.id));
+      const justificadosGrupo = faltantes.filter(a => justificados.has(a.id))
+        .map(a => ({ ...a, tipo: tipoDe.get(a.id) }));
       const conRetardo = registros.filter(r => String(r.semestre || "") === g.sem
         && (r.grupo || "") === g.letra && r.estado === "Retardo")
         .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"));
-      return { ...g, total: delGrupo.length, ausentes, conRetardo,
-        presentes: delGrupo.length - ausentes.length };
+      return { ...g, total: delGrupo.length, ausentes, justificados: justificadosGrupo, conRetardo,
+        presentes: delGrupo.length - faltantes.length };
     });
-  }, [alumnos, registros, misGrupos]);
+  }, [alumnos, registros, justificaciones, misGrupos]);
 
   const totalAusentes = porGrupo.reduce((n, g) => n + g.ausentes.length, 0);
+  const totalJustificados = porGrupo.reduce((n, g) => n + g.justificados.length, 0);
   const totalAlumnos = porGrupo.reduce((n, g) => n + g.total, 0);
   const sinPadron = alumnos && porGrupo.every(g => g.total === 0);
 
@@ -153,6 +165,8 @@ export default function Ausentes({ db, user }) {
     const filas = [["Fecha", "Semestre", "Grupo", "ID", "Alumno", "Situación"]];
     porGrupo.forEach(g => {
       g.ausentes.forEach(a => filas.push([fecha, g.sem, g.letra, a.id, a.nombre, "Ausente"]));
+      g.justificados.forEach(a => filas.push([fecha, g.sem, g.letra, a.id, a.nombre,
+        `Justificado (${TIPOS_JUSTIFICACION[a.tipo] || a.tipo || "sin tipo"})`]));
       g.conRetardo.forEach(r => filas.push([fecha, g.sem, g.letra, r.alumno_id, r.nombre,
         `Retardo (${(r.hora || "").slice(0, 5)})`]));
     });
@@ -218,7 +232,7 @@ export default function Ausentes({ db, user }) {
 
       {alumnos && !sinPadron && (
         <>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <Card className="p-4">
               <div className="flex items-center gap-2 text-slate-400 mb-1"><Users size={15} /><span className="text-[11px] uppercase font-semibold">Mis alumnos</span></div>
               <div className="text-2xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>{totalAlumnos}</div>
@@ -226,10 +240,14 @@ export default function Ausentes({ db, user }) {
             </Card>
             <Card className="p-4">
               <div className="flex items-center gap-2 text-slate-400 mb-1"><CheckCircle2 size={15} /><span className="text-[11px] uppercase font-semibold">Presentes</span></div>
-              <div className="text-2xl font-bold text-emerald-700" style={{ fontFamily: "'Archivo', sans-serif" }}>{totalAlumnos - totalAusentes}</div>
+              <div className="text-2xl font-bold text-emerald-700" style={{ fontFamily: "'Archivo', sans-serif" }}>{totalAlumnos - totalAusentes - totalJustificados}</div>
               <div className="text-[11px] text-slate-400 mt-0.5">
-                {totalAlumnos ? Math.round(100 * (totalAlumnos - totalAusentes) / totalAlumnos) : 0}% de asistencia
+                {totalAlumnos ? Math.round(100 * (totalAlumnos - totalAusentes - totalJustificados) / totalAlumnos) : 0}% de asistencia
               </div>
+            </Card>
+            <Card className="p-4">
+              <div className="flex items-center gap-2 text-slate-400 mb-1"><ClipboardCheck size={15} /><span className="text-[11px] uppercase font-semibold">Justificados</span></div>
+              <div className={`text-2xl font-bold ${totalJustificados ? "text-sky-600" : "text-slate-900"}`} style={{ fontFamily: "'Archivo', sans-serif" }}>{totalJustificados}</div>
             </Card>
             <Card className="p-4">
               <div className="flex items-center gap-2 text-slate-400 mb-1"><AlertTriangle size={15} /><span className="text-[11px] uppercase font-semibold">Ausentes</span></div>
@@ -249,23 +267,38 @@ export default function Ausentes({ db, user }) {
                     {g.ausentes.length}
                   </b>
                   <span className="text-slate-400"> de {g.total} ausentes</span>
+                  {g.justificados.length > 0 && <span className="text-sky-600"> · {g.justificados.length} justificado(s)</span>}
                 </span>
               </div>
 
               {g.total === 0 ? (
                 <p className="text-xs text-slate-400 py-3 text-center">Sin alumnos en el padrón para este grupo.</p>
-              ) : g.ausentes.length === 0 ? (
+              ) : g.ausentes.length === 0 && g.justificados.length === 0 ? (
                 <p className="text-sm text-emerald-700 py-3 text-center flex items-center justify-center gap-1.5">
                   <CheckCircle2 size={15} />Asistencia completa
                 </p>
               ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {g.ausentes.map(a => (
-                    <span key={a.id} className="text-xs px-2.5 py-1 rounded-full bg-rose-50 border border-rose-200 text-rose-800">
-                      {a.nombre}
-                    </span>
-                  ))}
-                </div>
+                <>
+                  {g.ausentes.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {g.ausentes.map(a => (
+                        <span key={a.id} className="text-xs px-2.5 py-1 rounded-full bg-rose-50 border border-rose-200 text-rose-800">
+                          {a.nombre}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {g.justificados.length > 0 && (
+                    <div className={`flex flex-wrap gap-1.5 ${g.ausentes.length > 0 ? "mt-2" : ""}`}>
+                      {g.justificados.map(a => (
+                        <span key={a.id} className="text-xs px-2.5 py-1 rounded-full bg-sky-50 border border-sky-200 text-sky-800 inline-flex items-center gap-1">
+                          <ClipboardCheck size={11} />{a.nombre}
+                          <span className="text-sky-600">· {TIPOS_JUSTIFICACION[a.tipo] || "justificado"}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
 
               {g.conRetardo.length > 0 && (
