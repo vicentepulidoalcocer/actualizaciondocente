@@ -568,9 +568,9 @@ function PanelDia({ alumnos, registros, fecha, justificaciones, user, recargar }
           {ausentes.map(a => {
             const just = justPorAlumno.get(a.id);
             return (
-              <div key={a.id} className={`flex items-center gap-3 py-2 border-b border-slate-100 last:border-0 ${a.activo === false ? "opacity-60" : ""}`}>
+              <div key={a.id} className={`flex flex-col sm:flex-row sm:items-center gap-2 py-2 border-b border-slate-100 last:border-0 ${a.activo === false ? "opacity-60" : ""}`}>
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium truncate">
+                  <div className="text-sm font-medium break-words">
                     {a.nombre}
                     {a.activo === false && <span className="ml-1.5 text-[10px] font-bold text-slate-400">BAJA</span>}
                   </div>
@@ -585,17 +585,17 @@ function PanelDia({ alumnos, registros, fecha, justificaciones, user, recargar }
                   )}
                 </div>
                 {just ? (
-                  <button className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 shrink-0"
+                  <button className="inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 shrink-0 w-full sm:w-auto"
                     onClick={() => setJustificando(a)} title="Editar o quitar la justificación">
                     <Pencil size={13} />Editar
                   </button>
                 ) : (
                   <div className="flex gap-1.5 shrink-0">
-                    <button className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-sky-300 text-sky-700 hover:bg-sky-50"
+                    <button className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-sky-300 text-sky-700 hover:bg-sky-50"
                       onClick={() => setJustificando(a)} title="Marcar la falta como justificada">
                       <ClipboardCheck size={13} />Justificar
                     </button>
-                    <button className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                    <button className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
                       onClick={() => avisarTutor(a)} title={a.telefono ? "Avisar al tutor por WhatsApp" : "Sin teléfono registrado"}>
                       <MessageCircle size={13} />WhatsApp
                     </button>
