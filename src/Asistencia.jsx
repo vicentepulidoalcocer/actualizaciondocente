@@ -31,6 +31,8 @@ const fmtFechaLarga = (iso) => {
     { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 };
 const soloDigitos = (t) => (t || "").toString().replace(/\D/g, "");
+// Quita acentos y pasa a minúsculas, para que "Nuñez" encuentre "Núñez"
+const normaliza = (t) => (t || "").toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
 const btnPrim = "inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#1a2340] text-white text-sm font-semibold hover:bg-[#26305a] transition disabled:opacity-50";
 const btnSec = "inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-slate-300 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition disabled:opacity-50";
@@ -207,7 +209,7 @@ export default function Asistencia({ user }) {
       {cargando && <Card className="p-8 text-center text-sm text-slate-400"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando…</Card>}
 
       {!cargando && tab === "escaneo" && (
-        <PanelEscaneo registrar={registrar} registrosHoy={registrosHoy} horaLimite={horaLimite} />
+        <PanelEscaneo registrar={registrar} registrosHoy={registrosHoy} horaLimite={horaLimite} alumnos={alumnos} />
       )}
       {!cargando && tab === "dashboard" && (
         <PanelDia alumnos={alumnos} registros={registrosHoy} fecha={fecha} />
@@ -221,14 +223,14 @@ export default function Asistencia({ user }) {
 /* ================================================================
    ESCANEO CON CÁMARA
    ================================================================ */
-function PanelEscaneo({ registrar, registrosHoy, horaLimite }) {
+function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const corriendo = useRef(false);
   const ultimoRef = useRef({ texto: "", t: 0 });
   const [activa, setActiva] = useState(false);
   const [estado, setEstado] = useState({ msg: "Cámara apagada", tipo: "" });
-  const [manual, setManual] = useState("");
+  const [busqueda, setBusqueda] = useState("");
 
   const procesarTexto = useCallback(async (texto) => {
     // Evita releer el mismo código varias veces por segundo
@@ -290,10 +292,20 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite }) {
 
   useEffect(() => () => apagar(), [apagar]);
 
-  const registrarManual = async () => {
-    if (!manual.trim()) return;
-    await procesarTexto(manual.trim());
-    setManual("");
+  // Coincidencias por nombre mientras se escribe (apellido paterno,
+  // apellido materno o nombre, sin importar acentos ni mayúsculas)
+  const sugerencias = React.useMemo(() => {
+    const q = normaliza(busqueda);
+    if (!q) return [];
+    return (alumnos || [])
+      .filter(a => a.activo !== false)
+      .filter(a => normaliza(a.nombre).includes(q))
+      .slice(0, 8);
+  }, [alumnos, busqueda]);
+
+  const registrarDesdeNombre = async (alumno) => {
+    await procesarTexto(alumno.id);
+    setBusqueda("");
   };
 
   const colorEstado = estado.tipo === "ok" ? "bg-emerald-50 border-emerald-200 text-emerald-800"
@@ -332,13 +344,40 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite }) {
               : <button className={btnSec + " flex-1"} onClick={apagar}><CameraOff size={15} />Apagar cámara</button>}
           </div>
 
-          <div className="pt-2 border-t border-slate-100">
-            <p className="text-xs text-slate-500 mb-1">¿La credencial no lee? Escribe el ID a mano:</p>
-            <div className="flex gap-2">
-              <input className={inputCls + " !mt-0 flex-1"} placeholder="Número de ID" value={manual}
-                onChange={e => setManual(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && registrarManual()} />
-              <button className={btnSec} onClick={registrarManual}>Registrar</button>
+          <div className="pt-2 border-t border-slate-100 relative">
+            <p className="text-xs text-slate-500 mb-1">¿La credencial no lee? Busca al alumno por nombre:</p>
+            <div className="relative">
+              <input className={inputCls + " !mt-0 w-full"}
+                placeholder="Apellido paterno, apellido materno o nombre…"
+                value={busqueda}
+                onChange={e => setBusqueda(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && sugerencias.length === 1) registrarDesdeNombre(sugerencias[0]);
+                  if (e.key === "Escape") setBusqueda("");
+                }} />
+              {busqueda.trim() && (
+                <div className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-56 overflow-y-auto">
+                  {sugerencias.length === 0 && (
+                    <p className="text-xs text-slate-400 px-3 py-2">Sin coincidencias en el padrón.</p>
+                  )}
+                  {sugerencias.map(a => {
+                    const yaEsta = registrosHoy.some(r => r.alumno_id === a.id);
+                    return (
+                      <button key={a.id} type="button"
+                        className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center justify-between gap-2 border-b border-slate-50 last:border-0"
+                        onClick={() => registrarDesdeNombre(a)}>
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium truncate">{a.nombre}</span>
+                          <span className="block text-xs text-slate-400 truncate">
+                            {a.semestre ? `${a.semestre}° ` : ""}{a.grupo ? `Grupo ${a.grupo}` : ""} · ID {a.id}
+                          </span>
+                        </span>
+                        {yaEsta && <span className="text-[10px] font-bold text-emerald-600 shrink-0">YA REGISTRADO</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         </Card>
