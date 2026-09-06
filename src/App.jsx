@@ -6,7 +6,7 @@ import {
   Download, Filter, Plus, Pencil, Trash2, Eye, Medal, Star, Loader2,
   FolderOpen, User, Activity, ShieldCheck, Menu, X, Megaphone,
   Paperclip, Link2, Archive, Send, Sparkles, CalendarDays, ScanLine, RefreshCw,
-  Image as ImageIcon
+  Image as ImageIcon, HardDrive
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie,
@@ -6913,6 +6913,99 @@ function ActividadReciente({ db }) {
    - modo "metas": lo académico (metas, semáforo, ciclos), que vive en
      el área de Formación Docente;
    - modo completo: la administración del sistema (cuentas, reglas). */
+/* ================================================================
+   ESPACIO DE ALMACENAMIENTO (Supabase Storage, datos reales)
+   ================================================================ */
+function EspacioAlmacenamiento() {
+  const [datos, setDatos] = useState(null); // { bytes, archivos }
+  const [cargando, setCargando] = useState(true);
+  const [err, setErr] = useState("");
+  const [limiteMB, setLimiteMB] = useState(() => Number(localStorage.getItem("espacio_limite_mb")) || 1024);
+  const [editando, setEditando] = useState(false);
+  const [nuevoLimite, setNuevoLimite] = useState(limiteMB);
+
+  const consultar = useCallback(async () => {
+    setCargando(true); setErr("");
+    const { data, error } = await supabase.rpc("uso_almacenamiento");
+    if (error) { setErr(error.message); setCargando(false); return; }
+    const total = (data || []).reduce((acc, fila) => ({
+      bytes: acc.bytes + Number(fila.bytes || 0),
+      archivos: acc.archivos + Number(fila.archivos || 0),
+    }), { bytes: 0, archivos: 0 });
+    setDatos(total);
+    setCargando(false);
+  }, []);
+
+  useEffect(() => { consultar(); }, [consultar]);
+
+  const guardarLimite = () => {
+    const v = Number(nuevoLimite) || 1024;
+    localStorage.setItem("espacio_limite_mb", String(v));
+    setLimiteMB(v);
+    setEditando(false);
+  };
+
+  const fmt = (mb) => mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+  const usadoMB = datos ? datos.bytes / (1024 * 1024) : 0;
+  const pct = limiteMB ? Math.min(100, Math.round((usadoMB / limiteMB) * 100)) : 0;
+  const promedioKB = datos && datos.archivos ? Math.round((datos.bytes / datos.archivos) / 1024) : 0;
+
+  return (
+    <Card className="p-5 space-y-2">
+      <div className="flex items-center justify-between">
+        <h3 className="font-bold text-sm flex items-center gap-2">
+          <HardDrive size={15} className="text-slate-400" />Espacio de almacenamiento
+        </h3>
+        <button className="text-slate-400 hover:text-slate-600" onClick={consultar} title="Actualizar">
+          <RefreshCw size={13} className={cargando ? "animate-spin" : ""} />
+        </button>
+      </div>
+
+      {err && (
+        <p className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-2">
+          No se pudo consultar: {err}
+        </p>
+      )}
+
+      {cargando && !datos && !err && <p className="text-sm text-slate-400 py-1">Consultando Supabase…</p>}
+
+      {datos && (
+        <>
+          <div className="text-2xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>{fmt(usadoMB)}</div>
+          <div className="h-2.5 rounded-full bg-slate-200 overflow-hidden">
+            <div className="h-full rounded-full transition-all duration-700"
+              style={{ width: `${pct}%`, background: pct >= 90 ? "#e11d48" : pct >= 70 ? "#E8871E" : "#059669" }} />
+          </div>
+          <p className="text-xs text-slate-500">
+            {pct}% de {fmt(limiteMB)} · {datos.archivos} archivo(s)
+            {datos.archivos > 0 && ` · promedio ${promedioKB} KB`}
+          </p>
+        </>
+      )}
+
+      {editando ? (
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <input type="number" className={inputCls + " !mt-0 !w-28"} value={nuevoLimite}
+            onChange={e => setNuevoLimite(e.target.value)} />
+          <span className="text-xs text-slate-500">MB de tu plan Supabase</span>
+          <button className="text-xs font-semibold text-[#1a2340]" onClick={guardarLimite}>Guardar</button>
+          <button className="text-xs text-slate-400" onClick={() => { setEditando(false); setNuevoLimite(limiteMB); }}>Cancelar</button>
+        </div>
+      ) : (
+        <button className="text-[11px] text-slate-400 hover:underline" onClick={() => setEditando(true)}>
+          Ajustar límite del plan ({fmt(limiteMB)} ahora)
+        </button>
+      )}
+
+      <p className="text-[11px] text-slate-400">
+        Es la suma real de los archivos guardados en el bucket <code>archivos</code> de Supabase
+        Storage. El límite de tu plan no se puede leer automáticamente (revísalo en Supabase →
+        Settings → Billing) y se guarda solo en este navegador.
+      </p>
+    </Card>
+  );
+}
+
 function Administracion({ db, user, mutar, esAdmin = true, modo = "todo" }) {
   const cfg = db.config;
   const [meta, setMeta] = useState(cfg.metaAnual);
@@ -7022,6 +7115,8 @@ function Administracion({ db, user, mutar, esAdmin = true, modo = "todo" }) {
           </label>
         </Card>
       )}
+
+      {verSistema && esAdmin && <EspacioAlmacenamiento />}
 
       {verSistema && esAdmin && <JefesDepartamento db={db} mutar={mutar} />}
 
