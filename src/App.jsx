@@ -1565,8 +1565,12 @@ function DashboardDocente({ db, user, irA }) {
   const meta = metaDe(db, user.id);
   const pct = meta ? Math.round(100 * h / meta) : 0;
   const sem = semaforoDe(db, pct);
-  const rank = conLugares(rankingDe(db, ciclo), r => r.horas);
-  const pos = rank.find(r => r.id === user.id)?.lugar || 0;
+  /* El lugar que se muestra aquí debe ser el del RANKING GENERAL (el
+     mismo que ve al entrar a "Ranking"), no el de capacitación: si no,
+     el docente ve un número en el tablero y otro distinto adentro. */
+  const rank = conLugares(rankingGeneral(db, ciclo, periodoDeFecha()), r => r.puntos);
+  const miFila = rank.find(r => r.id === user.id);
+  const pos = miFila?.lugar || 0;
   const misCerts = db.certs.filter(c => c.docenteId === user.id);
   const validados = misCerts.filter(c => c.estado === "validada");
   const pendCount = misCerts.filter(c => ["pendiente_validacion", "revision_docente"].includes(c.estado)).length;
@@ -1614,8 +1618,8 @@ function DashboardDocente({ db, user, irA }) {
               </div>
             )}
             <div>
-              <div className="text-2xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>{pos > 0 && h > 0 ? `#${pos}` : "—"}</div>
-              <div className="text-[11px] text-slate-300">Ranking</div>
+              <div className="text-2xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>{pos > 0 && (miFila?.puntos || 0) > 0 ? `#${pos}` : "—"}</div>
+              <div className="text-[11px] text-slate-300">Ranking general</div>
             </div>
           </div>
 
