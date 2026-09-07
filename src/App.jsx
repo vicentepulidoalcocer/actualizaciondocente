@@ -2862,10 +2862,17 @@ function Respaldo({ db, user }) {
         ruta: `Docentes/${d}/Formacion_complementaria/${nombreSeguro(c.nombre || c.datos?.nombre || "documento", 50)}`,
       });
     });
-    db.avisos.filter(a => a.archivoGuardado).forEach(a => {
-      items.push({
-        clave: "aviso_" + a.id,
-        ruta: `Avisos/${nombreSeguro(a.titulo, 50)}`,
+    db.avisos.forEach(a => {
+      const adjs = adjuntosDe(a);
+      adjs.forEach((adj, i) => {
+        items.push({
+          clave: adj.clave,
+          /* Con más de un archivo se numeran para que no se pisen entre
+             sí dentro de la carpeta del aviso. */
+          ruta: adjs.length > 1
+            ? `Avisos/${nombreSeguro(a.titulo, 50)}/${String(i + 1).padStart(2, "0")}__${nombreSeguro(adj.nombre || "archivo", 40)}`
+            : `Avisos/${nombreSeguro(a.titulo, 50)}`,
+        });
       });
     });
     db.programas.filter(p => p.archivoGuardado).forEach(p => {
@@ -5455,9 +5462,23 @@ function MiAsignacion({ db, user, mutar }) {
    AVISOS Y CIRCULARES
    ================================================================ */
 
-const esImagenAdjunta = (aviso) =>
-  (aviso.archivoTipo || "").startsWith("image/") ||
-  /\.(jpe?g|png|webp|gif)$/i.test(aviso.archivoNombre || "");
+/* Los avisos admiten varios archivos adjuntos. Cada uno guarda su
+   propia clave de almacenamiento, así que los avisos publicados antes
+   de este cambio —que tenían un solo archivo bajo la clave
+   "aviso_<id>"— se siguen leyendo igual, sin migrar nada. */
+const adjuntosDe = (aviso) => {
+  if (Array.isArray(aviso.adjuntos) && aviso.adjuntos.length) return aviso.adjuntos;
+  if (aviso.archivoGuardado) return [{
+    clave: "aviso_" + aviso.id,
+    nombre: aviso.archivoNombre || "Archivo adjunto",
+    tipo: aviso.archivoTipo || "",
+  }];
+  return [];
+};
+
+const esImagenAdjunta = (adj) =>
+  (adj.tipo || "").startsWith("image/") ||
+  /\.(jpe?g|png|webp|gif)$/i.test(adj.nombre || "");
 
 function ChipPrioridad({ prioridad }) {
   const c = COLOR_PRIORIDAD[prioridad] || COLOR_PRIORIDAD.Normal;
@@ -5511,15 +5532,24 @@ function Avisos({ db, user, mutar }) {
     id: uid(), titulo: "", descripcion: "", tipo: "Circular", prioridad: "Normal",
     fechaLimite: "", enlace: "", archivoNombre: null, archivoGuardado: false,
     estado: "draft", destino: { tipo: "todos" }, creadoEn: ahora(), creadoPor: user.nombre,
-    _archivoNuevo: null,
+    adjuntos: [], _nuevos: [], _borrar: [],
   });
 
-  const subirAdjunto = async (aviso) => {
-    if (!aviso._archivoNuevo) return { nombre: aviso.archivoNombre, guardado: aviso.archivoGuardado, tipo: aviso.archivoTipo };
-    const f = aviso._archivoNuevo;
-    const b64 = await leerComoBase64(f);
-    const r = await guardarArchivo("aviso_" + aviso.id, b64, f.type, f.name);
-    return { nombre: f.name, guardado: r.guardado, tipo: f.type };
+  /* Sube los archivos recién elegidos. Cada uno recibe su propia clave;
+     los que ya estaban guardados no se vuelven a subir. */
+  const subirAdjuntos = async (aviso) => {
+    const subidos = [];
+    for (const f of aviso._nuevos || []) {
+      const b64 = await leerComoBase64(f);
+      if (b64.length > MAX_FILE_B64) {
+        throw new Error(`“${f.name}” supera el límite de ~7.5 MB. Comprímelo e inténtalo de nuevo.`);
+      }
+      const clave = `aviso_${aviso.id}_${uid()}`;
+      const r = await guardarArchivo(clave, b64, f.type, f.name);
+      if (!r.guardado) throw new Error(`No se pudo guardar “${f.name}”. ${r.error || ""}`.trim());
+      subidos.push({ clave, nombre: f.name, tipo: f.type || "" });
+    }
+    return subidos;
   };
 
   const guardar = async (publicar) => {
@@ -5529,12 +5559,20 @@ function Avisos({ db, user, mutar }) {
     }
     setGuardando(true); setErr("");
     try {
-      const adj = await subirAdjunto(editando);
+      const subidos = await subirAdjuntos(editando);
+      const adjuntosFinal = [...(editando.adjuntos || []), ...subidos];
+      const claveVieja = "aviso_" + editando.id;
+      const conservaVieja = adjuntosFinal.find(a => a.clave === claveVieja);
       await mutar(d => {
-        const { _archivoNuevo, ...limpio } = editando;
+        const { _nuevos, _borrar, ...limpio } = editando;
         const base = {
-          ...limpio, archivoNombre: adj.nombre, archivoGuardado: adj.guardado,
-          archivoTipo: adj.tipo || limpio.archivoTipo || "",
+          ...limpio,
+          adjuntos: adjuntosFinal,
+          /* Se mantienen los campos antiguos en coherencia con la lista:
+             si el archivo original se quitó, dejan de apuntar a él. */
+          archivoGuardado: !!conservaVieja,
+          archivoNombre: conservaVieja ? conservaVieja.nombre : null,
+          archivoTipo: conservaVieja ? conservaVieja.tipo : "",
           estado: publicar ? "published" : "draft",
           actualizadoEn: ahora(),
         };
@@ -5549,6 +5587,11 @@ function Avisos({ db, user, mutar }) {
           paraPush = destinatariosDe(d, base).map(doc => doc.id);
         }
       });
+
+      /* Los archivos que se quitaron se borran DESPUÉS de guardar: si
+         algo fallara antes, el aviso no se quedaría apuntando a un
+         archivo inexistente. */
+      for (const clave of editando._borrar || []) await eliminarArchivo(clave);
 
       /* Notificación al celular. Va después de guardar y sin bloquear:
          si el envío falla, el aviso igual quedó publicado. */
@@ -5618,7 +5661,9 @@ function Avisos({ db, user, mutar }) {
                 <div className="text-xs text-slate-500 mt-0.5">
                   {a.estado === "draft" ? "Sin publicar" : `Publicado ${fmtFecha((a.fechaPublicacion || "").slice(0,10))}`}
                   {a.fechaLimite && ` · Límite ${fmtFecha(a.fechaLimite)}`}
-                  {a.archivoNombre && ` · 📎 ${a.archivoNombre}`}
+                  {adjuntosDe(a).length > 0 && ` · 📎 ${adjuntosDe(a).length === 1
+                    ? adjuntosDe(a)[0].nombre
+                    : `${adjuntosDe(a).length} archivos`}`}
                 </div>
               </div>
               {a.estado !== "draft" && (
@@ -5638,7 +5683,11 @@ function Avisos({ db, user, mutar }) {
                 {a.estado !== "draft" &&
                   <button className={btnSec + " !px-3 !py-1.5"} onClick={() => setSiguiendo(a)}>Ver seguimiento</button>}
                 <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar"
-                  onClick={() => setEditando({ ...JSON.parse(JSON.stringify(a)), _archivoNuevo: null })}><Pencil size={15}/></button>
+                  onClick={() => setEditando({
+                    ...JSON.parse(JSON.stringify(a)),
+                    adjuntos: adjuntosDe(a),
+                    _nuevos: [], _borrar: [],
+                  })}><Pencil size={15}/></button>
                 {a.estado === "published" &&
                   <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Archivar"
                     onClick={() => cambiarEstado(a, "archived")}><Archive size={15}/></button>}
@@ -5685,15 +5734,50 @@ function Avisos({ db, user, mutar }) {
               <input className={inputCls} placeholder="https://…" value={editando.enlace || ""}
                 onChange={e => setEditando({ ...editando, enlace: e.target.value })} />
             </Campo>
-            <Campo label="Archivo adjunto (opcional): PDF o imagen">
-              <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.gif" className="text-sm"
-                onChange={e => setEditando({ ...editando, _archivoNuevo: e.target.files[0] || null })} />
+            <Campo label="Archivos adjuntos (opcional): PDF o imágenes">
+              <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.gif" className="text-sm"
+                onChange={e => {
+                  const nuevos = [...e.target.files];
+                  if (nuevos.length) setEditando({ ...editando, _nuevos: [...(editando._nuevos || []), ...nuevos] });
+                  e.target.value = ""; // permite volver a elegir el mismo archivo
+                }} />
               <p className="text-[11px] text-slate-400 mt-1">
-                Las imágenes (cartel, invitación, infografía) se muestran directamente dentro del aviso;
-                los PDF se abren al tocarlos.
+                Puedes seleccionar varios a la vez, o agregarlos de uno en uno. Las imágenes
+                (cartel, invitación, infografía) se muestran dentro del aviso; los PDF se abren al tocarlos.
               </p>
-              {editando.archivoNombre && !editando._archivoNuevo &&
-                <p className="text-xs text-slate-500 mt-1">Adjunto actual: {editando.archivoNombre}</p>}
+
+              {(editando.adjuntos || []).length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {(editando.adjuntos || []).map(adj => (
+                    <div key={adj.clave} className="flex items-center gap-2 text-xs bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
+                      <Paperclip size={12} className="text-slate-400 shrink-0" />
+                      <span className="flex-1 truncate">{adj.nombre}</span>
+                      <button type="button" className="text-rose-500 hover:text-rose-700 shrink-0" title="Quitar este archivo"
+                        onClick={() => setEditando({
+                          ...editando,
+                          adjuntos: editando.adjuntos.filter(x => x.clave !== adj.clave),
+                          _borrar: [...(editando._borrar || []), adj.clave],
+                        })}><X size={13}/></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {(editando._nuevos || []).length > 0 && (
+                <div className="mt-2 space-y-1">
+                  {(editando._nuevos || []).map((f, i) => (
+                    <div key={i} className="flex items-center gap-2 text-xs bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5">
+                      <Upload size={12} className="text-emerald-600 shrink-0" />
+                      <span className="flex-1 truncate">{f.name}</span>
+                      <span className="text-[10px] text-emerald-700 font-bold shrink-0">POR SUBIR</span>
+                      <button type="button" className="text-rose-500 hover:text-rose-700 shrink-0" title="Quitar de la lista"
+                        onClick={() => setEditando({ ...editando, _nuevos: editando._nuevos.filter((_, j) => j !== i) })}>
+                        <X size={13}/>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </Campo>
             {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14}/>{err}</p>}
           </div>
@@ -5892,10 +5976,14 @@ function MisAvisos({ db, user, recargar }) {
 
               <TextoAviso texto={a.descripcion} />
 
-              {a.archivoGuardado && esImagenAdjunta(a) && <ImagenAviso aviso={a} />}
+              {adjuntosDe(a).filter(esImagenAdjunta).map(adj => (
+                <ImagenAviso key={adj.clave} adj={adj} />
+              ))}
 
               <div className="flex flex-wrap gap-3 mt-3">
-                {a.archivoGuardado && !esImagenAdjunta(a) && <AdjuntoAviso aviso={a} />}
+                {adjuntosDe(a).filter(adj => !esImagenAdjunta(adj)).map(adj => (
+                  <AdjuntoAviso key={adj.clave} adj={adj} />
+                ))}
                 {a.enlace && (
                   <a href={a.enlace} target="_blank" rel="noreferrer"
                     className="inline-flex items-center gap-1.5 text-sm text-indigo-600 font-semibold hover:underline">
@@ -5945,13 +6033,13 @@ function MisAvisos({ db, user, recargar }) {
   );
 }
 
-function ImagenAviso({ aviso }) {
+function ImagenAviso({ adj }) {
   const [url, setUrl] = useState(null);
   const [error, setError] = useState(false);
   useEffect(() => {
     let vivo = true, creada = null;
     (async () => {
-      const f = await leerArchivo("aviso_" + aviso.id);
+      const f = await leerArchivo(adj.clave);
       if (!f || !vivo) { if (vivo) setError(true); return; }
       const bytes = atob(f.base64);
       const arr = new Uint8Array(bytes.length);
@@ -5960,9 +6048,9 @@ function ImagenAviso({ aviso }) {
       setUrl(creada);
     })();
     return () => { vivo = false; if (creada) URL.revokeObjectURL(creada); };
-  }, [aviso.id]);
+  }, [adj.clave]);
 
-  if (error) return <AdjuntoAviso aviso={aviso} />;
+  if (error) return <AdjuntoAviso adj={adj} />;
   if (!url) return (
     <div className="mt-3 h-40 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 text-sm gap-2">
       <Loader2 size={16} className="animate-spin" /> Cargando imagen…
@@ -5970,19 +6058,19 @@ function ImagenAviso({ aviso }) {
   );
   return (
     <a href={url} target="_blank" rel="noreferrer" className="block mt-3" title="Abrir en tamaño completo">
-      <img src={url} alt={aviso.archivoNombre || "Imagen del aviso"}
+      <img src={url} alt={adj.nombre || "Imagen del aviso"}
         className="max-h-96 w-auto rounded-xl border border-slate-200 hover:opacity-95 transition" />
     </a>
   );
 }
 
-function AdjuntoAviso({ aviso }) {
+function AdjuntoAviso({ adj }) {
   const [abriendo, setAbriendo] = useState(false);
   const abrir = async () => {
     setAbriendo(true);
-    const f = await leerArchivo("aviso_" + aviso.id);
+    const f = await leerArchivo(adj.clave);
     setAbriendo(false);
-    if (!f) return;
+    if (!f) { alert(`No se pudo abrir “${adj.nombre || "el archivo"}”.`); return; }
     const bytes = atob(f.base64);
     const arr = new Uint8Array(bytes.length);
     for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
@@ -5991,7 +6079,7 @@ function AdjuntoAviso({ aviso }) {
   return (
     <button onClick={abrir} className="inline-flex items-center gap-1.5 text-sm text-indigo-600 font-semibold hover:underline">
       {abriendo ? <Loader2 size={15} className="animate-spin"/> : <Paperclip size={15}/>}
-      {aviso.archivoNombre || "Archivo adjunto"}
+      {adj.nombre || "Archivo adjunto"}
     </button>
   );
 }
