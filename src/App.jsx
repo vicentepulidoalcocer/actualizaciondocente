@@ -119,15 +119,22 @@ const LOGROS_DEF = [
   { clave: "h50", nombre: "50 horas acumuladas", icono: "🔥", area: "Capacitación", desc: "50 horas de capacitación validadas" },
   { clave: "h100", nombre: "100 horas acumuladas", icono: "💎", area: "Capacitación", desc: "100 horas de capacitación validadas" },
   { clave: "meta", nombre: "Meta anual alcanzada", icono: "🏁", area: "Capacitación", desc: "Alcanzaste tu meta del ciclo" },
-  { clave: "top3", nombre: "Top 3 en capacitación", icono: "🏆", area: "Capacitación", desc: "Entre los tres primeros lugares en horas" },
   // --- Planeaciones, planes de trabajo e informes ---
   { clave: "primera_entrega", nombre: "Primera entrega", icono: "📄", area: "Planeaciones", desc: "Subiste tu primera planeación, plan o informe" },
   { clave: "avance50", nombre: "Media asignación cubierta", icono: "📈", area: "Planeaciones", desc: "50% de tus entregas del semestre" },
   { clave: "planeaciones_completas", nombre: "Planeaciones completas", icono: "📚", area: "Planeaciones", desc: "Todas las planeaciones que te corresponden" },
   { clave: "comisiones_completas", nombre: "Comisiones al día", icono: "🗂️", area: "Planeaciones", desc: "Planes de trabajo e informes de tus comisiones" },
   { clave: "entrega_total", nombre: "Asignación completa", icono: "✅", area: "Planeaciones", desc: "100% de tus entregas del semestre" },
-  { clave: "puntual", nombre: "Entrega anticipada", icono: "⚡", area: "Planeaciones", desc: "Completaste tus entregas durante el primer mes del semestre" },
 ];
+
+/* Insignias retiradas del sistema. Los registros antiguos siguen en la
+   base de datos (no se borra nada), pero ya no se muestran ni se cuentan:
+   - "top3": Top 3 en capacitación.
+   - "puntual": Entrega anticipada. Los informes se entregan al término de
+     cada parcial, así que no era posible adelantarse. */
+const LOGROS_RETIRADOS = ["top3", "puntual"];
+const logroVigente = (claveConCiclo) =>
+  !LOGROS_RETIRADOS.includes(String(claveConCiclo).split("@")[0]);
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
@@ -261,12 +268,6 @@ function otorgarLogros(db, docenteId, cicloRef) {
   if (h >= 50) dar("h50");
   if (h >= 100) dar("h100");
   if (h >= metaDe(db, docenteId)) dar("meta");
-  /* La insignia se otorga a quien esté en los tres primeros LUGARES.
-     Si varias personas empatan en el tercero, la reciben todas: negarla
-     por el orden en que aparecen en la lista sería arbitrario. */
-  const top3 = conLugares(rankingDe(db, ciclo), r => r.horas)
-    .filter(r => r.lugar <= 3).map(r => r.id);
-  if (top3.includes(docenteId) && h > 0) dar("top3");
 
   /* --- Insignias de planeaciones, planes de trabajo e informes ---
      Se calculan sobre la asignación del semestre en curso. */
@@ -281,11 +282,6 @@ function otorgarLogros(db, docenteId, cicloRef) {
     if (av.entregadas >= Math.ceil(av.requeridas / 2)) dar("avance50");
     if (av.entregadas >= av.requeridas && !av.indeterminado) {
       dar("entrega_total");
-      // Anticipada: completó todo dentro del primer mes del semestre
-      const inicio = new Date((asig.periodo || "ago-ene") === "feb-jul"
-        ? `${ciclo.split("-")[1]}-02-01` : `${ciclo.split("-")[0]}-08-01`);
-      const ultima = entregasSem.map(e => new Date(e.fecha)).sort((a, b) => b - a)[0];
-      if (ultima && (ultima - inicio) / 86400000 <= 31) dar("puntual");
     }
   }
 
@@ -1575,7 +1571,8 @@ function DashboardDocente({ db, user, irA }) {
   const validados = misCerts.filter(c => c.estado === "validada");
   const pendCount = misCerts.filter(c => ["pendiente_validacion", "revision_docente"].includes(c.estado)).length;
   const exp = completitudExpediente(db, user.id);
-  const misLogros = db.logros.filter(l => l.docenteId === user.id && l.clave.endsWith("@" + ciclo));
+  const misLogros = db.logros.filter(l => l.docenteId === user.id
+    && l.clave.endsWith("@" + ciclo) && logroVigente(l.clave));
   const pendAvisos = avisosPendientes(db, user);
   const pendEntregas = pendientesEntrega(db, user.id);
   const asig = asignacionDe(db, user.id);
@@ -2573,7 +2570,7 @@ function Ranking({ db, user }) {
 
 function Logros({ db, user }) {
   const [ciclo, setCiclo] = useState(db.config.cicloActual);
-  const mios = db.logros.filter(l => l.docenteId === user.id);
+  const mios = db.logros.filter(l => l.docenteId === user.id && logroVigente(l.clave));
   const totalCiclo = mios.filter(m => m.clave.endsWith("@" + ciclo)).length;
   return (
     <div className="space-y-4">
@@ -6588,7 +6585,7 @@ function ExpedienteIntegral({ db, docenteId, mutar, user, volver }) {
             <Stat icono={BookOpen} label="Cursos validados" valor={certs.filter(c => c.estado === "validada").length} />
             <Stat icono={Clock} label="Horas del ciclo" valor={h} />
             <Stat icono={FileCheck} label="Horas pendientes" valor={horasPendientes(db, docenteId, ciclo)} />
-            <Stat icono={Award} label="Insignias del ciclo" valor={db.logros.filter(l => l.docenteId === docenteId && l.clave.endsWith("@" + ciclo)).length} />
+            <Stat icono={Award} label="Insignias del ciclo" valor={db.logros.filter(l => l.docenteId === docenteId && l.clave.endsWith("@" + ciclo) && logroVigente(l.clave)).length} />
           </div>
           <Card className="p-5"><Progreso actual={h} meta={meta} semaforo={semaforoDe(db, meta ? Math.round(100*h/meta) : 0)} /></Card>
           <Card className="p-4"><h3 className="font-bold text-sm mb-2">Constancias</h3><TablaCursos certs={certs} db={db} /></Card>
