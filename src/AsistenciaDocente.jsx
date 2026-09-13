@@ -135,7 +135,7 @@ export default function AsistenciaDocente({ user, usuarios = [] }) {
 
       {esRH && (
         <div className="flex gap-1 bg-slate-100 p-1 rounded-xl w-fit flex-wrap">
-          {[["personal", "Todo el personal"], ["permisos", "Permisos"],
+          {[["personal", "Todo el personal"], ["firmas", "Firmas"], ["permisos", "Permisos"],
             ["cargar", "Cargar semana"], ["vinculos", "Vinculación"]].map(([id, txt]) => (
             <button key={id} onClick={() => setTab(id)}
               className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition ${
@@ -146,9 +146,10 @@ export default function AsistenciaDocente({ user, usuarios = [] }) {
         </div>
       )}
 
-      {!esRH && <MiSemana usuarioId={user.id} />}
+      {!esRH && <MiSemana usuarioId={user.id} propia />}
       {!esRH && <MisPermisos usuarioId={user.id} />}
       {esRH && tab === "personal" && <PanelPersonal usuarios={usuarios} />}
+      {esRH && tab === "firmas" && <PanelFirmas usuarios={usuarios} />}
       {esRH && tab === "permisos" && <PanelPermisos user={user} usuarios={usuarios} />}
       {esRH && tab === "cargar" && <CargarSemana user={user} usuarios={usuarios} />}
       {esRH && tab === "vinculos" && <Vinculacion usuarios={usuarios} />}
@@ -240,7 +241,103 @@ function MisPermisos({ usuarioId }) {
   );
 }
 
-function MiSemana({ usuarioId, nombre }) {
+/* ================================================================
+   FIRMA DE CONFORMIDAD DE LA SEMANA
+   ----------------------------------------------------------------
+   Al firmar se guardan las horas tal como se mostraban en ese
+   momento. Si más adelante la semana se vuelve a cargar y el total
+   cambia, la diferencia queda a la vista: así se sabe que lo
+   avalado ya no corresponde a lo que hay ahora.
+
+   La base solo acepta una firma cuyo identificador sea el de quien
+   la está guardando, de modo que nadie puede firmar por otra
+   persona ni aunque la aplicación se lo pidiera.
+   ================================================================ */
+
+function FirmaSemana({ usuarioId, lunes, segundos }) {
+  const [firma, setFirma] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [firmando, setFirmando] = useState(false);
+  const [err, setErr] = useState("");
+
+  const consultar = useCallback(async () => {
+    setCargando(true); setErr("");
+    const { data, error } = await supabase
+      .from("firmas_semana").select("*")
+      .eq("usuario_id", usuarioId).eq("lunes", lunes)
+      .maybeSingle();
+    if (error) setErr(error.message);
+    setFirma(error ? null : data);
+    setCargando(false);
+  }, [usuarioId, lunes]);
+
+  useEffect(() => { consultar(); }, [consultar]);
+
+  const firmar = async () => {
+    if (!window.confirm(
+      `Vas a avalar ${fmtDuracion(segundos)} en esta semana.\n\n` +
+      `Revisa que las entradas y salidas sean correctas antes de continuar. ` +
+      `Una vez firmada, solo Recursos Humanos puede retirarla.`)) return;
+    setFirmando(true); setErr("");
+    const { error } = await supabase.from("firmas_semana")
+      .insert({ usuario_id: usuarioId, lunes, segundos });
+    if (error) {
+      setErr(error.message.includes("firmas_semana_unica")
+        ? "Esta semana ya estaba firmada."
+        : error.message);
+    }
+    await consultar();
+    setFirmando(false);
+  };
+
+  if (cargando) return null;
+
+  const desfase = firma && firma.segundos !== segundos;
+
+  return (
+    <Card className="p-4 space-y-2">
+      {firma ? (
+        <>
+          <div className="flex items-start gap-2">
+            <CheckCircle2 size={18} className="text-emerald-600 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-emerald-800">Semana firmada</p>
+              <p className="text-xs text-slate-500">
+                Avalaste {fmtDuracion(firma.segundos)} el{" "}
+                {new Date(firma.firmado_en).toLocaleString("es-MX",
+                  { day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </p>
+            </div>
+          </div>
+          {desfase && (
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+              Las horas de esta semana cambiaron después de tu firma: ahora suman{" "}
+              <b>{fmtDuracion(segundos)}</b>. Avisa a Recursos Humanos si necesitas revisarlas
+              y volver a firmar.
+            </p>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-slate-600">
+            Si las entradas y salidas de esta semana son correctas, puedes firmarlas de conformidad.
+          </p>
+          {err && (
+            <p className="text-sm text-rose-600 flex items-start gap-1.5">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />{err}
+            </p>
+          )}
+          <button className={btnPrim + " w-full sm:w-auto"} onClick={firmar} disabled={firmando}>
+            {firmando && <Loader2 size={14} className="animate-spin" />}
+            Firmar {fmtDuracion(segundos)} de esta semana
+          </button>
+        </>
+      )}
+    </Card>
+  );
+}
+
+function MiSemana({ usuarioId, nombre, propia = false }) {
   const [lunes, setLunes] = useState(() => lunesDe(new Date()));
   const [filas, setFilas] = useState([]);
   const [cargando, setCargando] = useState(true);
@@ -388,6 +485,10 @@ function MiSemana({ usuarioId, nombre }) {
               No hay registros cargados para esta semana.
             </p>
           )}
+
+          {propia && filas.length > 0 && (
+            <FirmaSemana usuarioId={usuarioId} lunes={desde} segundos={totalSemana} />
+          )}
         </>
       )}
     </div>
@@ -408,6 +509,165 @@ const ROLES_QUE_CHECAN = ["docente", "personal_administrativo"];
    PERMISOS · panel de Recursos Humanos
    Registra, consulta y elimina permisos del personal.
    ================================================================ */
+
+/* ================================================================
+   FIRMAS · panel de Recursos Humanos
+   Quién firmó su semana y quién no.
+   ================================================================ */
+
+function PanelFirmas({ usuarios }) {
+  const [lunes, setLunes] = useState(() => lunesDe(new Date()));
+  const [horas, setHoras] = useState(new Map());   // usuario_id → segundos
+  const [firmas, setFirmas] = useState(new Map()); // usuario_id → firma
+  const [cargando, setCargando] = useState(true);
+  const [err, setErr] = useState("");
+  const [retirando, setRetirando] = useState("");
+
+  const desde = isoDe(lunes);
+  const hasta = isoDe(sumarDias(lunes, 5));
+
+  const cargar = useCallback(async () => {
+    setCargando(true); setErr("");
+    /* Una semana de todo el personal son unas 120 filas: muy por
+       debajo del tope de 1000, así que se puede sumar aquí. */
+    const [ch, fi] = await Promise.all([
+      supabase.from("checadas").select("usuario_id, segundos")
+        .gte("fecha", desde).lte("fecha", hasta),
+      supabase.from("firmas_semana").select("*").eq("lunes", desde),
+    ]);
+    if (ch.error || fi.error) setErr((ch.error || fi.error).message);
+    const h = new Map();
+    (ch.data || []).forEach((r) => {
+      if (!r.usuario_id) return;
+      h.set(r.usuario_id, (h.get(r.usuario_id) || 0) + (r.segundos || 0));
+    });
+    setHoras(h);
+    setFirmas(new Map((fi.data || []).map((f) => [f.usuario_id, f])));
+    setCargando(false);
+  }, [desde, hasta]);
+
+  useEffect(() => { cargar(); }, [cargar]);
+
+  const retirar = async (f, nombre) => {
+    if (!window.confirm(
+      `¿Retirar la firma de ${nombre} de esta semana?\n\n` +
+      `Tendrá que revisarla y firmarla de nuevo. Hazlo solo si la semana se corrigió después de que firmó.`)) return;
+    setRetirando(f.usuario_id);
+    const { error } = await supabase.from("firmas_semana").delete().eq("id", f.id);
+    if (error) alert("No se pudo retirar: " + error.message);
+    await cargar();
+    setRetirando("");
+  };
+
+  /* Solo aparece quien tiene registros esa semana: a quien no le
+     cargaron horas no se le puede pedir una firma. */
+  const personal = (usuarios || [])
+    .filter((u) => ROLES_QUE_CHECAN.includes(u.rol) && u.activo !== false)
+    .filter((u) => horas.has(u.id))
+    .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"));
+
+  const firmados = personal.filter((u) => firmas.has(u.id));
+  const esFutura = lunes > lunesDe(new Date());
+
+  return (
+    <div className="space-y-3">
+      <Card className="p-3">
+        <div className="text-center mb-2 sm:hidden">
+          <div className="text-sm font-bold">
+            {fmtCorta(lunes)} al {fmtCorta(sumarDias(lunes, 5))}
+          </div>
+          <div className="text-[11px] text-slate-400">{lunes.getFullYear()}</div>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <button className={btnSec + " !px-3 !py-1.5"} onClick={() => setLunes(sumarDias(lunes, -7))}>
+            <ChevronLeft size={15} />Anterior
+          </button>
+          <div className="text-center min-w-0 hidden sm:block">
+            <div className="text-sm font-bold">
+              {fmtCorta(lunes)} al {fmtCorta(sumarDias(lunes, 5))}
+            </div>
+            <div className="text-[11px] text-slate-400">{lunes.getFullYear()}</div>
+          </div>
+          <button className={btnSec + " !px-3 !py-1.5"} disabled={esFutura}
+            onClick={() => setLunes(sumarDias(lunes, 7))}>
+            Siguiente<ChevronRight size={15} />
+          </button>
+        </div>
+      </Card>
+
+      {err && (
+        <Card className="p-4 text-sm text-rose-700 bg-rose-50 border-rose-200">
+          No se pudo consultar: {err}
+        </Card>
+      )}
+
+      {cargando ? (
+        <Card className="p-8 text-center text-slate-400 text-sm flex items-center justify-center gap-2">
+          <Loader2 size={16} className="animate-spin" />Consultando…
+        </Card>
+      ) : personal.length === 0 ? (
+        <Card className="p-8 text-center text-sm text-slate-400">
+          No hay registros cargados para esta semana.
+        </Card>
+      ) : (
+        <>
+          <Card className="p-4">
+            <div className="flex items-center gap-2 text-slate-400 mb-1">
+              <CheckCircle2 size={15} />
+              <span className="text-[11px] uppercase font-semibold">Firmas de la semana</span>
+            </div>
+            <div className="text-2xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>
+              {firmados.length}
+              <span className="text-base text-slate-400 font-semibold"> de {personal.length}</span>
+            </div>
+          </Card>
+
+          <Card className="overflow-hidden">
+            {personal.map((u) => {
+              const f = firmas.get(u.id);
+              const total = horas.get(u.id) || 0;
+              const desfase = f && f.segundos !== total;
+              return (
+                <div key={u.id} className="px-4 py-3 border-b border-slate-100 last:border-0 flex flex-col sm:flex-row sm:items-center gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium break-words">{u.nombre}</div>
+                    <div className="text-xs text-slate-500">
+                      {fmtDuracion(total)} en la semana
+                      {f && ` · firmó el ${new Date(f.firmado_en).toLocaleDateString("es-MX",
+                        { day: "numeric", month: "short", year: "numeric" })}`}
+                    </div>
+                    {desfase && (
+                      <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700">
+                        FIRMÓ {fmtDuracion(f.segundos)} · LAS HORAS CAMBIARON DESPUÉS
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {f ? (
+                      <>
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700">
+                          <CheckCircle2 size={11} />FIRMADA
+                        </span>
+                        <button className="text-xs font-semibold text-slate-400 hover:text-rose-600 hover:underline"
+                          disabled={retirando === u.id} onClick={() => retirar(f, u.nombre)}>
+                          {retirando === u.id ? "Retirando…" : "Retirar"}
+                        </button>
+                      </>
+                    ) : (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 border border-slate-200 text-slate-500">
+                        SIN FIRMAR
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
 
 function PanelPermisos({ user, usuarios }) {
   const [filas, setFilas] = useState([]);
