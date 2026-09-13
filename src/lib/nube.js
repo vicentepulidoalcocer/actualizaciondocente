@@ -89,7 +89,14 @@ export async function cargarTodo(uid) {
     .from("perfiles").select("*").eq("id", uid).single();
   lanzar(e0, "No se pudo leer tu perfil");
   const yo = aplanarPerfil(perfilFila);
-  const esStaff = yo.rol !== "docente"; // admin y jefes de departamento
+  /* Roles con acceso amplio: administración y jefes de departamento.
+     Se enumeran de forma explícita para que un rol nuevo no herede por
+     accidente permisos de lectura que no le corresponden. El personal
+     administrativo y Recursos Humanos cargan por la vía del docente,
+     que solo expone los datos públicos del resto. */
+  const ROLES_STAFF = ["admin", "jefe_formacion", "jefe_academico",
+                       "administrativo", "coord_tutorias"];
+  const esStaff = ROLES_STAFF.includes(yo.rol);
 
   const { data: cfgFila, error: e1 } = await supabase
     .from("config").select("data").eq("id", 1).maybeSingle();
