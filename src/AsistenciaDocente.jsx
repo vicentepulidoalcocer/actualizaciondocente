@@ -46,6 +46,14 @@ const sumarDias = (d, n) => {
 const fmtCorta = (d) =>
   d.toLocaleDateString("es-MX", { day: "numeric", month: "long" });
 
+/* "2026-09-11" → "viernes 11 de septiembre de 2026" */
+const fmtFechaDia = (iso) => {
+  if (!iso) return "";
+  const [a, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  return new Date(a, m - 1, d).toLocaleDateString("es-MX",
+    { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+};
+
 /* "07:53:54" → segundos. Tolera valores vacíos o mal formados. */
 const aSegundos = (t) => {
   const p = String(t || "").trim().split(":");
@@ -118,7 +126,7 @@ export default function AsistenciaDocente({ user, usuarios = [] }) {
 
       {esRH && (
         <div className="flex gap-1 bg-slate-100 p-1 rounded-xl w-fit flex-wrap">
-          {[["personal", "Todo el personal"],
+          {[["personal", "Todo el personal"], ["permisos", "Permisos"],
             ["cargar", "Cargar semana"], ["vinculos", "Vinculación"]].map(([id, txt]) => (
             <button key={id} onClick={() => setTab(id)}
               className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition ${
@@ -130,7 +138,9 @@ export default function AsistenciaDocente({ user, usuarios = [] }) {
       )}
 
       {!esRH && <MiSemana usuarioId={user.id} />}
+      {!esRH && <MisPermisos usuarioId={user.id} />}
       {esRH && tab === "personal" && <PanelPersonal usuarios={usuarios} />}
+      {esRH && tab === "permisos" && <PanelPermisos user={user} usuarios={usuarios} />}
       {esRH && tab === "cargar" && <CargarSemana user={user} usuarios={usuarios} />}
       {esRH && tab === "vinculos" && <Vinculacion usuarios={usuarios} />}
     </div>
@@ -140,6 +150,86 @@ export default function AsistenciaDocente({ user, usuarios = [] }) {
 /* ================================================================
    VISTA PERSONAL: la semana de una persona
    ================================================================ */
+
+/* ================================================================
+   PERMISOS · lo que ve la propia persona
+   ----------------------------------------------------------------
+   La consulta filtra por usuario_id, pero la garantía real está en
+   la base: su regla de lectura solo entrega los renglones de quien
+   consulta. Aunque aquí se pidiera todo, Supabase no devolvería los
+   permisos de nadie más.
+   ================================================================ */
+
+function MisPermisos({ usuarioId }) {
+  const [filas, setFilas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      if (!usuarioId) { setFilas([]); setCargando(false); return; }
+      setCargando(true); setErr("");
+      const { data, error } = await supabase
+        .from("permisos_personal").select("*")
+        .eq("usuario_id", usuarioId)
+        .order("fecha", { ascending: false });
+      if (!vivo) return;
+      if (error) setErr(error.message);
+      setFilas(error ? [] : (data || []));
+      setCargando(false);
+    })();
+    return () => { vivo = false; };
+  }, [usuarioId]);
+
+  const anioEscolar = (iso) => {
+    // Ciclo de agosto a julio, igual que el resto del portal
+    const [a, m] = String(iso).slice(0, 10).split("-").map(Number);
+    return m >= 8 ? `${a}-${a + 1}` : `${a - 1}-${a}`;
+  };
+  const cicloHoy = anioEscolar(isoDe(new Date()));
+  const deEsteCiclo = filas.filter((f) => anioEscolar(f.fecha) === cicloHoy);
+
+  if (!cargando && !err && filas.length === 0) return null;
+
+  return (
+    <Card className="p-5 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="font-bold text-sm">Mis permisos</h3>
+        <span className="text-xs text-slate-500">
+          <b className="text-[#1a2340]">{deEsteCiclo.length}</b> día(s) en el ciclo {cicloHoy}
+          {filas.length !== deEsteCiclo.length && ` · ${filas.length} en total`}
+        </span>
+      </div>
+
+      {err && (
+        <p className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2.5">
+          No se pudo consultar: {err}
+        </p>
+      )}
+      {cargando && (
+        <p className="text-sm text-slate-400 flex items-center gap-2">
+          <Loader2 size={15} className="animate-spin" />Consultando…
+        </p>
+      )}
+
+      {filas.map((f) => (
+        <div key={f.id} className="border border-slate-200 rounded-xl p-3 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold">{fmtFechaDia(f.fecha)}</span>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700">
+              PERMISO
+            </span>
+          </div>
+          {f.motivo && <p className="text-sm text-slate-700">{f.motivo}</p>}
+          {f.observaciones && (
+            <p className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2">{f.observaciones}</p>
+          )}
+        </div>
+      ))}
+    </Card>
+  );
+}
 
 function MiSemana({ usuarioId, nombre }) {
   const [lunes, setLunes] = useState(() => lunesDe(new Date()));
@@ -287,6 +377,201 @@ function MiSemana({ usuarioId, nombre }) {
    incluirlas solo duplicaría a la misma persona en la lista. */
 const ROLES_QUE_CHECAN = ["docente", "personal_administrativo"];
 
+/* ================================================================
+   PERMISOS · panel de Recursos Humanos
+   Registra, consulta y elimina permisos del personal.
+   ================================================================ */
+
+function PanelPermisos({ user, usuarios }) {
+  const [filas, setFilas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [err, setErr] = useState("");
+  const [form, setForm] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [errForm, setErrForm] = useState("");
+  const [filtro, setFiltro] = useState("");
+
+  const cargar = useCallback(async () => {
+    setCargando(true); setErr("");
+    const { data, error } = await supabase
+      .from("permisos_personal").select("*").order("fecha", { ascending: false });
+    if (error) setErr(error.message);
+    setFilas(error ? [] : (data || []));
+    setCargando(false);
+  }, []);
+
+  useEffect(() => { cargar(); }, [cargar]);
+
+  const personal = (usuarios || [])
+    .filter((u) => ROLES_QUE_CHECAN.includes(u.rol) && u.activo !== false)
+    .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"));
+
+  const nombreDe = (id) => personal.find((u) => u.id === id)?.nombre
+    || (usuarios || []).find((u) => u.id === id)?.nombre || "—";
+
+  const guardar = async () => {
+    if (!form.usuario_id) { setErrForm("Elige a la persona."); return; }
+    if (!form.fecha) { setErrForm("Elige la fecha del permiso."); return; }
+    if (!form.motivo.trim()) { setErrForm("Escribe el motivo del permiso."); return; }
+    setGuardando(true); setErrForm("");
+
+    // Aviso si ya existe un permiso de esa persona ese mismo día
+    const repetido = filas.some((f) => f.usuario_id === form.usuario_id && f.fecha === form.fecha);
+    if (repetido && !window.confirm(
+      `${nombreDe(form.usuario_id)} ya tiene un permiso registrado el ${fmtFechaDia(form.fecha)}. ¿Registrar otro de todos modos?`)) {
+      setGuardando(false); return;
+    }
+
+    const { error } = await supabase.from("permisos_personal").insert({
+      usuario_id: form.usuario_id,
+      fecha: form.fecha,
+      motivo: form.motivo.trim(),
+      observaciones: (form.observaciones || "").trim(),
+      registrado_por: user.id,
+    });
+    if (error) { setErrForm(error.message); setGuardando(false); return; }
+    await cargar();
+    setForm(null);
+    setGuardando(false);
+  };
+
+  const eliminar = async (f) => {
+    if (!window.confirm(
+      `¿Eliminar el permiso de ${nombreDe(f.usuario_id)} del ${fmtFechaDia(f.fecha)}? Dejará de verlo en su portal.`)) return;
+    const { error } = await supabase.from("permisos_personal").delete().eq("id", f.id);
+    if (error) { alert("No se pudo eliminar: " + error.message); return; }
+    await cargar();
+  };
+
+  const visibles = filtro ? filas.filter((f) => f.usuario_id === filtro) : filas;
+
+  // Conteo de días por persona, de mayor a menor
+  const conteo = personal
+    .map((u) => ({ ...u, dias: filas.filter((f) => f.usuario_id === u.id).length }))
+    .filter((u) => u.dias > 0)
+    .sort((a, b) => b.dias - a.dias);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <p className="text-sm text-slate-500 flex-1 min-w-[200px]">
+          Cada permiso le aparece únicamente a la persona registrada, en su propio portal.
+        </p>
+        <button className={btnPrim + " !px-3 !py-1.5"}
+          onClick={() => {
+            setForm({ usuario_id: "", fecha: isoDe(new Date()), motivo: "", observaciones: "" });
+            setErrForm("");
+          }}>
+          Registrar permiso
+        </button>
+      </div>
+
+      {form && (
+        <Card className="p-5 space-y-3">
+          <h3 className="font-bold text-sm">Nuevo permiso</h3>
+          <label className="block">
+            <span className="text-xs font-semibold text-slate-600">Persona</span>
+            <select className={inputCls} value={form.usuario_id}
+              onChange={(e) => setForm({ ...form, usuario_id: e.target.value })}>
+              <option value="">— Elige a la persona —</option>
+              {personal.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-slate-600">Fecha del permiso</span>
+            <input type="date" className={inputCls} value={form.fecha}
+              onChange={(e) => setForm({ ...form, fecha: e.target.value })} />
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-slate-600">Motivo</span>
+            <input className={inputCls} maxLength={200} placeholder="Comisión oficial, asunto familiar…"
+              value={form.motivo} onChange={(e) => setForm({ ...form, motivo: e.target.value })} />
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-slate-600">Observaciones (opcional)</span>
+            <textarea className={inputCls + " resize-none"} rows={2} maxLength={500}
+              placeholder="Detalles adicionales que deba conocer la persona"
+              value={form.observaciones}
+              onChange={(e) => setForm({ ...form, observaciones: e.target.value })} />
+          </label>
+          <p className="text-[11px] text-slate-400">
+            Tanto el motivo como las observaciones los verá la persona en su portal.
+          </p>
+          {errForm && (
+            <p className="text-sm text-rose-600 flex items-start gap-1.5">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0" />{errForm}
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <button className={btnSec} onClick={() => setForm(null)} disabled={guardando}>Cancelar</button>
+            <button className={btnPrim} onClick={guardar} disabled={guardando}>
+              {guardando && <Loader2 size={14} className="animate-spin" />}Guardar
+            </button>
+          </div>
+        </Card>
+      )}
+
+      {conteo.length > 0 && (
+        <Card className="p-4 space-y-2">
+          <h3 className="font-bold text-sm">Días de permiso por persona</h3>
+          <div className="flex flex-wrap gap-1.5">
+            {conteo.map((u) => (
+              <button key={u.id}
+                onClick={() => setFiltro(filtro === u.id ? "" : u.id)}
+                className={`text-xs px-2.5 py-1 rounded-full border transition ${
+                  filtro === u.id
+                    ? "bg-[#1a2340] text-white border-[#1a2340]"
+                    : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"}`}>
+                {u.nombre} · <b>{u.dias}</b>
+              </button>
+            ))}
+          </div>
+          {filtro && (
+            <button className="text-xs text-slate-400 hover:underline" onClick={() => setFiltro("")}>
+              Ver todos los permisos
+            </button>
+          )}
+        </Card>
+      )}
+
+      {err && (
+        <Card className="p-4 text-sm text-rose-700 bg-rose-50 border-rose-200">
+          No se pudo consultar: {err}
+        </Card>
+      )}
+
+      {cargando ? (
+        <Card className="p-8 text-center text-slate-400 text-sm flex items-center justify-center gap-2">
+          <Loader2 size={16} className="animate-spin" />Consultando…
+        </Card>
+      ) : visibles.length === 0 ? (
+        <Card className="p-8 text-center text-sm text-slate-400">
+          {filtro ? "Esa persona no tiene permisos registrados." : "Todavía no hay permisos registrados."}
+        </Card>
+      ) : (
+        <Card className="overflow-hidden">
+          {visibles.map((f) => (
+            <div key={f.id} className="px-4 py-3 border-b border-slate-100 last:border-0 flex flex-col sm:flex-row sm:items-start gap-2">
+              <div className="flex-1 min-w-0 space-y-0.5">
+                <div className="text-sm font-semibold break-words">{nombreDe(f.usuario_id)}</div>
+                <div className="text-xs text-slate-500">{fmtFechaDia(f.fecha)}</div>
+                {f.motivo && <p className="text-sm text-slate-700 break-words">{f.motivo}</p>}
+                {f.observaciones && (
+                  <p className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2 break-words">{f.observaciones}</p>
+                )}
+              </div>
+              <button className="text-xs font-semibold text-rose-600 hover:underline shrink-0 text-left"
+                onClick={() => eliminar(f)}>
+                Eliminar
+              </button>
+            </div>
+          ))}
+        </Card>
+      )}
+    </div>
+  );
+}
+
 function PanelPersonal({ usuarios }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(null);
@@ -304,6 +589,7 @@ function PanelPersonal({ usuarios }) {
           <ChevronLeft size={15} />Volver a la lista
         </button>
         <MiSemana usuarioId={sel.id} nombre={sel.nombre} />
+        <MisPermisos usuarioId={sel.id} />
       </div>
     );
   }
