@@ -26,6 +26,7 @@ import {
   marcarEnterado, MAX_FILE_B64, registrarAcceso, guardarEntrega, borrarEntrega,
 } from "./lib/nube";
 const Asistencia = React.lazy(() => import("./Asistencia"));
+const AsistenciaDocente = React.lazy(() => import("./AsistenciaDocente"));
 const Ausentes = React.lazy(() => import("./Ausentes"));
 import {
   soportaPush, esIOS, instaladoEnInicio, permisoActual,
@@ -67,13 +68,20 @@ const NOMBRE_ROL = {
   jefe_academico: "Jefe Académico y de Competencias",
   administrativo: "Control escolar",
   coord_tutorias: "Coordinación de Tutorías",
+  jefe_rh: "Jefe de Recursos Humanos",
+  personal_administrativo: "Personal administrativo",
   docente: "Docente",
 };
 const esRolValidador = (r) => r === "admin" || r === "jefe_formacion";
 const esRolAcademico = (r) => r === "admin" || r === "jefe_academico";
 const esRolControlEscolar = (r) => r === "admin" || r === "administrativo";
 const esRolTutorias = (r) => r === "admin" || r === "coord_tutorias";
-const esRolComunicador = (r) => r !== "docente";
+const esRolRH = (r) => r === "admin" || r === "jefe_rh";
+/* Quiénes ven su tarjeta de tiempo del checador: el personal docente,
+   el personal administrativo y quien administra Recursos Humanos. */
+const veAsistenciaDocente = (r) =>
+  r === "docente" || r === "personal_administrativo" || esRolRH(r);
+const esRolComunicador = (r) => r !== "docente" && r !== "personal_administrativo";
 
 /* ---- Programas de estudio ----
    Las mallas conviven en cuatro rubros. De cada uno sale un número de
@@ -1078,6 +1086,7 @@ export default function App() {
       { id: "tutorias", label: "Tutorías", icono: Users },
     ]},
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
+    { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
     { id: "ranking_general", label: "Ranking general", icono: Medal },
     { id: "actividad", label: "Actividad reciente", icono: Activity },
     { id: "respaldo", label: "Respaldo", icono: Download },
@@ -1099,6 +1108,14 @@ export default function App() {
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "calendario", label: "Calendario académico", icono: CalendarDays },
+  ] : user.rol === "personal_administrativo" ? [
+    { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
+    { id: "avisos", label: "Avisos", icono: Megaphone },
+    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
+  ] : user.rol === "jefe_rh" ? [
+    { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
+    { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
+    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
   ] : user.rol === "jefe_academico" ? [
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
@@ -1111,6 +1128,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "mi_asignacion", label: "Mi asignación", icono: FolderOpen, badge: pendientesEntrega(db, user.id) },
     { id: "ausentes", label: "Alumnos ausentes", icono: Users },
+    { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
     { id: "calendario", label: "Calendario académico", icono: CalendarDays },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "cursos", label: "Mis cursos", icono: BookOpen },
@@ -1207,6 +1225,11 @@ export default function App() {
             ? <RankingGeneral db={db} user={user} />
             : <Ranking db={db} user={user} />)}
           {pagina === "ranking_entregas" && esRolAcademico(user.rol) && <RankingEntregas db={db} />}
+          {pagina === "asistencia_docente" && veAsistenciaDocente(user.rol) && (
+            <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}>
+              <AsistenciaDocente user={user} usuarios={db.users} />
+            </React.Suspense>
+          )}
           {pagina === "ranking_general" && esRolComunicador(user.rol) && <RankingGeneral db={db} user={user} />}
           {pagina === "logros" && <Logros db={db} user={user} />}
           {pagina === "avisos" && (esRolComunicador(user.rol)
@@ -3182,6 +3205,8 @@ function JefesDepartamento({ db, mutar }) {
       "Registro de asistencia con códigos QR, padrón de alumnos, historial y avisos."],
     ["coord_tutorias", "Coordinación de Tutorías",
       "Revisa planes de trabajo, fichas de identificación e informes de los tutores; publica avisos."],
+    ["jefe_rh", "Jefe de Recursos Humanos",
+      "Carga semanalmente el reporte del checador y consulta la asistencia de todo el personal."],
   ];
 
   const actualDe = (rol) => db.users.find(u => u.rol === rol && u.activo);
@@ -5913,7 +5938,12 @@ function MisAvisos({ db, user, recargar }) {
   const [firmando, setFirmando] = useState(false);
   const [err, setErr] = useState("");
 
-  const mios = db.avisos.filter(a => a.estado !== "draft" && destinatariosDe(db, a).some(d => d.id === user.id));
+  /* El personal administrativo consulta los avisos publicados aunque no
+     figure como destinatario: así el seguimiento de enterados de los
+     avisos ya publicados conserva exactamente los mismos números. */
+  const mios = db.avisos.filter(a => a.estado !== "draft" && (
+    destinatariosDe(db, a).some(d => d.id === user.id) ||
+    user.rol === "personal_administrativo"));
   const pendientes = mios.filter(a => a.estado === "published" && !acuseDe(db, a.id, user.id));
   const atendidos = mios.filter(a => acuseDe(db, a.id, user.id));
   const lista = tab === "pendientes" ? pendientes : atendidos;
@@ -7003,6 +7033,141 @@ function ActividadReciente({ db }) {
      el área de Formación Docente;
    - modo completo: la administración del sistema (cuentas, reglas). */
 /* ================================================================
+   PERSONAL ADMINISTRATIVO
+   ----------------------------------------------------------------
+   A diferencia de los jefes de departamento, aquí puede haber varias
+   personas a la vez, así que dar de alta a una NO desactiva a las
+   demás. No suben constancias ni entregas: solo consultan su
+   asistencia, los avisos y el calendario.
+   ================================================================ */
+
+function PersonalAdministrativo({ db, mutar }) {
+  const [form, setForm] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [err, setErr] = useState("");
+  const [msg, setMsg] = useState("");
+
+  const lista = db.users
+    .filter(u => u.rol === "personal_administrativo")
+    .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"));
+
+  const alta = async () => {
+    const f = form;
+    if (!f.nombre.trim() || !f.email.trim() || (f.pass || "").length < 6) {
+      setErr("Completa nombre, correo y una contraseña de al menos 6 caracteres."); return;
+    }
+    setGuardando(true); setErr("");
+    try {
+      const creado = await crearDocente({
+        email: f.email.trim(), password: f.pass, nombre: f.nombre.trim(),
+        rol: "personal_administrativo",
+      });
+      await mutar(d => {
+        const u = d.users.find(x => x.id === creado.id);
+        if (u) Object.assign(u, { nombre: f.nombre.trim(), rol: "personal_administrativo", activo: true });
+        else d.users.push({ id: creado.id, nombre: f.nombre.trim(), email: f.email.trim(),
+          rol: "personal_administrativo", activo: true, creadoEn: ahora() });
+        registrarActividad(d, `Se dio de alta al personal administrativo ${f.nombre.trim()}.`);
+      });
+      setMsg(`Cuenta creada para ${f.nombre.trim()}.`);
+      setForm(null);
+    } catch (e) { setErr(e.message); }
+    setGuardando(false);
+  };
+
+  const cambiarEstado = async (p) => {
+    const activar = p.activo === false;
+    if (!window.confirm(`¿${activar ? "Reactivar" : "Desactivar"} la cuenta de ${p.nombre}?`)) return;
+    await mutar(d => {
+      const u = d.users.find(x => x.id === p.id);
+      if (u) u.activo = activar;
+    });
+  };
+
+  const nuevaPass = async (p) => {
+    const np = window.prompt(`Nueva contraseña para ${p.nombre} (mínimo 6 caracteres):`);
+    if (np === null) return;
+    if (np.length < 6) { alert("Debe tener al menos 6 caracteres."); return; }
+    try {
+      await restablecerPassword({ id: p.id, password: np });
+      alert("Contraseña actualizada. Compártela de forma segura.");
+    } catch (e) { alert("No se pudo actualizar: " + e.message); }
+  };
+
+  return (
+    <Card className="p-5 space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h3 className="font-bold text-sm">Personal administrativo</h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Consultan su asistencia del checador, los avisos y el calendario.
+            No registran constancias ni entregas.
+          </p>
+        </div>
+        <button className={btnPrim + " !px-3 !py-1.5"}
+          onClick={() => { setForm({ nombre: "", email: "", pass: "" }); setErr(""); setMsg(""); }}>
+          <Plus size={14} />Agregar
+        </button>
+      </div>
+
+      {msg && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2">{msg}</p>}
+
+      {lista.length === 0 && (
+        <p className="text-sm text-slate-400 py-3 text-center">Todavía no hay personal administrativo dado de alta.</p>
+      )}
+
+      {lista.map(p => (
+        <div key={p.id} className="flex flex-wrap items-center gap-2 border border-slate-200 rounded-xl p-3">
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium truncate">
+              {p.nombre}
+              {p.activo === false && <span className="ml-1.5 text-[10px] font-bold text-slate-400">INACTIVO</span>}
+            </div>
+            <div className="text-xs text-slate-500 truncate">{p.email}</div>
+          </div>
+          <button className="text-xs font-semibold text-slate-500 hover:underline" onClick={() => nuevaPass(p)}>
+            Cambiar contraseña
+          </button>
+          <button className={`text-xs font-semibold hover:underline ${p.activo === false ? "text-emerald-600" : "text-rose-600"}`}
+            onClick={() => cambiarEstado(p)}>
+            {p.activo === false ? "Reactivar" : "Desactivar"}
+          </button>
+        </div>
+      ))}
+
+      {form && (
+        <Modal titulo="Nuevo personal administrativo" onClose={() => setForm(null)}>
+          <div className="space-y-3">
+            <Campo label="Nombre completo">
+              <input className={inputCls} value={form.nombre}
+                onChange={e => setForm({ ...form, nombre: e.target.value })} />
+            </Campo>
+            <Campo label="Correo electrónico">
+              <input className={inputCls} type="email" value={form.email}
+                onChange={e => setForm({ ...form, email: e.target.value })} />
+            </Campo>
+            <Campo label="Contraseña temporal">
+              <input className={inputCls} value={form.pass}
+                onChange={e => setForm({ ...form, pass: e.target.value })} />
+              <p className="text-[11px] text-slate-400 mt-1">
+                Mínimo 6 caracteres. Compártesela de forma segura; podrá cambiarla desde su cuenta.
+              </p>
+            </Campo>
+            {err && <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0"/>{err}</p>}
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <button className={btnSec} onClick={() => setForm(null)}>Cancelar</button>
+            <button className={btnPrim} disabled={guardando} onClick={alta}>
+              {guardando && <Loader2 size={14} className="animate-spin"/>}Crear cuenta
+            </button>
+          </div>
+        </Modal>
+      )}
+    </Card>
+  );
+}
+
+/* ================================================================
    ESPACIO DE ALMACENAMIENTO (Supabase Storage, datos reales)
    ================================================================ */
 function EspacioAlmacenamiento() {
@@ -7208,6 +7373,8 @@ function Administracion({ db, user, mutar, esAdmin = true, modo = "todo" }) {
       {verSistema && esAdmin && <EspacioAlmacenamiento />}
 
       {verSistema && esAdmin && <JefesDepartamento db={db} mutar={mutar} />}
+
+      {verSistema && esAdmin && <PersonalAdministrativo db={db} mutar={mutar} />}
 
       {verSistema && <NotificacionesCelular user={user} />}
       {verSistema && <MiCuenta user={user} soloTarjeta />}
