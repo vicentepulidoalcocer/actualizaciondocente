@@ -11,7 +11,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Camera, CameraOff, Users, Clock, CheckCircle2, AlertTriangle, Download,
   Upload, Search, Loader2, TrendingUp, MessageCircle, CalendarDays, X, RefreshCw,
-  Trash2, UserMinus, UserCheck, ClipboardCheck, Pencil,
+  Trash2, UserMinus, UserCheck,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
@@ -31,8 +31,6 @@ const fmtFechaLarga = (iso) => {
     { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 };
 const soloDigitos = (t) => (t || "").toString().replace(/\D/g, "");
-// Quita acentos y pasa a minúsculas, para que "Nuñez" encuentre "Núñez"
-const normaliza = (t) => (t || "").toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 
 const btnPrim = "inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#1a2340] text-white text-sm font-semibold hover:bg-[#26305a] transition disabled:opacity-50";
 const btnSec = "inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-slate-300 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition disabled:opacity-50";
@@ -66,7 +64,6 @@ export default function Asistencia({ user }) {
   const [tab, setTab] = useState("escaneo");
   const [alumnos, setAlumnos] = useState([]);
   const [registrosHoy, setRegistrosHoy] = useState([]);
-  const [justificaciones, setJustificaciones] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState("");
   const [horaLimite, setHoraLimite] = useState(
@@ -78,17 +75,14 @@ export default function Asistencia({ user }) {
   const cargar = useCallback(async () => {
     setCargando(true); setErr("");
     try {
-      const [al, as, ju] = await Promise.all([
+      const [al, as] = await Promise.all([
         supabase.from("alumnos").select("*").order("nombre"),
         supabase.from("asistencias").select("*").eq("fecha", hoyISO()).order("hora"),
-        supabase.from("justificaciones").select("*").eq("fecha", hoyISO()),
       ]);
       if (al.error) throw new Error(al.error.message);
       if (as.error) throw new Error(as.error.message);
-      if (ju.error) throw new Error(ju.error.message);
       setAlumnos(al.data || []);
       setRegistrosHoy(as.data || []);
-      setJustificaciones(ju.data || []);
     } catch (e) { setErr(e.message); }
     setCargando(false);
   }, []);
@@ -213,11 +207,10 @@ export default function Asistencia({ user }) {
       {cargando && <Card className="p-8 text-center text-sm text-slate-400"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando…</Card>}
 
       {!cargando && tab === "escaneo" && (
-        <PanelEscaneo registrar={registrar} registrosHoy={registrosHoy} horaLimite={horaLimite} alumnos={alumnos} />
+        <PanelEscaneo registrar={registrar} registrosHoy={registrosHoy} horaLimite={horaLimite} />
       )}
       {!cargando && tab === "dashboard" && (
-        <PanelDia alumnos={alumnos} registros={registrosHoy} fecha={fecha}
-          justificaciones={justificaciones} user={user} recargar={cargar} />
+        <PanelDia alumnos={alumnos} registros={registrosHoy} fecha={fecha} />
       )}
       {!cargando && tab === "historial" && <PanelHistorial alumnos={alumnos} user={user} />}
       {!cargando && tab === "padron" && <PanelPadron alumnos={alumnos} recargar={cargar} />}
@@ -228,14 +221,14 @@ export default function Asistencia({ user }) {
 /* ================================================================
    ESCANEO CON CÁMARA
    ================================================================ */
-function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
+function PanelEscaneo({ registrar, registrosHoy, horaLimite }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const corriendo = useRef(false);
   const ultimoRef = useRef({ texto: "", t: 0 });
   const [activa, setActiva] = useState(false);
   const [estado, setEstado] = useState({ msg: "Cámara apagada", tipo: "" });
-  const [busqueda, setBusqueda] = useState("");
+  const [manual, setManual] = useState("");
 
   const procesarTexto = useCallback(async (texto) => {
     // Evita releer el mismo código varias veces por segundo
@@ -297,20 +290,10 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
 
   useEffect(() => () => apagar(), [apagar]);
 
-  // Coincidencias por nombre mientras se escribe (apellido paterno,
-  // apellido materno o nombre, sin importar acentos ni mayúsculas)
-  const sugerencias = React.useMemo(() => {
-    const q = normaliza(busqueda);
-    if (!q) return [];
-    return (alumnos || [])
-      .filter(a => a.activo !== false)
-      .filter(a => normaliza(a.nombre).includes(q))
-      .slice(0, 8);
-  }, [alumnos, busqueda]);
-
-  const registrarDesdeNombre = async (alumno) => {
-    await procesarTexto(alumno.id);
-    setBusqueda("");
+  const registrarManual = async () => {
+    if (!manual.trim()) return;
+    await procesarTexto(manual.trim());
+    setManual("");
   };
 
   const colorEstado = estado.tipo === "ok" ? "bg-emerald-50 border-emerald-200 text-emerald-800"
@@ -349,40 +332,13 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
               : <button className={btnSec + " flex-1"} onClick={apagar}><CameraOff size={15} />Apagar cámara</button>}
           </div>
 
-          <div className="pt-2 border-t border-slate-100 relative">
-            <p className="text-xs text-slate-500 mb-1">¿La credencial no lee? Busca al alumno por nombre:</p>
-            <div className="relative">
-              <input className={inputCls + " !mt-0 w-full"}
-                placeholder="Apellido paterno, apellido materno o nombre…"
-                value={busqueda}
-                onChange={e => setBusqueda(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === "Enter" && sugerencias.length === 1) registrarDesdeNombre(sugerencias[0]);
-                  if (e.key === "Escape") setBusqueda("");
-                }} />
-              {busqueda.trim() && (
-                <div className="absolute z-10 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-56 overflow-y-auto">
-                  {sugerencias.length === 0 && (
-                    <p className="text-xs text-slate-400 px-3 py-2">Sin coincidencias en el padrón.</p>
-                  )}
-                  {sugerencias.map(a => {
-                    const yaEsta = registrosHoy.some(r => r.alumno_id === a.id);
-                    return (
-                      <button key={a.id} type="button"
-                        className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center justify-between gap-2 border-b border-slate-50 last:border-0"
-                        onClick={() => registrarDesdeNombre(a)}>
-                        <span className="min-w-0">
-                          <span className="block text-sm font-medium truncate">{a.nombre}</span>
-                          <span className="block text-xs text-slate-400 truncate">
-                            {a.semestre ? `${a.semestre}° ` : ""}{a.grupo ? `Grupo ${a.grupo}` : ""} · ID {a.id}
-                          </span>
-                        </span>
-                        {yaEsta && <span className="text-[10px] font-bold text-emerald-600 shrink-0">YA REGISTRADO</span>}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+          <div className="pt-2 border-t border-slate-100">
+            <p className="text-xs text-slate-500 mb-1">¿La credencial no lee? Escribe el ID a mano:</p>
+            <div className="flex gap-2">
+              <input className={inputCls + " !mt-0 flex-1"} placeholder="Número de ID" value={manual}
+                onChange={e => setManual(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && registrarManual()} />
+              <button className={btnSec} onClick={registrarManual}>Registrar</button>
             </div>
           </div>
         </Card>
@@ -419,16 +375,12 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
   );
 }
 
-/* Etiquetas legibles para el tipo de justificación */
-const TIPOS_JUSTIFICACION = { medica: "Médica", personal: "Personal", otra: "Otra" };
-
 /* ================================================================
-   PANEL DEL DÍA: indicadores, ausentes, justificantes y WhatsApp
+   PANEL DEL DÍA: indicadores, ausentes y WhatsApp
    ================================================================ */
-function PanelDia({ alumnos, registros, fecha, justificaciones, user, recargar }) {
+function PanelDia({ alumnos, registros, fecha }) {
   const [grupo, setGrupo] = useState("todos");
   const [semestre, setSemestre] = useState("todos");
-  const [justificando, setJustificando] = useState(null); // alumno seleccionado, o null
   const grupos = [...new Set(alumnos.map(a => a.grupo).filter(Boolean))].sort();
   const semestres = [...new Set(alumnos.map(a => a.semestre).filter(Boolean))]
     .sort((x, y) => Number(x) - Number(y));
@@ -441,10 +393,6 @@ function PanelDia({ alumnos, registros, fecha, justificaciones, user, recargar }
   const idsPresentes = new Set(presentes.map(r => r.alumno_id));
   const ausentes = padron.filter(a => !idsPresentes.has(a.id));
   const pct = padron.length ? Math.round(100 * presentes.length / padron.length) : 0;
-
-  // Justificación vigente de cada alumno ausente, por su ID
-  const justPorAlumno = new Map((justificaciones || []).map(j => [j.alumno_id, j]));
-  const justificadosCount = ausentes.filter(a => justPorAlumno.has(a.id)).length;
 
   /* Un mismo grupo "A" existe en varios semestres, así que se agrupa
      por la combinación semestre + grupo. */
@@ -466,11 +414,7 @@ function PanelDia({ alumnos, registros, fecha, justificaciones, user, recargar }
   const exportarCSV = () => {
     const filas = [["ID", "Nombre", "Semestre", "Grupo", "Fecha", "Hora", "Estado"]];
     presentes.forEach(r => filas.push([r.alumno_id, r.nombre, r.semestre, r.grupo, r.fecha, r.hora, r.estado]));
-    ausentes.forEach(a => {
-      const just = justPorAlumno.get(a.id);
-      const estado = just ? `Justificado (${TIPOS_JUSTIFICACION[just.tipo] || just.tipo})` : "Ausente";
-      filas.push([a.id, a.nombre, a.semestre, a.grupo, fecha, "", estado]);
-    });
+    ausentes.forEach(a => filas.push([a.id, a.nombre, a.semestre, a.grupo, fecha, "", "Ausente"]));
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const csv = "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
     const a = document.createElement("a");
@@ -488,21 +432,6 @@ function PanelDia({ alumnos, registros, fecha, justificaciones, user, recargar }
       .filter(Boolean).join(", ");
     const msg = `Buen día. Le informamos que ${al.nombre}${ubica ? ` (${ubica})` : ""} no registró asistencia hoy ${fmtFechaLarga(fecha)}. CBTA No. 291.`;
     window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`, "_blank");
-  };
-
-  const guardarJustificacion = async ({ alumno_id, tipo, motivo }) => {
-    const { error } = await supabase.from("justificaciones").upsert(
-      { alumno_id, fecha, tipo, motivo, registrado_por: user?.id },
-      { onConflict: "alumno_id,fecha" });
-    if (error) throw new Error(error.message);
-    await recargar();
-  };
-
-  const quitarJustificacion = async (alumno_id) => {
-    const { error } = await supabase.from("justificaciones")
-      .delete().eq("alumno_id", alumno_id).eq("fecha", fecha);
-    if (error) throw new Error(error.message);
-    await recargar();
   };
 
   return (
@@ -525,8 +454,7 @@ function PanelDia({ alumnos, registros, fecha, justificaciones, user, recargar }
         <Stat icono={Users} label="En el padrón" valor={padron.length} />
         <Stat icono={CheckCircle2} label="Presentes" valor={presentes.length} sub={`${pct}% de asistencia`} />
         <Stat icono={Clock} label="Retardos" valor={presentes.filter(r => r.estado === "Retardo").length} color="text-amber-600" />
-        <Stat icono={AlertTriangle} label="Ausentes" valor={ausentes.length} color={ausentes.length ? "text-rose-600" : "text-slate-900"}
-          sub={justificadosCount ? `${justificadosCount} justificado(s)` : undefined} />
+        <Stat icono={AlertTriangle} label="Ausentes" valor={ausentes.length} color={ausentes.length ? "text-rose-600" : "text-slate-900"} />
       </div>
 
       {padron.length === 0 && (
@@ -558,137 +486,30 @@ function PanelDia({ alumnos, registros, fecha, justificaciones, user, recargar }
       <Card className="p-4">
         <div className="flex items-center justify-between mb-2">
           <h3 className="font-bold text-sm">Ausentes {grupo !== "todos" && `· grupo ${grupo}`}</h3>
-          <span className="text-xs text-slate-400">
-            {ausentes.length}
-            {justificadosCount > 0 && <span className="text-sky-600 font-semibold"> · {justificadosCount} justificado(s)</span>}
-          </span>
+          <span className="text-xs text-slate-400">{ausentes.length}</span>
         </div>
         {ausentes.length === 0 && <p className="text-sm text-emerald-700 py-6 text-center">Asistencia completa. No hay ausentes.</p>}
         <div className="max-h-96 overflow-y-auto">
-          {ausentes.map(a => {
-            const just = justPorAlumno.get(a.id);
-            return (
-              <div key={a.id} className={`flex flex-col sm:flex-row sm:items-center gap-2 py-2 border-b border-slate-100 last:border-0 ${a.activo === false ? "opacity-60" : ""}`}>
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium break-words">
-                    {a.nombre}
-                    {a.activo === false && <span className="ml-1.5 text-[10px] font-bold text-slate-400">BAJA</span>}
-                  </div>
-                  <div className="text-xs text-slate-500">
-                    {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · ID {a.id}
-                    {a.tutor && <> · Tutor: {a.tutor}</>}
-                  </div>
-                  {just && (
-                    <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700">
-                      <ClipboardCheck size={10} />Justificado · {TIPOS_JUSTIFICACION[just.tipo] || just.tipo}
-                    </span>
-                  )}
+          {ausentes.map(a => (
+            <div key={a.id} className={`flex items-center gap-3 py-2 border-b border-slate-100 last:border-0 ${a.activo === false ? "opacity-60" : ""}`}>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium truncate">
+                  {a.nombre}
+                  {a.activo === false && <span className="ml-1.5 text-[10px] font-bold text-slate-400">BAJA</span>}
                 </div>
-                {just ? (
-                  <button className="inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 shrink-0 w-full sm:w-auto"
-                    onClick={() => setJustificando(a)} title="Editar o quitar la justificación">
-                    <Pencil size={13} />Editar
-                  </button>
-                ) : (
-                  <div className="flex gap-1.5 shrink-0">
-                    <button className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-sky-300 text-sky-700 hover:bg-sky-50"
-                      onClick={() => setJustificando(a)} title="Marcar la falta como justificada">
-                      <ClipboardCheck size={13} />Justificar
-                    </button>
-                    <button className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
-                      onClick={() => avisarTutor(a)} title={a.telefono ? "Avisar al tutor por WhatsApp" : "Sin teléfono registrado"}>
-                      <MessageCircle size={13} />WhatsApp
-                    </button>
-                  </div>
-                )}
+                <div className="text-xs text-slate-500">
+                  {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · ID {a.id}
+                  {a.tutor && <> · Tutor: {a.tutor}</>}
+                </div>
               </div>
-            );
-          })}
-        </div>
-      </Card>
-
-      {justificando && (
-        <ModalJustificar
-          alumno={justificando}
-          existente={justPorAlumno.get(justificando.id) || null}
-          onClose={() => setJustificando(null)}
-          onGuardar={async (datos) => { await guardarJustificacion(datos); setJustificando(null); }}
-          onQuitar={async () => { await quitarJustificacion(justificando.id); setJustificando(null); }}
-        />
-      )}
-    </div>
-  );
-}
-
-/* ================================================================
-   MODAL: justificar (o editar/quitar) la falta de un alumno
-   ================================================================ */
-function ModalJustificar({ alumno, existente, onClose, onGuardar, onQuitar }) {
-  const [tipo, setTipo] = useState(existente?.tipo || "medica");
-  const [motivo, setMotivo] = useState(existente?.motivo || "");
-  const [guardando, setGuardando] = useState(false);
-  const [quitando, setQuitando] = useState(false);
-  const [err, setErr] = useState("");
-
-  const guardar = async () => {
-    setGuardando(true); setErr("");
-    try { await onGuardar({ alumno_id: alumno.id, tipo, motivo: motivo.trim() }); }
-    catch (e) { setErr(e.message); setGuardando(false); }
-  };
-
-  const quitar = async () => {
-    if (!window.confirm(`¿Quitar la justificación de ${alumno.nombre}? Volverá a aparecer como ausente sin justificar.`)) return;
-    setQuitando(true); setErr("");
-    try { await onQuitar(); }
-    catch (e) { setErr(e.message); setQuitando(false); }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 p-4 overflow-y-auto" onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md my-8" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
-          <h3 className="font-bold text-base" style={{ fontFamily: "'Archivo', sans-serif" }}>
-            {existente ? "Editar justificación" : "Justificar falta"}
-          </h3>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-slate-100"><X size={18} /></button>
-        </div>
-        <div className="p-5 space-y-3">
-          <p className="text-sm text-slate-600">{alumno.nombre}</p>
-          <label className="block">
-            <span className="text-xs font-semibold text-slate-600">Tipo de justificación</span>
-            <select className={inputCls} value={tipo} onChange={e => setTipo(e.target.value)}>
-              <option value="medica">Médica</option>
-              <option value="personal">Personal</option>
-              <option value="otra">Otra</option>
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-xs font-semibold text-slate-600">Motivo breve (opcional)</span>
-            <textarea className={inputCls + " resize-none"} rows={2} maxLength={200}
-              placeholder="Ej. Cita médica, trámite familiar…"
-              value={motivo} onChange={e => setMotivo(e.target.value)} />
-          </label>
-          <p className="text-[11px] text-slate-400">
-            El motivo solo lo ve control escolar y administración. A los docentes únicamente
-            les aparece que el alumno está justificado y el tipo.
-          </p>
-          {err && <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{err}</p>}
-          <div className="flex items-center justify-between pt-2">
-            {existente
-              ? <button className="text-xs font-semibold text-rose-600 hover:underline disabled:opacity-50"
-                  onClick={quitar} disabled={quitando || guardando}>
-                  {quitando ? "Quitando…" : "Quitar justificación"}
-                </button>
-              : <span />}
-            <div className="flex gap-2">
-              <button className={btnSec} onClick={onClose} disabled={guardando || quitando}>Cancelar</button>
-              <button className={btnPrim} onClick={guardar} disabled={guardando || quitando}>
-                {guardando ? "Guardando…" : "Guardar"}
+              <button className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 shrink-0"
+                onClick={() => avisarTutor(a)} title={a.telefono ? "Avisar al tutor por WhatsApp" : "Sin teléfono registrado"}>
+                <MessageCircle size={13} />WhatsApp
               </button>
             </div>
-          </div>
+          ))}
         </div>
-      </div>
+      </Card>
     </div>
   );
 }
@@ -702,28 +523,44 @@ function PanelHistorial({ alumnos, user }) {
     return d.toISOString().slice(0, 10);
   });
   const [hasta, setHasta] = useState(hoyISO());
-  const [datos, setDatos] = useState([]);
+  const [porDia, setPorDia] = useState([]);
   const [cargando, setCargando] = useState(false);
   const [err, setErr] = useState("");
-  const [detalle, setDetalle] = useState(null);
+  const [detalle, setDetalle] = useState(null);      // fecha abierta
+  const [filasDia, setFilasDia] = useState([]);      // alumnos de esa fecha
+  const [cargandoDia, setCargandoDia] = useState(false);
   const [borrando, setBorrando] = useState(null);
+  const [exportando, setExportando] = useState(false);
 
+  /* El resumen lo calcula la base y devuelve una fila por día. Traer
+     los registros completos aquí fallaría: con 371 alumnos, tres días
+     ya pasan el tope de 1000 filas de Supabase. */
   const consultar = useCallback(async () => {
     setCargando(true); setErr("");
-    const { data, error } = await supabase.from("asistencias")
-      .select("*").gte("fecha", desde).lte("fecha", hasta).order("fecha", { ascending: false });
-    if (error) setErr(error.message); else setDatos(data || []);
+    const { data, error } = await supabase.rpc("resumen_asistencia", { desde, hasta });
+    if (error) { setErr(error.message); setPorDia([]); }
+    else setPorDia((data || []).map(d => ({
+      fecha: d.fecha, presentes: Number(d.presentes) || 0, retardos: Number(d.retardos) || 0,
+    })));
     setCargando(false);
   }, [desde, hasta]);
 
   useEffect(() => { consultar(); }, [consultar]);
 
+  /* El detalle de un día sí se pide completo, pero es un solo día:
+     nunca pasa del padrón. */
+  const abrirDia = async (fecha) => {
+    setDetalle(fecha); setFilasDia([]); setCargandoDia(true);
+    const { data, error } = await supabase.from("asistencias")
+      .select("*").eq("fecha", fecha).order("hora");
+    setFilasDia(error ? [] : (data || []));
+    setCargandoDia(false);
+  };
+
   const totalPadron = alumnos.filter(a => a.activo !== false).length;
-  const porDia = [...new Set(datos.map(r => r.fecha))].sort().reverse().map(f => {
-    const del = datos.filter(r => r.fecha === f);
-    return { fecha: f, presentes: del.length, retardos: del.filter(r => r.estado === "Retardo").length,
-      pct: totalPadron ? Math.round(100 * del.length / totalPadron) : 0 };
-  });
+  const dias = porDia.map(d => ({
+    ...d, pct: totalPadron ? Math.round(100 * d.presentes / totalPadron) : 0,
+  }));
 
   /* Borra todos los registros de un día. Se pide confirmación escrita
      porque no hay forma de recuperarlos después. */
@@ -736,13 +573,28 @@ function PanelHistorial({ alumnos, user }) {
     const { error } = await supabase.from("asistencias").delete().eq("fecha", fecha);
     setBorrando(null);
     if (error) { setErr("No se pudo borrar: " + error.message); return; }
-    setDatos(prev => prev.filter(r => r.fecha !== fecha));
-    setDetalle(null);
+    setPorDia(prev => prev.filter(d => d.fecha !== fecha));
+    setDetalle(null); setFilasDia([]);
   };
 
-  const exportarRango = () => {
+  /* Para el archivo sí hacen falta todos los registros, así que se
+     piden por tandas de 1000 hasta terminar. */
+  const exportarRango = async () => {
+    setExportando(true); setErr("");
+    const TAM = 1000;
+    let inicio = 0, todos = [];
+    for (;;) {
+      const { data, error } = await supabase.from("asistencias")
+        .select("*").gte("fecha", desde).lte("fecha", hasta)
+        .order("fecha", { ascending: false }).order("hora")
+        .range(inicio, inicio + TAM - 1);
+      if (error) { setErr("No se pudo exportar: " + error.message); setExportando(false); return; }
+      todos = todos.concat(data || []);
+      if (!data || data.length < TAM) break;
+      inicio += TAM;
+    }
     const filas = [["Fecha", "ID", "Nombre", "Semestre", "Grupo", "Hora", "Estado"]];
-    datos.forEach(r => filas.push([r.fecha, r.alumno_id, r.nombre, r.semestre, r.grupo, r.hora, r.estado]));
+    todos.forEach(r => filas.push([r.fecha, r.alumno_id, r.nombre, r.semestre, r.grupo, r.hora, r.estado]));
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const csv = "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
     const a = document.createElement("a");
@@ -750,6 +602,7 @@ function PanelHistorial({ alumnos, user }) {
     a.download = `asistencia_${desde}_a_${hasta}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
+    setExportando(false);
   };
 
   return (
@@ -764,18 +617,19 @@ function PanelHistorial({ alumnos, user }) {
         <button className={btnSec} onClick={consultar} disabled={cargando}>
           {cargando ? <Loader2 size={13} className="animate-spin" /> : <Search size={13} />}Consultar
         </button>
-        <button className={btnSec + " ml-auto"} onClick={exportarRango} disabled={!datos.length}>
-          <Download size={13} />Exportar
+        <button className={btnSec + " ml-auto"} onClick={exportarRango} disabled={!dias.length || exportando}>
+          {exportando ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+          {exportando ? "Preparando…" : "Exportar"}
         </button>
       </Card>
 
       {err && <p className="text-sm text-rose-600 flex items-center gap-1.5"><AlertTriangle size={14} />{err}</p>}
 
-      {porDia.length > 1 && (
+      {dias.length > 1 && (
         <Card className="p-4">
           <h3 className="font-bold text-sm mb-3">Tendencia de asistencia</h3>
           <ResponsiveContainer width="100%" height={200}>
-            <LineChart data={[...porDia].reverse()} margin={{ top: 4, right: 8, left: -20, bottom: 4 }}>
+            <LineChart data={[...dias].reverse()} margin={{ top: 4, right: 8, left: -20, bottom: 4 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
               <XAxis dataKey="fecha" tick={{ fontSize: 10 }} tickFormatter={f => f.slice(5)} />
               <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} unit="%" />
@@ -787,12 +641,12 @@ function PanelHistorial({ alumnos, user }) {
       )}
 
       <Card className="p-4">
-        <h3 className="font-bold text-sm mb-2">Días registrados · {porDia.length}</h3>
-        {porDia.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">No hay registros en este periodo.</p>}
-        {porDia.map(d => (
+        <h3 className="font-bold text-sm mb-2">Días registrados · {dias.length}</h3>
+        {dias.length === 0 && !cargando && <p className="text-sm text-slate-400 py-6 text-center">No hay registros en este periodo.</p>}
+        {dias.map(d => (
           <div key={d.fecha}
             className="flex flex-wrap items-center gap-3 py-2.5 border-b border-slate-100 last:border-0 hover:bg-slate-50 px-2 -mx-2 rounded-lg transition">
-            <button onClick={() => setDetalle(d.fecha)} className="flex-1 min-w-[160px] text-left">
+            <button onClick={() => abrirDia(d.fecha)} className="flex-1 min-w-[160px] text-left">
               <div className="text-sm font-medium capitalize">{fmtFechaLarga(d.fecha)}</div>
               <div className="text-xs text-slate-500">{d.presentes} presentes · {d.retardos} retardo(s)</div>
             </button>
@@ -820,12 +674,17 @@ function PanelHistorial({ alumnos, user }) {
               <h3 className="font-bold text-sm capitalize">{fmtFechaLarga(detalle)}</h3>
               <div className="flex items-center gap-1">
                 <button className="p-1.5 rounded-lg hover:bg-rose-50 text-rose-500" title="Eliminar este día"
-                  onClick={() => borrarDia(detalle, datos.filter(r => r.fecha === detalle).length)}><Trash2 size={16}/></button>
+                  onClick={() => borrarDia(detalle, filasDia.length)}><Trash2 size={16}/></button>
                 <button onClick={() => setDetalle(null)} className="p-1 rounded-lg hover:bg-slate-100"><X size={18} /></button>
               </div>
             </div>
             <div className="p-4 max-h-[70vh] overflow-y-auto">
-              {datos.filter(r => r.fecha === detalle).map(r => (
+              {cargandoDia && (
+                <p className="text-sm text-slate-400 py-6 text-center flex items-center justify-center gap-2">
+                  <Loader2 size={15} className="animate-spin" />Consultando…
+                </p>
+              )}
+              {!cargandoDia && filasDia.map(r => (
                 <div key={r.id} className="flex items-center gap-3 py-2 border-b border-slate-100 last:border-0">
                   <span className={`w-2 h-2 rounded-full shrink-0 ${r.estado === "Retardo" ? "bg-amber-500" : "bg-emerald-500"}`} />
                   <div className="flex-1 min-w-0">
