@@ -82,6 +82,31 @@ const lanzar = (error, contexto) => {
   if (error) throw new Error(`${contexto}: ${error.message}`);
 };
 
+/* ---------- lectura completa de una tabla ----------
+   Supabase entrega como máximo 1000 filas por consulta, y lo hace sin
+   avisar: simplemente devuelve menos. Si una tabla pasara de ese
+   número, faltarían entregas, constancias o acuses y los rankings y
+   porcentajes saldrían mal sin que nada lo indicara.
+
+   Por eso se pide por tandas hasta que una tanda venga incompleta,
+   que es la señal de que ya no hay más. Devuelve { data, error } con
+   la misma forma que una consulta normal. */
+const TAM_TANDA = 1000;
+
+async function todasLasFilas(tabla, columnas, afinar) {
+  let inicio = 0;
+  let acumulado = [];
+  for (;;) {
+    let consulta = supabase.from(tabla).select(columnas).range(inicio, inicio + TAM_TANDA - 1);
+    if (afinar) consulta = afinar(consulta);
+    const { data, error } = await consulta;
+    if (error) return { data: null, error };
+    acumulado = acumulado.concat(data || []);
+    if (!data || data.length < TAM_TANDA) return { data: acumulado, error: null };
+    inicio += TAM_TANDA;
+  }
+}
+
 /* ---------- carga completa según rol ---------- */
 
 export async function cargarTodo(uid) {
@@ -109,21 +134,21 @@ export async function cargarTodo(uid) {
 
   if (esStaff) {
     const [pf, ce, gr, co, no, ac, lo, av, aq, pr, asg, en, cal, asgPub, enPub] = await Promise.all([
-      supabase.from("perfiles").select("*"),
-      supabase.from("certs").select("data"),
-      supabase.from("grados").select("data"),
-      supabase.from("comp").select("data"),
-      supabase.from("notifs").select("data"),
-      supabase.from("activity").select("data"),
-      supabase.from("logros").select("data"),
-      supabase.from("avisos").select("data"),
-      supabase.from("acuses").select("id, aviso_id, usuario_id, fecha_enterado"),
-      supabase.from("programas").select("data"),
-      supabase.from("asignaciones").select("data"),
-      supabase.from("entregas").select("data"),
-      supabase.from("calendarios").select("data"),
-      supabase.from("asignaciones_ranking").select("*"),
-      supabase.from("entregas_ranking").select("*"),
+      todasLasFilas("perfiles", "*"),
+      todasLasFilas("certs", "data"),
+      todasLasFilas("grados", "data"),
+      todasLasFilas("comp", "data"),
+      todasLasFilas("notifs", "data"),
+      todasLasFilas("activity", "data"),
+      todasLasFilas("logros", "data"),
+      todasLasFilas("avisos", "data"),
+      todasLasFilas("acuses", "id, aviso_id, usuario_id, fecha_enterado"),
+      todasLasFilas("programas", "data"),
+      todasLasFilas("asignaciones", "data"),
+      todasLasFilas("entregas", "data"),
+      todasLasFilas("calendarios", "data"),
+      todasLasFilas("asignaciones_ranking", "*"),
+      todasLasFilas("entregas_ranking", "*"),
     ]);
     for (const r of [pf, ce, gr, co, no, ac, lo, av, aq, pr, asg, en, cal, asgPub, enPub]) lanzar(r.error, "No se pudieron cargar los datos");
     db.users = pf.data.map(aplanarPerfil);
@@ -150,21 +175,21 @@ export async function cargarTodo(uid) {
     completarConPublico(db.entregas, enPub.data);
   } else {
     const [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en, cal, asgPub, enPub] = await Promise.all([
-      supabase.from("publico_docentes").select("*"),
-      supabase.from("publico_horas").select("*"),
-      supabase.from("certs").select("data").eq("docente_id", uid),
-      supabase.from("grados").select("data").eq("docente_id", uid),
-      supabase.from("comp").select("data").eq("docente_id", uid),
-      supabase.from("notifs").select("data").eq("user_id", uid),
-      supabase.from("logros").select("data").eq("docente_id", uid),
-      supabase.from("avisos").select("data").in("estado", ["published", "archived"]),
-      supabase.from("acuses").select("id, aviso_id, usuario_id, fecha_enterado").eq("usuario_id", uid),
-      supabase.from("programas").select("data"),
-      supabase.from("asignaciones").select("data").eq("docente_id", uid),
-      supabase.from("entregas").select("data").eq("docente_id", uid),
-      supabase.from("calendarios").select("data"),
-      supabase.from("asignaciones_ranking").select("*"),
-      supabase.from("entregas_ranking").select("*"),
+      todasLasFilas("publico_docentes", "*"),
+      todasLasFilas("publico_horas", "*"),
+      todasLasFilas("certs", "data", (q) => q.eq("docente_id", uid)),
+      todasLasFilas("grados", "data", (q) => q.eq("docente_id", uid)),
+      todasLasFilas("comp", "data", (q) => q.eq("docente_id", uid)),
+      todasLasFilas("notifs", "data", (q) => q.eq("user_id", uid)),
+      todasLasFilas("logros", "data", (q) => q.eq("docente_id", uid)),
+      todasLasFilas("avisos", "data", (q) => q.in("estado", ["published", "archived"])),
+      todasLasFilas("acuses", "id, aviso_id, usuario_id, fecha_enterado", (q) => q.eq("usuario_id", uid)),
+      todasLasFilas("programas", "data"),
+      todasLasFilas("asignaciones", "data", (q) => q.eq("docente_id", uid)),
+      todasLasFilas("entregas", "data", (q) => q.eq("docente_id", uid)),
+      todasLasFilas("calendarios", "data"),
+      todasLasFilas("asignaciones_ranking", "*"),
+      todasLasFilas("entregas_ranking", "*"),
     ]);
     for (const r of [pub, horas, ce, gr, co, no, lo, av, aq, pr, asg, en, cal, asgPub, enPub]) lanzar(r.error, "No se pudieron cargar los datos");
     db.users = pub.data.map((p) =>
