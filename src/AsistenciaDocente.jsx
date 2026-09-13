@@ -281,12 +281,19 @@ function MiSemana({ usuarioId, nombre }) {
    RECURSOS HUMANOS · consultar a cualquier persona
    ================================================================ */
 
+/* Quiénes checan entrada y salida en el plantel. Las cuentas de
+   jefaturas y de la administración general son cuentas de gestión:
+   su titular ya aparece aquí con su cuenta de docente, así que
+   incluirlas solo duplicaría a la misma persona en la lista. */
+const ROLES_QUE_CHECAN = ["docente", "personal_administrativo"];
+
 function PanelPersonal({ usuarios }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(null);
 
   const lista = (usuarios || [])
     .filter((u) => u.activo !== false)
+    .filter((u) => ROLES_QUE_CHECAN.includes(u.rol))
     .filter((u) => !q || (u.nombre || "").toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"));
 
@@ -342,10 +349,12 @@ function proponer(nombreHoja, usuarios) {
   const p = palabras(nombreHoja);
   if (p.length < 2) return null;
   const nombre = p[0], apellido = p[p.length - 1];
-  const hits = (usuarios || []).filter((u) => {
-    const w = palabras(u.nombre);
-    return w.includes(nombre) && w.includes(apellido);
-  });
+  const hits = (usuarios || [])
+    .filter((u) => ROLES_QUE_CHECAN.includes(u.rol) && u.activo !== false)
+    .filter((u) => {
+      const w = palabras(u.nombre);
+      return w.includes(nombre) && w.includes(apellido);
+    });
   return hits.length === 1 ? hits[0] : null;
 }
 
@@ -426,7 +435,8 @@ function Vinculacion({ usuarios }) {
                     value={f.usuario_id || ""} disabled={guardando === f.reloj_id}
                     onChange={(e) => vincular(f.reloj_id, e.target.value)}>
                     <option value="">— Sin vincular —</option>
-                    {(usuarios || []).slice()
+                    {(usuarios || [])
+                      .filter((u) => ROLES_QUE_CHECAN.includes(u.rol) && u.activo !== false)
                       .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"))
                       .map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
                   </select>
