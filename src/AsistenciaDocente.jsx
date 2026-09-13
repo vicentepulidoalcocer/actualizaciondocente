@@ -500,6 +500,7 @@ const horaTexto = (v) => {
 };
 
 function CargarSemana({ user, usuarios }) {
+  const [recargaHistorial, setRecargaHistorial] = useState(0);
   const [archivo, setArchivo] = useState(null);
   const [previa, setPrevia] = useState(null);
   const [leyendo, setLeyendo] = useState(false);
@@ -615,6 +616,7 @@ function CargarSemana({ user, usuarios }) {
         (sinDueño ? ` ${sinDueño} quedaron sin asignar: revisa la pestaña Vinculación.` : "")
       );
       setPrevia(null); setArchivo(null);
+      setRecargaHistorial((n) => n + 1);   // el historial se vuelve a leer
     } catch (e) {
       setErr(e.message);
     }
@@ -693,6 +695,95 @@ function CargarSemana({ user, usuarios }) {
           </div>
         </Card>
       )}
+
+      <HistorialSemanas usuarios={usuarios} recarga={recargaHistorial} />
     </div>
+  );
+}
+
+/* ================================================================
+   HISTORIAL DE SEMANAS CARGADAS
+   ----------------------------------------------------------------
+   Se arma a partir de las propias checadas (cada renglón guarda
+   quién lo cargó y cuándo), resumidas por la vista
+   "checadas_semanas". No hace falta llevar un registro aparte.
+   ================================================================ */
+
+function HistorialSemanas({ usuarios, recarga }) {
+  const [filas, setFilas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      setCargando(true); setErr("");
+      const { data, error } = await supabase
+        .from("checadas_semanas").select("*").order("lunes", { ascending: false });
+      if (!vivo) return;
+      if (error) setErr(error.message);
+      setFilas(error ? [] : (data || []));
+      setCargando(false);
+    })();
+    return () => { vivo = false; };
+  }, [recarga]);
+
+  const nombreDe = (id) =>
+    (usuarios || []).find((u) => u.id === id)?.nombre || "—";
+
+  const fmtMomento = (t) => {
+    if (!t) return "—";
+    const d = new Date(t);
+    return isNaN(d) ? "—" : d.toLocaleString("es-MX",
+      { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  };
+
+  const fmtDia = (iso) => {
+    if (!iso) return "";
+    const [a, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+    return new Date(a, m - 1, d).toLocaleDateString("es-MX", { day: "numeric", month: "short" });
+  };
+
+  return (
+    <Card className="p-5 space-y-3">
+      <h3 className="font-bold text-sm">Semanas cargadas</h3>
+
+      {err && (
+        <p className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2.5">
+          No se pudo consultar el historial: {err}
+        </p>
+      )}
+
+      {cargando && (
+        <p className="text-sm text-slate-400 flex items-center gap-2">
+          <Loader2 size={15} className="animate-spin" />Consultando…
+        </p>
+      )}
+
+      {!cargando && !err && filas.length === 0 && (
+        <p className="text-sm text-slate-400 py-2">Todavía no se ha cargado ninguna semana.</p>
+      )}
+
+      {filas.map((f) => (
+        <div key={f.lunes} className="border border-slate-200 rounded-xl p-3 space-y-1">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-sm font-semibold">
+              {fmtDia(f.primer_dia)} al {fmtDia(f.ultimo_dia)}
+            </span>
+            <span className="text-xs text-slate-400">
+              {f.registros} registro(s) · {f.personas} persona(s)
+            </span>
+          </div>
+          <div className="text-xs text-slate-500">
+            Cargada por {nombreDe(f.cargado_por)} el {fmtMomento(f.cargado_en)}
+          </div>
+          {f.sin_vincular > 0 && (
+            <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700">
+              {f.sin_vincular} registro(s) sin vincular
+            </span>
+          )}
+        </div>
+      ))}
+    </Card>
   );
 }
