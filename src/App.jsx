@@ -6856,6 +6856,7 @@ function PerfilInstitucional({ db }) {
 function ActividadReciente({ db }) {
   const [tab, setTab] = useState("actividad");
   const [accesos, setAccesos] = useState(null);
+  const [totales, setTotales] = useState(null);   // resumen calculado en la base
   const [cargando, setCargando] = useState(false);
   const [err, setErr] = useState("");
   const [dias, setDias] = useState(30);
@@ -6867,12 +6868,21 @@ function ActividadReciente({ db }) {
     setCargando(true); setErr("");
     const desde = new Date();
     desde.setDate(desde.getDate() - dias);
-    const { data, error } = await supabase.from("accesos")
-      .select("id, usuario_id, fecha, dispositivo")
-      .gte("fecha", desde.toISOString())
-      .order("fecha", { ascending: false })
-      .limit(1000);
-    if (error) setErr(error.message); else setAccesos(data || []);
+    /* El listado de abajo solo muestra las últimas entradas, así que
+       basta con traer un tramo. Las CIFRAS, en cambio, se piden a la
+       base: contarlas aquí fallaría al pasar del tope de 1000 filas,
+       y las entradas más antiguas del periodo quedarían fuera. */
+    const [det, res] = await Promise.all([
+      supabase.from("accesos")
+        .select("id, usuario_id, fecha, dispositivo")
+        .gte("fecha", desde.toISOString())
+        .order("fecha", { ascending: false })
+        .limit(1000),
+      supabase.rpc("resumen_accesos", { dias }),
+    ]);
+    if (det.error) setErr(det.error.message); else setAccesos(det.data || []);
+    setTotales(res.error ? null : (res.data || []));
+    if (res.error && !det.error) setErr(res.error.message);
     setCargando(false);
   }, [dias]);
 
@@ -6883,12 +6893,21 @@ function ActividadReciente({ db }) {
   const resumen = useMemo(() => {
     if (!accesos) return [];
     const porUsuario = new Map();
-    accesos.forEach(a => {
-      const r = porUsuario.get(a.usuario_id) || { id: a.usuario_id, veces: 0, ultimo: null };
-      r.veces++;
-      if (!r.ultimo || a.fecha > r.ultimo) r.ultimo = a.fecha;
-      porUsuario.set(a.usuario_id, r);
-    });
+    if (totales) {
+      // Cifras exactas, contadas por la base de datos
+      totales.forEach(t => porUsuario.set(t.usuario_id, {
+        id: t.usuario_id, veces: Number(t.veces) || 0, ultimo: t.ultimo,
+      }));
+    } else {
+      // Reserva: si la función aún no existe en la base, se cuenta
+      // con lo que se alcanzó a traer (puede quedarse corto)
+      accesos.forEach(a => {
+        const r = porUsuario.get(a.usuario_id) || { id: a.usuario_id, veces: 0, ultimo: null };
+        r.veces++;
+        if (!r.ultimo || a.fecha > r.ultimo) r.ultimo = a.fecha;
+        porUsuario.set(a.usuario_id, r);
+      });
+    }
     const filas = db.users.filter(u => u.activo).map(u => {
       const r = porUsuario.get(u.id);
       return { id: u.id, nombre: u.nombre, rol: u.rol, veces: r?.veces || 0, ultimo: r?.ultimo || null };
@@ -6899,7 +6918,15 @@ function ActividadReciente({ db }) {
       if (!b.ultimo) return -1;
       return b.ultimo.localeCompare(a.ultimo);
     });
-  }, [accesos, db.users]);
+  }, [accesos, totales, db.users]);
+
+  /* Total real de entradas del periodo. Se suma el conteo que hizo la
+     base; solo si esa función no estuviera disponible se recurre a las
+     filas traídas, que pueden venir topadas. */
+  const totalEntradas = totales
+    ? totales.reduce((n, t) => n + (Number(t.veces) || 0), 0)
+    : (accesos ? accesos.length : 0);
+  const topado = !totales && accesos && accesos.length >= 1000;
 
   const nunca = resumen.filter(r => !r.ultimo).length;
 
@@ -6972,7 +6999,8 @@ function ActividadReciente({ db }) {
             <>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 <Stat icono={Users} label="Han entrado" valor={resumen.filter(r => r.ultimo).length} sub={`de ${resumen.length} cuentas activas`} />
-                <Stat icono={Activity} label="Entradas registradas" valor={accesos.length} sub={`últimos ${dias} días`} />
+                <Stat icono={Activity} label="Entradas registradas" valor={totalEntradas}
+                  sub={topado ? `últimos ${dias} días (cifra incompleta)` : `últimos ${dias} días`} />
                 <Stat icono={AlertTriangle} label="Nunca han entrado" valor={nunca} color={nunca ? "text-amber-600" : "text-slate-900"} />
               </div>
 
