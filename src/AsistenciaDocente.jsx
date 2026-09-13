@@ -71,6 +71,15 @@ const fmtDuracion = (seg) => {
 
 const hhmm = (t) => (t ? String(t).slice(0, 5) : "—");
 
+/* Forma corta para el teléfono: "6h 20m" en vez de "6 h 20 min",
+   que no cabe en una columna de un tercio de pantalla. */
+const fmtDuracionCorta = (seg) => {
+  if (!seg) return "—";
+  const h = Math.floor(seg / 3600);
+  const m = Math.floor((seg % 3600) / 60);
+  return h ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
+};
+
 /* El número del reloj llega como texto ("004") en el reporte actual,
    pero una exportación distinta podría entregarlo como número (4).
    Si no se normalizara, "004" y "4" se tomarían como dos personas
@@ -266,25 +275,34 @@ function MiSemana({ usuarioId, nombre }) {
   }, [filas, lunes]);
 
   const totalSemana = filas.reduce((s, f) => s + (f.segundos || 0), 0);
-  const diasTrabajados = filas.filter((f) => (f.segundos || 0) > 0).length;
   const esFutura = lunes > lunesDe(new Date());
 
   return (
     <div className="space-y-3">
-      <Card className="p-3 flex items-center justify-between gap-2">
-        <button className={btnSec + " !px-3 !py-1.5"} onClick={() => setLunes(sumarDias(lunes, -7))}>
-          <ChevronLeft size={15} />Anterior
-        </button>
-        <div className="text-center min-w-0">
-          <div className="text-sm font-bold truncate">
+      {/* En celular las fechas van completas arriba y los botones abajo;
+          en pantallas anchas, todo en una sola línea. */}
+      <Card className="p-3">
+        <div className="text-center mb-2 sm:hidden">
+          <div className="text-sm font-bold">
             {fmtCorta(lunes)} al {fmtCorta(sumarDias(lunes, 5))}
           </div>
           <div className="text-[11px] text-slate-400">{lunes.getFullYear()} · lunes a sábado</div>
         </div>
-        <button className={btnSec + " !px-3 !py-1.5"} disabled={esFutura}
-          onClick={() => setLunes(sumarDias(lunes, 7))}>
-          Siguiente<ChevronRight size={15} />
-        </button>
+        <div className="flex items-center justify-between gap-2">
+          <button className={btnSec + " !px-3 !py-1.5"} onClick={() => setLunes(sumarDias(lunes, -7))}>
+            <ChevronLeft size={15} />Anterior
+          </button>
+          <div className="text-center min-w-0 hidden sm:block">
+            <div className="text-sm font-bold">
+              {fmtCorta(lunes)} al {fmtCorta(sumarDias(lunes, 5))}
+            </div>
+            <div className="text-[11px] text-slate-400">{lunes.getFullYear()} · lunes a sábado</div>
+          </div>
+          <button className={btnSec + " !px-3 !py-1.5"} disabled={esFutura}
+            onClick={() => setLunes(sumarDias(lunes, 7))}>
+            Siguiente<ChevronRight size={15} />
+          </button>
+        </div>
       </Card>
 
       {nombre && <p className="text-sm font-semibold text-slate-600">{nombre}</p>}
@@ -301,24 +319,14 @@ function MiSemana({ usuarioId, nombre }) {
         </Card>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3">
-            <Card className="p-4">
-              <div className="flex items-center gap-2 text-slate-400 mb-1">
-                <Clock size={15} /><span className="text-[11px] uppercase font-semibold">Tiempo de la semana</span>
-              </div>
-              <div className="text-2xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>
-                {fmtDuracion(totalSemana)}
-              </div>
-            </Card>
-            <Card className="p-4">
-              <div className="flex items-center gap-2 text-slate-400 mb-1">
-                <CheckCircle2 size={15} /><span className="text-[11px] uppercase font-semibold">Días con registro</span>
-              </div>
-              <div className="text-2xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>
-                {diasTrabajados}<span className="text-base text-slate-400 font-semibold"> / 6</span>
-              </div>
-            </Card>
-          </div>
+          <Card className="p-4">
+            <div className="flex items-center gap-2 text-slate-400 mb-1">
+              <Clock size={15} /><span className="text-[11px] uppercase font-semibold">Tiempo de la semana</span>
+            </div>
+            <div className="text-2xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>
+              {fmtDuracion(totalSemana)}
+            </div>
+          </Card>
 
           <Card className="overflow-hidden">
             {/* Encabezado solo en pantallas anchas */}
@@ -327,28 +335,47 @@ function MiSemana({ usuarioId, nombre }) {
             </div>
             {dias.map(({ fecha, iso, registro }) => (
               <div key={iso} className="border-b border-slate-100 last:border-0 px-4 py-2.5">
-                <div className="sm:grid sm:grid-cols-[1.4fr_1fr_1fr_1.2fr] sm:gap-2 sm:items-center">
+                {/* Pantallas anchas: una sola línea con cuatro columnas */}
+                <div className="hidden sm:grid sm:grid-cols-[1.4fr_1fr_1fr_1.2fr] sm:gap-2 sm:items-center">
                   <div>
                     <div className="text-sm font-medium">{DIAS[fecha.getDay()]}</div>
                     <div className="text-[11px] text-slate-400">
                       {fecha.toLocaleDateString("es-MX", { day: "numeric", month: "short" })}
                     </div>
                   </div>
-                  <div className="text-sm text-slate-600 sm:text-inherit">
-                    <span className="sm:hidden text-[11px] text-slate-400">Entrada: </span>
-                    {hhmm(registro?.entrada)}
+                  <div className="text-sm">{hhmm(registro?.entrada)}</div>
+                  <div className="text-sm">{hhmm(registro?.salida)}</div>
+                  <div className="text-sm font-semibold">{fmtDuracion(registro?.segundos)}</div>
+                </div>
+
+                {/* Celular: el día arriba y los tres datos en una fila
+                    de tres columnas, para que la semana entre completa
+                    sin renglones de más. */}
+                <div className="sm:hidden">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-sm font-medium">{DIAS[fecha.getDay()]}</span>
+                    <span className="text-[11px] text-slate-400">
+                      {fecha.toLocaleDateString("es-MX", { day: "numeric", month: "short" })}
+                    </span>
                   </div>
-                  <div className="text-sm text-slate-600">
-                    <span className="sm:hidden text-[11px] text-slate-400">Salida: </span>
-                    {hhmm(registro?.salida)}
-                  </div>
-                  <div className="text-sm font-semibold">
-                    <span className="sm:hidden text-[11px] text-slate-400 font-normal">Trabajado: </span>
-                    {fmtDuracion(registro?.segundos)}
+                  <div className="grid grid-cols-3 gap-2 mt-1">
+                    <div className="min-w-0">
+                      <div className="text-[10px] uppercase text-slate-400">Entrada</div>
+                      <div className="text-sm">{hhmm(registro?.entrada)}</div>
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[10px] uppercase text-slate-400">Salida</div>
+                      <div className="text-sm">{hhmm(registro?.salida)}</div>
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[10px] uppercase text-slate-400">Trabajado</div>
+                      <div className="text-sm font-semibold">{fmtDuracionCorta(registro?.segundos)}</div>
+                    </div>
                   </div>
                 </div>
+
                 {registro?.nota && (
-                  <span className="inline-block mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700">
+                  <span className="inline-block mt-1.5 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700">
                     {etiquetaNota(registro.nota)}
                   </span>
                 )}
