@@ -100,7 +100,10 @@ const Card = ({ children, className = "", ...r }) => (
 
 export default function AsistenciaDocente({ user, usuarios = [] }) {
   const esRH = user.rol === "admin" || user.rol === "jefe_rh";
-  const [tab, setTab] = useState("mia");
+  /* Quien administra Recursos Humanos no ve aquí su propia tarjeta de
+     tiempo: para eso entra con su cuenta de docente. Así no se mezcla
+     la administración del checador con el registro personal. */
+  const [tab, setTab] = useState("personal");
 
   return (
     <div className="space-y-4">
@@ -115,7 +118,7 @@ export default function AsistenciaDocente({ user, usuarios = [] }) {
 
       {esRH && (
         <div className="flex gap-1 bg-slate-100 p-1 rounded-xl w-fit flex-wrap">
-          {[["mia", "Mi asistencia"], ["personal", "Todo el personal"],
+          {[["personal", "Todo el personal"],
             ["cargar", "Cargar semana"], ["vinculos", "Vinculación"]].map(([id, txt]) => (
             <button key={id} onClick={() => setTab(id)}
               className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition ${
@@ -126,7 +129,7 @@ export default function AsistenciaDocente({ user, usuarios = [] }) {
         </div>
       )}
 
-      {(!esRH || tab === "mia") && <MiSemana usuarioId={user.id} />}
+      {!esRH && <MiSemana usuarioId={user.id} />}
       {esRH && tab === "personal" && <PanelPersonal usuarios={usuarios} />}
       {esRH && tab === "cargar" && <CargarSemana user={user} usuarios={usuarios} />}
       {esRH && tab === "vinculos" && <Vinculacion usuarios={usuarios} />}
