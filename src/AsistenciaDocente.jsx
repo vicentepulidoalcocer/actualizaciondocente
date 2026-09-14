@@ -142,6 +142,13 @@ const NOTAS = {
 };
 const etiquetaNota = (n) => NOTAS[n] || n || "";
 
+/* La marca de "Absent" no se muestra: el día ya se ve vacío, con
+   guiones en entrada, salida y tiempo, así que la etiqueta no
+   aportaba nada y señalaba de más. Las demás sí se muestran, porque
+   avisan de algo que la persona puede corregir o aclarar. */
+const NOTAS_OCULTAS = ["Absent"];
+const notaVisible = (n) => !!n && !NOTAS_OCULTAS.includes(n);
+
 /* ---------------- estilos compartidos ---------------- */
 const btnPrim = "inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#1a2340] text-white text-sm font-semibold hover:bg-[#26305a] transition disabled:opacity-50";
 const btnSec = "inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-slate-300 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition disabled:opacity-50";
@@ -511,7 +518,7 @@ function MiSemana({ usuarioId, nombre, propia = false }) {
                   </div>
                 </div>
 
-                {registro?.nota && (
+                {notaVisible(registro?.nota) && (
                   <span className="inline-block mt-1.5 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700">
                     {etiquetaNota(registro.nota)}
                   </span>
