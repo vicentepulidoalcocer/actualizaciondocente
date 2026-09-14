@@ -15,9 +15,10 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Clock, Loader2, AlertTriangle, CheckCircle2, ChevronLeft,
-  ChevronRight, Link2, Search,
+  ChevronRight, Link2, Search, Paperclip, X,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
+import { guardarArchivo, leerArchivo, eliminarArchivo, MAX_FILE_B64 } from "./lib/nube";
 
 /* ---------------- utilidades de fecha y tiempo ---------------- */
 
@@ -93,6 +94,44 @@ const muestraReloj = (v) => {
   const t = String(v ?? "").trim();
   return /^\d+$/.test(t) ? t.padStart(3, "0") : t;
 };
+
+/* Convierte el archivo elegido a texto base64, como lo esperan las
+   funciones de guardado que ya usa el resto del portal. */
+const leerComoBase64 = (file) => new Promise((res, rej) => {
+  const fr = new FileReader();
+  fr.onload = () => res(String(fr.result).split(",")[1]);
+  fr.onerror = () => rej(new Error("No se pudo leer el archivo."));
+  fr.readAsDataURL(file);
+});
+
+/* Abre en una pestaña nueva un documento guardado */
+async function abrirDocumento(clave, nombre) {
+  const f = await leerArchivo(clave);
+  if (!f) { alert(`No se pudo abrir "${nombre || "el documento"}".`); return; }
+  const bytes = atob(f.base64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  window.open(URL.createObjectURL(new Blob([arr], { type: f.mime || "application/pdf" })), "_blank");
+}
+
+/* Botón para ver el documento de un permiso */
+function VerDocumento({ permiso }) {
+  const [abriendo, setAbriendo] = useState(false);
+  if (!permiso.archivo_guardado) return null;
+  return (
+    <button
+      className="inline-flex items-center gap-1.5 text-sm text-indigo-600 font-semibold hover:underline"
+      disabled={abriendo}
+      onClick={async () => {
+        setAbriendo(true);
+        await abrirDocumento("permiso_" + permiso.id, permiso.archivo_nombre);
+        setAbriendo(false);
+      }}>
+      {abriendo ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
+      {permiso.archivo_nombre || "Ver documento"}
+    </button>
+  );
+}
 
 /* Etiquetas legibles para las notas que pone el checador */
 const NOTAS = {
@@ -235,6 +274,7 @@ function MisPermisos({ usuarioId }) {
           {f.observaciones && (
             <p className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2">{f.observaciones}</p>
           )}
+          <VerDocumento permiso={f} />
         </div>
       ))}
     </Card>
@@ -709,14 +749,48 @@ function PanelPermisos({ user, usuarios }) {
       setGuardando(false); return;
     }
 
+    /* El identificador se genera aquí para poder nombrar el archivo
+       antes de registrar el permiso. */
+    const id = (crypto.randomUUID && crypto.randomUUID()) ||
+      `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    let archivoNombre = null, archivoGuardado = false;
+    if (form._archivo) {
+      try {
+        const b64 = await leerComoBase64(form._archivo);
+        if (b64.length > MAX_FILE_B64) {
+          setErrForm("El documento supera el límite de ~7.5 MB. Comprímelo e inténtalo de nuevo.");
+          setGuardando(false); return;
+        }
+        const r = await guardarArchivo("permiso_" + id, b64,
+          form._archivo.type || "application/pdf", form._archivo.name);
+        if (!r.guardado) {
+          setErrForm("No se pudo guardar el documento. " + (r.error || ""));
+          setGuardando(false); return;
+        }
+        archivoNombre = form._archivo.name;
+        archivoGuardado = true;
+      } catch (e) {
+        setErrForm(e.message); setGuardando(false); return;
+      }
+    }
+
     const { error } = await supabase.from("permisos_personal").insert({
+      id,
       usuario_id: form.usuario_id,
       fecha: form.fecha,
       motivo: form.motivo.trim(),
       observaciones: (form.observaciones || "").trim(),
+      archivo_nombre: archivoNombre,
+      archivo_guardado: archivoGuardado,
       registrado_por: user.id,
     });
-    if (error) { setErrForm(error.message); setGuardando(false); return; }
+    if (error) {
+      /* Si el permiso no se pudo registrar, el documento recién subido
+         se retira para no dejar archivos sueltos ocupando espacio. */
+      if (archivoGuardado) await eliminarArchivo("permiso_" + id);
+      setErrForm(error.message); setGuardando(false); return;
+    }
     await cargar();
     setForm(null);
     setGuardando(false);
@@ -727,6 +801,7 @@ function PanelPermisos({ user, usuarios }) {
       `¿Eliminar el permiso de ${nombreDe(f.usuario_id)} del ${fmtFechaDia(f.fecha)}? Dejará de verlo en su portal.`)) return;
     const { error } = await supabase.from("permisos_personal").delete().eq("id", f.id);
     if (error) { alert("No se pudo eliminar: " + error.message); return; }
+    if (f.archivo_guardado) await eliminarArchivo("permiso_" + f.id);
     await cargar();
   };
 
@@ -746,7 +821,7 @@ function PanelPermisos({ user, usuarios }) {
         </p>
         <button className={btnPrim + " !px-3 !py-1.5"}
           onClick={() => {
-            setForm({ usuario_id: "", fecha: isoDe(new Date()), motivo: "", observaciones: "" });
+            setForm({ usuario_id: "", fecha: isoDe(new Date()), motivo: "", observaciones: "", _archivo: null });
             setErrForm("");
           }}>
           Registrar permiso
@@ -781,8 +856,25 @@ function PanelPermisos({ user, usuarios }) {
               value={form.observaciones}
               onChange={(e) => setForm({ ...form, observaciones: e.target.value })} />
           </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-slate-600">Documento (opcional)</span>
+            <div className="mt-1">
+              <input type="file" accept=".pdf,application/pdf" className="text-sm"
+                onChange={(e) => setForm({ ...form, _archivo: e.target.files[0] || null })} />
+            </div>
+            {form._archivo && (
+              <div className="mt-2 flex items-center gap-2 text-xs bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5">
+                <Paperclip size={12} className="text-emerald-600 shrink-0" />
+                <span className="flex-1 truncate">{form._archivo.name}</span>
+                <button type="button" className="text-rose-500 hover:text-rose-700 shrink-0"
+                  title="Quitar el documento"
+                  onClick={() => setForm({ ...form, _archivo: null })}><X size={13} /></button>
+              </div>
+            )}
+          </label>
           <p className="text-[11px] text-slate-400">
-            Tanto el motivo como las observaciones los verá la persona en su portal.
+            El motivo, las observaciones y el documento los verá la persona en su portal.
+            Útil para licencias médicas, oficios de comisión y constancias.
           </p>
           {errForm && (
             <p className="text-sm text-rose-600 flex items-start gap-1.5">
@@ -846,6 +938,7 @@ function PanelPermisos({ user, usuarios }) {
                 {f.observaciones && (
                   <p className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2 break-words">{f.observaciones}</p>
                 )}
+                <VerDocumento permiso={f} />
               </div>
               <button className="text-xs font-semibold text-rose-600 hover:underline shrink-0 text-left"
                 onClick={() => eliminar(f)}>
