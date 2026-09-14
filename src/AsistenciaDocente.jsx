@@ -1389,6 +1389,8 @@ function HistorialSemanas({ usuarios, recarga }) {
   const [filas, setFilas] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState("");
+  const [propia, setPropia] = useState(0);   // recarga tras un borrado
+  const [borrando, setBorrando] = useState("");
 
   useEffect(() => {
     let vivo = true;
@@ -1402,7 +1404,27 @@ function HistorialSemanas({ usuarios, recarga }) {
       setCargando(false);
     })();
     return () => { vivo = false; };
-  }, [recarga]);
+  }, [recarga, propia]);
+
+  /* Borrar una semana quita sus checadas Y las firmas de esa misma
+     semana: si no, quedarían firmas avalando horas que ya no existen. */
+  const borrar = async (f) => {
+    const rango = `${fmtDia(f.primer_dia)} al ${fmtDia(f.ultimo_dia)}`;
+    if (!window.confirm(
+      `¿Borrar la semana del ${rango}?\n\n` +
+      `Se eliminarán ${f.registros} registro(s) de ${f.personas} persona(s), ` +
+      `y las firmas de conformidad de esa semana.\n\n` +
+      `Esto no se puede deshacer. Si el archivo estaba mal, también puedes ` +
+      `volver a cargarlo: la semana se reemplaza sola.`)) return;
+
+    setBorrando(f.lunes); setErr("");
+    const { error: eCh } = await supabase.from("checadas").delete()
+      .gte("fecha", f.primer_dia).lte("fecha", f.ultimo_dia);
+    if (eCh) { setErr("No se pudo borrar: " + eCh.message); setBorrando(""); return; }
+    await supabase.from("firmas_semana").delete().eq("lunes", f.lunes);
+    setPropia((n) => n + 1);
+    setBorrando("");
+  };
 
   const nombreDe = (id) =>
     (usuarios || []).find((u) => u.id === id)?.nombre || "—";
@@ -1458,6 +1480,13 @@ function HistorialSemanas({ usuarios, recarga }) {
               {f.sin_vincular} registro(s) sin vincular
             </span>
           )}
+          <div className="pt-1">
+            <button className="text-xs font-semibold text-rose-600 hover:underline disabled:opacity-50"
+              disabled={borrando === f.lunes}
+              onClick={() => borrar(f)}>
+              {borrando === f.lunes ? "Borrando…" : "Borrar esta semana"}
+            </button>
+          </div>
         </div>
       ))}
     </Card>
