@@ -77,6 +77,18 @@ const esRolAcademico = (r) => r === "admin" || r === "jefe_academico";
 const esRolControlEscolar = (r) => r === "admin" || r === "administrativo";
 const esRolTutorias = (r) => r === "admin" || r === "coord_tutorias";
 const esRolRH = (r) => r === "admin" || r === "jefe_rh";
+/* Roles que tienen un tablero de inicio. Los demás aterrizan en su
+   pantalla de trabajo: si esta lista no existiera, cualquier rol
+   nuevo caería en el tablero del docente por omisión. */
+const tieneTablero = (r) =>
+  r === "admin" || r === "jefe_formacion" || r === "jefe_academico" || r === "docente";
+/* Pantalla en la que inicia cada rol al entrar */
+const paginaInicial = (r) =>
+  tieneTablero(r) ? "dashboard"
+  : r === "administrativo" ? "asistencia"
+  : r === "coord_tutorias" ? "tutorias"
+  : r === "personal_administrativo" || r === "jefe_rh" ? "asistencia_docente"
+  : "avisos";
 /* Quiénes ven su tarjeta de tiempo del checador: el personal docente,
    el personal administrativo y quien administra Recursos Humanos. */
 const veAsistenciaDocente = (r) =>
@@ -956,9 +968,12 @@ export default function App() {
     // Al iniciar sesión, cada rol aterriza en su pantalla de trabajo;
     // en recargas posteriores no se toca la pantalla en la que esté.
     if (esPrimeraCarga) registrarAcceso(yo.id);
-    if (esPrimeraCarga && yo.rol === "docente") setPagina("avisos");
-    if (esPrimeraCarga && yo.rol === "administrativo") setPagina("asistencia");
-    if (esPrimeraCarga && yo.rol === "coord_tutorias") setPagina("tutorias");
+    if (esPrimeraCarga) setPagina(yo.rol === "docente" ? "avisos" : paginaInicial(yo.rol));
+    /* Resguardo: si por cualquier motivo quedara en una pantalla que
+       su rol no puede ver, se le lleva a la suya en vez de dejarlo
+       ante una pantalla en blanco o ajena. */
+    setPagina(prev => (prev === "dashboard" && !tieneTablero(yo.rol))
+      ? paginaInicial(yo.rol) : prev);
   }, []);
 
   useEffect(() => {
@@ -1210,7 +1225,7 @@ export default function App() {
 
         {/* Contenido */}
         <main className="flex-1 p-4 lg:p-6 max-w-7xl mx-auto w-full">
-          {pagina === "dashboard" && (user.rol === "jefe_academico"
+          {pagina === "dashboard" && tieneTablero(user.rol) && (user.rol === "jefe_academico"
             ? <DashboardAcademico db={db} irA={irA} />
             : user.rol === "admin"
               ? <DashboardGeneral db={db} irA={irA} />
