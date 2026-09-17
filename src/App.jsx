@@ -1443,6 +1443,148 @@ function DashboardGeneral({ db, irA }) {
   );
 }
 
+/* ================================================================
+   CAPACITACIÓN POR CURSO
+   ----------------------------------------------------------------
+   Agrupa las constancias validadas por el nombre del curso, para ver
+   quiénes tomaron cada uno. Los nombres se comparan sin acentos, sin
+   mayúsculas y sin espacios de más, porque la lectura con IA no
+   siempre los transcribe idénticos: "Apropiación del MCCEMS" y
+   "APROPIACION DEL MCCEMS " deben contarse como el mismo curso.
+   ================================================================ */
+
+const claveCurso = (t) => (t || "")
+  .toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  .toLowerCase().replace(/[^a-z0-9ñ ]/g, " ").replace(/\s+/g, " ").trim();
+
+function CapacitacionPorCurso({ db, certs, irA }) {
+  const [q, setQ] = useState("");
+  const [abierto, setAbierto] = useState(null);
+  const [orden, setOrden] = useState("docentes"); // docentes | nombre
+
+  const nombreDe = (id) => db.users.find(u => u.id === id)?.nombre || "—";
+
+  const cursos = useMemo(() => {
+    const mapa = new Map();
+    certs.filter(c => c.estado === "validada" && !c._publico).forEach(c => {
+      // Se colapsan los espacios de más, sin tocar acentos ni mayúsculas
+      const titulo = (c.datos.curso || "").replace(/\s+/g, " ").trim();
+      const clave = claveCurso(titulo);
+      if (!clave) return;                       // sin título legible
+      if (!mapa.has(clave)) {
+        mapa.set(clave, { clave, titulo, participantes: new Map() });
+      }
+      const g = mapa.get(clave);
+      /* Se conserva el título más largo: suele ser el más completo
+         de las distintas transcripciones del mismo curso. */
+      if (titulo.length > g.titulo.length) g.titulo = titulo;
+      if (!g.participantes.has(c.docenteId)) {
+        g.participantes.set(c.docenteId, {
+          id: c.docenteId, horas: Number(c.datos.horas) || 0,
+          fecha: c.datos.fecha_termino || "", institucion: c.datos.institucion || "",
+        });
+      }
+    });
+    return [...mapa.values()].map(g => ({
+      ...g,
+      lista: [...g.participantes.values()]
+        .sort((a, b) => nombreDe(a.id).localeCompare(nombreDe(b.id), "es")),
+      horas: Math.max(...[...g.participantes.values()].map(p => p.horas), 0),
+    }));
+  }, [certs, db.users]);
+
+  const visibles = cursos
+    .filter(c => !q || claveCurso(c.titulo).includes(claveCurso(q)))
+    .sort((a, b) => orden === "nombre"
+      ? a.titulo.localeCompare(b.titulo, "es")
+      : (b.lista.length - a.lista.length) || a.titulo.localeCompare(b.titulo, "es"));
+
+  const docentesActivos = db.users.filter(u => u.rol === "docente" && u.activo).length;
+
+  const exportar = () => {
+    const filas = [["Curso", "Docentes que lo tomaron", "Horas", "Docente", "Institución", "Fecha de término"]];
+    visibles.forEach(c => c.lista.forEach(p => filas.push([
+      c.titulo, c.lista.length, p.horas, nombreDe(p.id), p.institucion, p.fecha,
+    ])));
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csv = "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    a.download = "capacitacion_por_curso.csv";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  return (
+    <Card className="p-4 lg:col-span-2">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <h3 className="font-bold text-sm">Capacitación por curso</h3>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input className={inputCls + " !mt-0 !pl-9 !w-52"} placeholder="Buscar curso…"
+              value={q} onChange={e => setQ(e.target.value)} />
+          </div>
+          <select className={inputCls + " !mt-0 !w-auto"} value={orden} onChange={e => setOrden(e.target.value)}>
+            <option value="docentes">Más tomados primero</option>
+            <option value="nombre">Por nombre</option>
+          </select>
+          <button className={btnSec + " !px-3 !py-1.5"} onClick={exportar} disabled={!visibles.length}>
+            <Download size={13} />Exportar
+          </button>
+        </div>
+      </div>
+
+      <p className="text-xs text-slate-500 mb-3">
+        {cursos.length} curso(s) distinto(s) con constancia validada. Toca uno para ver quiénes lo tomaron.
+      </p>
+
+      {visibles.length === 0 ? (
+        <p className="text-sm text-slate-400 py-8 text-center">
+          {q ? "Ningún curso coincide con la búsqueda." : "Aún no hay cursos validados con estos filtros."}
+        </p>
+      ) : (
+        <div className="max-h-[28rem] overflow-y-auto">
+          {visibles.map(c => {
+            const abre = abierto === c.clave;
+            const pct = docentesActivos ? Math.round(100 * c.lista.length / docentesActivos) : 0;
+            return (
+              <div key={c.clave} className="border-b border-slate-100 last:border-0">
+                <button className="w-full text-left py-2.5 flex items-start gap-3 hover:bg-slate-50 px-2 -mx-2 rounded-lg"
+                  onClick={() => setAbierto(abre ? null : c.clave)}>
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-sm font-medium break-words">{c.titulo}</span>
+                    <span className="block text-xs text-slate-400">
+                      {c.horas > 0 && `${c.horas} h · `}{pct}% de los docentes activos
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-xs font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                    {c.lista.length}
+                  </span>
+                  <ChevronRight size={15}
+                    className={`shrink-0 text-slate-300 transition-transform mt-0.5 ${abre ? "rotate-90" : ""}`} />
+                </button>
+                {abre && (
+                  <div className="pb-3 pl-2 space-y-1">
+                    {c.lista.map(p => (
+                      <button key={p.id} onClick={() => irA && irA("docentes", p.id)}
+                        className="w-full text-left text-xs px-2.5 py-1.5 rounded-lg hover:bg-indigo-50 flex flex-wrap items-baseline gap-x-2">
+                        <span className="font-medium">{nombreDe(p.id)}</span>
+                        {p.institucion && <span className="text-slate-400">{p.institucion}</span>}
+                        {p.fecha && <span className="text-slate-400">· {p.fecha}</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function DashboardAdmin({ db, irA }) {
   const { certs, ciclo, UI } = usarFiltros(db);
   const docentes = db.users.filter(u => u.rol === "docente" && u.activo);
@@ -1516,6 +1658,7 @@ function DashboardAdmin({ db, irA }) {
               <Tooltip /><Legend wrapperStyle={{ fontSize: 11 }} /></PieChart>
           </ResponsiveContainer>}
         </Card>
+        <CapacitacionPorCurso db={db} certs={certs} irA={irA} />
         <Card className="p-4 lg:col-span-2">
           <h3 className="font-bold text-sm mb-3">Evolución de horas de capacitación por ciclo escolar (histórico)</h3>
           {evolucion.length === 0 ? <p className="text-sm text-slate-400 py-8 text-center">Aún no hay historial.</p> :
