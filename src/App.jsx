@@ -1453,6 +1453,41 @@ function DashboardGeneral({ db, irA }) {
    "APROPIACION DEL MCCEMS " deben contarse como el mismo curso.
    ================================================================ */
 
+/* ================================================================
+   Etiquetas de las gráficas de avance (recibidas / pendientes)
+   ----------------------------------------------------------------
+   La gráfica pinta el texto del mismo color que su barra. La barra de
+   pendientes es gris muy claro, así que su texto casi no se leía. Aquí
+   el texto se colorea aparte: verde lo recibido y rojo lo pendiente,
+   sin cambiar el aspecto de las barras.
+   ================================================================ */
+const COLOR_RECIBIDO = "#059669";
+const COLOR_PENDIENTE = "#e11d48";
+
+function TooltipAvance({ active, payload, label, recibidoTxt = "Recibidas" }) {
+  if (!active || !payload || !payload.length) return null;
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 10,
+                  padding: "8px 12px", boxShadow: "0 4px 12px rgba(15,23,42,.08)" }}>
+      <div style={{ fontWeight: 600, marginBottom: 4, color: "#0f172a" }}>{label}</div>
+      {payload.map((it) => {
+        const pendiente = it.dataKey === "pendientes";
+        return (
+          <div key={it.dataKey} style={{ color: pendiente ? COLOR_PENDIENTE : COLOR_RECIBIDO, fontWeight: 600 }}>
+            {pendiente ? "Pendientes" : recibidoTxt} : {it.value}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const leyendaAvance = (recibidoTxt) => (v) => (
+  <span style={{ color: v === "pendientes" ? COLOR_PENDIENTE : COLOR_RECIBIDO, fontWeight: 600 }}>
+    {v === "pendientes" ? "Pendientes" : recibidoTxt}
+  </span>
+);
+
 const claveCurso = (t) => (t || "")
   .toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
   .toLowerCase().replace(/[^a-z0-9ñ ]/g, " ").replace(/\s+/g, " ").trim();
@@ -2398,8 +2433,8 @@ function PanelTutorias({ db, irA }) {
                   <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
                   <XAxis dataKey="nombre" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                  <Tooltip formatter={(v, n) => [v, n === "entregadas" ? "Recibidos" : "Pendientes"]} />
-                  <Legend formatter={v => v === "entregadas" ? "Recibidos" : "Pendientes"} wrapperStyle={{ fontSize: 12 }} />
+                  <Tooltip content={<TooltipAvance recibidoTxt="Recibidos" />} />
+                  <Legend formatter={leyendaAvance("Recibidos")} wrapperStyle={{ fontSize: 12 }} />
                   <Bar dataKey="entregadas" stackId="a" fill="#059669" />
                   <Bar dataKey="pendientes" stackId="a" fill="#e2e8f0" radius={[6, 6, 0, 0]} />
                 </BarChart>
@@ -4414,8 +4449,8 @@ function DashboardAcademico({ db, irA, compacto = false }) {
                     <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
                     <XAxis dataKey="nombre" tick={{ fontSize: 11 }} />
                     <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                    <Tooltip formatter={(v, n) => [v, n === "entregadas" ? "Recibidas" : "Pendientes"]} />
-                    <Legend formatter={v => v === "entregadas" ? "Recibidas" : "Pendientes"} wrapperStyle={{ fontSize: 12 }} />
+                    <Tooltip content={<TooltipAvance recibidoTxt="Recibidas" />} />
+                    <Legend formatter={leyendaAvance("Recibidas")} wrapperStyle={{ fontSize: 12 }} />
                     <Bar dataKey="entregadas" stackId="a" fill="#059669" radius={[0, 0, 0, 0]} />
                     <Bar dataKey="pendientes" stackId="a" fill="#e2e8f0" radius={[6, 6, 0, 0]} />
                   </BarChart>
