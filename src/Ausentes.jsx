@@ -54,6 +54,148 @@ export function interpretarGrupo(texto) {
   return sem && letra ? { sem: String(sem), letra } : null;
 }
 
+/* ================================================================
+   SEGUIMIENTO · alumnos de mis grupos con faltas acumuladas
+   ----------------------------------------------------------------
+   Mismo criterio que el panel de control escolar: las faltas
+   justificadas no cuentan, y el denominador son los días en que
+   realmente se pasó lista.
+   ================================================================ */
+
+const inicioSemestre = () => {
+  const h = new Date();
+  const a = h.getFullYear(), m = h.getMonth() + 1;
+  if (m >= 8) return `${a}-08-01`;
+  if (m === 1) return `${a - 1}-08-01`;
+  return `${a}-02-01`;
+};
+
+const COLORES_SEM = {
+  verde:    { chip: "bg-emerald-50 border-emerald-200 text-emerald-800", punto: "#059669", txt: "Al corriente" },
+  amarillo: { chip: "bg-amber-50 border-amber-200 text-amber-800",      punto: "#E8871E", txt: "En riesgo" },
+  rojo:     { chip: "bg-rose-50 border-rose-200 text-rose-800",         punto: "#e11d48", txt: "Atención urgente" },
+};
+
+function SeguimientoGrupos({ misGrupos }) {
+  const [abierto, setAbierto] = useState(false);
+  const [datos, setDatos] = useState(null);
+  const [alumnos, setAlumnos] = useState([]);
+  const [dias, setDias] = useState(0);
+  const [cargando, setCargando] = useState(false);
+  const [err, setErr] = useState("");
+
+  const desde = inicioSemestre();
+  const hasta = hoyISO();
+
+  useEffect(() => {
+    if (!abierto || datos) return;
+    let vivo = true;
+    (async () => {
+      setCargando(true); setErr("");
+      const [al, res, dd] = await Promise.all([
+        supabase.from("alumnos_basico").select("*"),
+        supabase.rpc("resumen_inasistencias", { desde, hasta }),
+        supabase.rpc("dias_con_registro", { desde, hasta }),
+      ]);
+      if (!vivo) return;
+      if (al.error || res.error || dd.error) {
+        setErr((al.error || res.error || dd.error).message);
+        setCargando(false); return;
+      }
+      setAlumnos(al.data || []);
+      setDatos(res.data || []);
+      setDias(Number(dd.data) || 0);
+      setCargando(false);
+    })();
+    return () => { vivo = false; };
+  }, [abierto, datos, desde, hasta]);
+
+  const lista = useMemo(() => {
+    if (!datos) return [];
+    const porAlumno = new Map(datos.map(d => [d.alumno_id, d]));
+    const claves = new Set(misGrupos.map(g => `${g.sem}|${g.letra}`));
+    return (alumnos || [])
+      .filter(a => a.activo !== false)
+      .filter(a => claves.has(`${a.semestre || ""}|${a.grupo || ""}`))
+      .map(a => {
+        const d = porAlumno.get(a.id) || {};
+        const presentes = Number(d.presentes) || 0;
+        const justificadas = Number(d.justificadas) || 0;
+        const faltas = Math.max(0, dias - presentes - justificadas);
+        return { ...a, presentes, justificadas, faltas,
+          sem: faltas >= 6 ? "rojo" : faltas >= 3 ? "amarillo" : "verde" };
+      })
+      .filter(a => a.sem !== "verde")
+      .sort((a, b) => (b.faltas - a.faltas) || (a.nombre || "").localeCompare(b.nombre || "", "es"));
+  }, [datos, alumnos, dias, misGrupos]);
+
+  return (
+    <Card className="p-4">
+      <button className="w-full flex items-center justify-between gap-2 text-left"
+        onClick={() => setAbierto(v => !v)}>
+        <span>
+          <span className="font-bold text-sm">Seguimiento de faltas acumuladas</span>
+          <span className="block text-xs text-slate-500">
+            Alumnos de tus grupos que llevan varias inasistencias en el semestre
+          </span>
+        </span>
+        <span className="text-xs text-slate-400 shrink-0">{abierto ? "Ocultar" : "Ver"}</span>
+      </button>
+
+      {abierto && (
+        <div className="mt-3">
+          {cargando && (
+            <p className="text-sm text-slate-400 py-4 text-center flex items-center justify-center gap-2">
+              <Loader2 size={15} className="animate-spin" />Calculando…
+            </p>
+          )}
+          {err && (
+            <p className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2.5">
+              No se pudo consultar: {err}
+            </p>
+          )}
+          {!cargando && !err && dias === 0 && (
+            <p className="text-sm text-slate-400 py-4 text-center">
+              Todavía no se ha pasado lista este semestre.
+            </p>
+          )}
+          {!cargando && !err && dias > 0 && lista.length === 0 && (
+            <p className="text-sm text-emerald-700 py-4 text-center">
+              Ningún alumno de tus grupos acumula faltas preocupantes.
+            </p>
+          )}
+          {!cargando && lista.length > 0 && (
+            <>
+              <p className="text-xs text-slate-400 mb-2">
+                {dias} día(s) con lista pasada desde el inicio del semestre.
+                Las faltas justificadas no se cuentan aquí.
+              </p>
+              {lista.map(a => (
+                <div key={a.id} className="flex items-center gap-2 py-2 border-b border-slate-100 last:border-0">
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: COLORES_SEM[a.sem].punto }} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium break-words">{a.nombre}</div>
+                    <div className="text-xs text-slate-500">
+                      {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · asistió {a.presentes} de {dias}
+                      {a.justificadas > 0 && <span className="text-sky-600"> · {a.justificadas} justificada(s)</span>}
+                    </div>
+                  </div>
+                  <span className={`text-xs font-bold px-2.5 py-1 rounded-full border shrink-0 ${COLORES_SEM[a.sem].chip}`}>
+                    {a.faltas} falta(s)
+                  </span>
+                </div>
+              ))}
+              <p className="text-[11px] text-slate-400 mt-2">
+                Para justificar una falta o avisar al tutor, acude a control escolar.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 export default function Ausentes({ db, user }) {
   const [fecha, setFecha] = useState(hoyISO());
   const [alumnos, setAlumnos] = useState(null);
@@ -125,10 +267,11 @@ export default function Ausentes({ db, user }) {
       ]);
       if (al.error) throw new Error(al.error.message);
       if (as.error) throw new Error(as.error.message);
-      if (ju.error) throw new Error(ju.error.message);
       setAlumnos(al.data || []);
       setRegistros(as.data || []);
-      setJustificaciones(ju.data || []);
+      /* Si la vista de justificaciones aún no existe, la pantalla sigue
+         mostrando los ausentes con normalidad. */
+      setJustificaciones(ju.error ? [] : (ju.data || []));
     } catch (e) { setErr(e.message); }
     setCargando(false);
   }, [fecha, misGrupos.length]);
@@ -317,6 +460,10 @@ export default function Ausentes({ db, user }) {
               )}
             </Card>
           ))}
+
+          {/* Todos sus grupos, no solo los de hoy: el seguimiento es del
+              semestre completo y debe verse también en fin de semana. */}
+          <SeguimientoGrupos misGrupos={todosMisGrupos} />
 
           <p className="text-[11px] text-slate-400">
             Se muestran solo los grupos a los que das clase este día, según tu horario.
