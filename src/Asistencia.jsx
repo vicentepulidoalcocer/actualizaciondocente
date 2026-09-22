@@ -11,7 +11,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   Camera, CameraOff, Users, Clock, CheckCircle2, AlertTriangle, Download,
   Upload, Search, Loader2, TrendingUp, MessageCircle, CalendarDays, X, RefreshCw,
-  Trash2, UserMinus, UserCheck,
+  Trash2, UserMinus, UserCheck, ClipboardCheck, Pencil,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
@@ -68,6 +68,7 @@ export default function Asistencia({ user }) {
   const [tab, setTab] = useState("escaneo");
   const [alumnos, setAlumnos] = useState([]);
   const [registrosHoy, setRegistrosHoy] = useState([]);
+  const [justificaciones, setJustificaciones] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState("");
   const [horaLimite, setHoraLimite] = useState(
@@ -79,14 +80,18 @@ export default function Asistencia({ user }) {
   const cargar = useCallback(async () => {
     setCargando(true); setErr("");
     try {
-      const [al, as] = await Promise.all([
+      const [al, as, ju] = await Promise.all([
         supabase.from("alumnos").select("*").order("nombre"),
         supabase.from("asistencias").select("*").eq("fecha", hoyISO()).order("hora"),
+        supabase.from("justificaciones").select("*").eq("fecha", hoyISO()),
       ]);
       if (al.error) throw new Error(al.error.message);
       if (as.error) throw new Error(as.error.message);
       setAlumnos(al.data || []);
       setRegistrosHoy(as.data || []);
+      /* Si la tabla de justificaciones aún no existe, se trabaja sin
+         ellas en lugar de dejar inservible toda la pantalla. */
+      setJustificaciones(ju.error ? [] : (ju.data || []));
     } catch (e) { setErr(e.message); }
     setCargando(false);
   }, []);
@@ -214,7 +219,8 @@ export default function Asistencia({ user }) {
         <PanelEscaneo registrar={registrar} registrosHoy={registrosHoy} horaLimite={horaLimite} alumnos={alumnos} />
       )}
       {!cargando && tab === "dashboard" && (
-        <PanelDia alumnos={alumnos} registros={registrosHoy} fecha={fecha} />
+        <PanelDia alumnos={alumnos} registros={registrosHoy} fecha={fecha}
+          justificaciones={justificaciones} user={user} recargar={cargar} />
       )}
       {!cargando && tab === "historial" && <PanelHistorial alumnos={alumnos} user={user} />}
       {!cargando && tab === "padron" && <PanelPadron alumnos={alumnos} recargar={cargar} />}
@@ -424,7 +430,11 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
 /* ================================================================
    PANEL DEL DÍA: indicadores, ausentes y WhatsApp
    ================================================================ */
-function PanelDia({ alumnos, registros, fecha }) {
+/* Etiquetas legibles del tipo de justificación */
+const TIPOS_JUSTIFICACION = { medica: "Médica", personal: "Personal", otra: "Otra" };
+
+function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recargar }) {
+  const [justificando, setJustificando] = useState(null);
   const [grupo, setGrupo] = useState("todos");
   const [semestre, setSemestre] = useState("todos");
   const grupos = [...new Set(alumnos.map(a => a.grupo).filter(Boolean))].sort();
@@ -439,6 +449,25 @@ function PanelDia({ alumnos, registros, fecha }) {
   const idsPresentes = new Set(presentes.map(r => r.alumno_id));
   const ausentes = padron.filter(a => !idsPresentes.has(a.id));
   const pct = padron.length ? Math.round(100 * presentes.length / padron.length) : 0;
+
+  // Justificación vigente de cada ausente, por su ID
+  const justPorAlumno = new Map((justificaciones || []).map(j => [j.alumno_id, j]));
+  const justificadosCount = ausentes.filter(a => justPorAlumno.has(a.id)).length;
+
+  const guardarJustificacion = async ({ alumno_id, tipo, motivo }) => {
+    const { error } = await supabase.from("justificaciones").upsert(
+      { alumno_id, fecha, tipo, motivo, registrado_por: user?.id },
+      { onConflict: "alumno_id,fecha" });
+    if (error) throw new Error(error.message);
+    await recargar();
+  };
+
+  const quitarJustificacion = async (alumno_id) => {
+    const { error } = await supabase.from("justificaciones")
+      .delete().eq("alumno_id", alumno_id).eq("fecha", fecha);
+    if (error) throw new Error(error.message);
+    await recargar();
+  };
 
   /* Un mismo grupo "A" existe en varios semestres, así que se agrupa
      por la combinación semestre + grupo. */
@@ -460,7 +489,11 @@ function PanelDia({ alumnos, registros, fecha }) {
   const exportarCSV = () => {
     const filas = [["ID", "Nombre", "Semestre", "Grupo", "Fecha", "Hora", "Estado"]];
     presentes.forEach(r => filas.push([r.alumno_id, r.nombre, r.semestre, r.grupo, r.fecha, r.hora, r.estado]));
-    ausentes.forEach(a => filas.push([a.id, a.nombre, a.semestre, a.grupo, fecha, "", "Ausente"]));
+    ausentes.forEach(a => {
+      const j = justPorAlumno.get(a.id);
+      filas.push([a.id, a.nombre, a.semestre, a.grupo, fecha, "",
+        j ? `Justificado (${TIPOS_JUSTIFICACION[j.tipo] || j.tipo})` : "Ausente"]);
+    });
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const csv = "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
     const a = document.createElement("a");
@@ -532,30 +565,137 @@ function PanelDia({ alumnos, registros, fecha }) {
       <Card className="p-4">
         <div className="flex items-center justify-between mb-2">
           <h3 className="font-bold text-sm">Ausentes {grupo !== "todos" && `· grupo ${grupo}`}</h3>
-          <span className="text-xs text-slate-400">{ausentes.length}</span>
+          <span className="text-xs text-slate-400">
+            {ausentes.length}
+            {justificadosCount > 0 && <span className="text-sky-600 font-semibold"> · {justificadosCount} justificado(s)</span>}
+          </span>
         </div>
         {ausentes.length === 0 && <p className="text-sm text-emerald-700 py-6 text-center">Asistencia completa. No hay ausentes.</p>}
         <div className="max-h-96 overflow-y-auto">
-          {ausentes.map(a => (
-            <div key={a.id} className={`flex items-center gap-3 py-2 border-b border-slate-100 last:border-0 ${a.activo === false ? "opacity-60" : ""}`}>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium truncate">
-                  {a.nombre}
-                  {a.activo === false && <span className="ml-1.5 text-[10px] font-bold text-slate-400">BAJA</span>}
+          {ausentes.map(a => {
+            const just = justPorAlumno.get(a.id);
+            return (
+              <div key={a.id} className={`flex flex-col sm:flex-row sm:items-center gap-2 py-2 border-b border-slate-100 last:border-0 ${a.activo === false ? "opacity-60" : ""}`}>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium break-words">
+                    {a.nombre}
+                    {a.activo === false && <span className="ml-1.5 text-[10px] font-bold text-slate-400">BAJA</span>}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · ID {a.id}
+                    {a.tutor && <> · Tutor: {a.tutor}</>}
+                  </div>
+                  {just && (
+                    <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700">
+                      <ClipboardCheck size={10} />Justificado · {TIPOS_JUSTIFICACION[just.tipo] || just.tipo}
+                    </span>
+                  )}
                 </div>
-                <div className="text-xs text-slate-500">
-                  {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · ID {a.id}
-                  {a.tutor && <> · Tutor: {a.tutor}</>}
-                </div>
+                {just ? (
+                  <button className="inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 shrink-0 w-full sm:w-auto"
+                    onClick={() => setJustificando(a)} title="Editar o quitar la justificación">
+                    <Pencil size={13} />Editar
+                  </button>
+                ) : (
+                  <div className="flex gap-1.5 shrink-0">
+                    <button className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-sky-300 text-sky-700 hover:bg-sky-50"
+                      onClick={() => setJustificando(a)} title="Marcar la falta como justificada">
+                      <ClipboardCheck size={13} />Justificar
+                    </button>
+                    <button className="flex-1 sm:flex-none inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                      onClick={() => avisarTutor(a)} title={a.telefono ? "Avisar al tutor por WhatsApp" : "Sin teléfono registrado"}>
+                      <MessageCircle size={13} />WhatsApp
+                    </button>
+                  </div>
+                )}
               </div>
-              <button className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 shrink-0"
-                onClick={() => avisarTutor(a)} title={a.telefono ? "Avisar al tutor por WhatsApp" : "Sin teléfono registrado"}>
-                <MessageCircle size={13} />WhatsApp
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </Card>
+
+      {justificando && (
+        <ModalJustificar
+          alumno={justificando}
+          existente={justPorAlumno.get(justificando.id) || null}
+          onClose={() => setJustificando(null)}
+          onGuardar={async (datos) => { await guardarJustificacion(datos); setJustificando(null); }}
+          onQuitar={async () => { await quitarJustificacion(justificando.id); setJustificando(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ================================================================
+   Justificar (o editar/quitar) la falta de un alumno
+   ================================================================ */
+function ModalJustificar({ alumno, existente, onClose, onGuardar, onQuitar }) {
+  const [tipo, setTipo] = useState(existente?.tipo || "medica");
+  const [motivo, setMotivo] = useState(existente?.motivo || "");
+  const [guardando, setGuardando] = useState(false);
+  const [quitando, setQuitando] = useState(false);
+  const [err, setErr] = useState("");
+
+  const guardar = async () => {
+    setGuardando(true); setErr("");
+    try { await onGuardar({ alumno_id: alumno.id, tipo, motivo: motivo.trim() }); }
+    catch (e) { setErr(e.message); setGuardando(false); }
+  };
+
+  const quitar = async () => {
+    if (!window.confirm(`¿Quitar la justificación de ${alumno.nombre}? Volverá a aparecer como ausente sin justificar.`)) return;
+    setQuitando(true); setErr("");
+    try { await onQuitar(); }
+    catch (e) { setErr(e.message); setQuitando(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md my-8" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <h3 className="font-bold text-base" style={{ fontFamily: "'Archivo', sans-serif" }}>
+            {existente ? "Editar justificación" : "Justificar falta"}
+          </h3>
+          <button onClick={onClose} className="p-1 rounded-lg hover:bg-slate-100"><X size={18} /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          <p className="text-sm text-slate-600">{alumno.nombre}</p>
+          <label className="block">
+            <span className="text-xs font-semibold text-slate-600">Tipo de justificación</span>
+            <select className={inputCls} value={tipo} onChange={e => setTipo(e.target.value)}>
+              <option value="medica">Médica</option>
+              <option value="personal">Personal</option>
+              <option value="otra">Otra</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-slate-600">Motivo breve (opcional)</span>
+            <textarea className={inputCls + " resize-none"} rows={2} maxLength={200}
+              placeholder="Ej. Cita médica, trámite familiar…"
+              value={motivo} onChange={e => setMotivo(e.target.value)} />
+          </label>
+          <p className="text-[11px] text-slate-400">
+            El motivo solo lo ve control escolar y administración. A los docentes
+            únicamente les aparece que el alumno está justificado y el tipo.
+          </p>
+          {err && <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{err}</p>}
+          <div className="flex items-center justify-between pt-2">
+            {existente
+              ? <button className="text-xs font-semibold text-rose-600 hover:underline disabled:opacity-50"
+                  onClick={quitar} disabled={quitando || guardando}>
+                  {quitando ? "Quitando…" : "Quitar justificación"}
+                </button>
+              : <span />}
+            <div className="flex gap-2">
+              <button className={btnSec} onClick={onClose} disabled={guardando || quitando}>Cancelar</button>
+              <button className={btnPrim} onClick={guardar} disabled={guardando || quitando}>
+                {guardando ? "Guardando…" : "Guardar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
