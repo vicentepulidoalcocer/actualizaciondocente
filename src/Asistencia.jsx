@@ -7,7 +7,7 @@
    ni queda encerrado en una sola computadora.
    ================================================================ */
 
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Camera, CameraOff, Users, Clock, CheckCircle2, AlertTriangle, Download,
   Upload, Search, Loader2, TrendingUp, MessageCircle, CalendarDays, X, RefreshCw,
@@ -179,6 +179,7 @@ export default function Asistencia({ user }) {
     ["escaneo", "Escanear", Camera],
     ["dashboard", "Panel del día", TrendingUp],
     ["historial", "Historial", CalendarDays],
+    ["seguimiento", "Seguimiento", AlertTriangle],
     ["padron", "Alumnos", Users],
   ];
 
@@ -223,6 +224,7 @@ export default function Asistencia({ user }) {
           justificaciones={justificaciones} user={user} recargar={cargar} />
       )}
       {!cargando && tab === "historial" && <PanelHistorial alumnos={alumnos} user={user} />}
+      {!cargando && tab === "seguimiento" && <PanelSeguimiento alumnos={alumnos} />}
       {!cargando && tab === "padron" && <PanelPadron alumnos={alumnos} recargar={cargar} />}
     </div>
   );
@@ -893,6 +895,248 @@ function PanelHistorial({ alumnos, user }) {
 /* ================================================================
    PADRÓN DE ALUMNOS
    ================================================================ */
+/* ================================================================
+   SEGUIMIENTO DE INASISTENCIAS · semáforo por alumno
+   ----------------------------------------------------------------
+   Verde: pocas o ninguna falta. Amarillo: empieza a acumular.
+   Rojo: faltas suficientes para atenderlo.
+
+   Las faltas justificadas NO cuentan para el semáforo, pero se
+   muestran aparte para que control escolar tenga el panorama.
+
+   El denominador son los días en que realmente se pasó lista, no
+   los días del calendario: si un día no hubo clases, no perjudica
+   a nadie.
+   ================================================================ */
+
+/* Inicio del semestre en curso: agosto-enero o febrero-julio */
+const inicioSemestre = () => {
+  const h = new Date();
+  const a = h.getFullYear(), m = h.getMonth() + 1;
+  if (m >= 8) return `${a}-08-01`;           // agosto a diciembre
+  if (m === 1) return `${a - 1}-08-01`;      // enero cierra el primer semestre
+  return `${a}-02-01`;                        // febrero a julio
+};
+
+const haceDias = (n) => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return isoDe(d);
+};
+
+const isoDe = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/* Clasifica a un alumno según sus faltas y los límites elegidos */
+const semaforoDe = (faltas, amarillo, rojo) =>
+  faltas >= rojo ? "rojo" : faltas >= amarillo ? "amarillo" : "verde";
+
+const COLORES_SEM = {
+  verde:    { chip: "bg-emerald-50 border-emerald-200 text-emerald-800", punto: "#059669", txt: "Al corriente" },
+  amarillo: { chip: "bg-amber-50 border-amber-200 text-amber-800",      punto: "#E8871E", txt: "En riesgo" },
+  rojo:     { chip: "bg-rose-50 border-rose-200 text-rose-800",         punto: "#e11d48", txt: "Atención urgente" },
+};
+
+function PanelSeguimiento({ alumnos }) {
+  const [periodo, setPeriodo] = useState("semestre");
+  const [amarillo, setAmarillo] = useState(
+    () => Number(localStorage.getItem("seguimiento_amarillo")) || 3);
+  const [rojo, setRojo] = useState(
+    () => Number(localStorage.getItem("seguimiento_rojo")) || 6);
+  const [datos, setDatos] = useState(null);
+  const [dias, setDias] = useState(0);
+  const [cargando, setCargando] = useState(true);
+  const [err, setErr] = useState("");
+  const [filtro, setFiltro] = useState("todos");
+  const [grupo, setGrupo] = useState("todos");
+
+  const desde = periodo === "semestre" ? inicioSemestre()
+    : periodo === "30" ? haceDias(30) : haceDias(7);
+  const hasta = hoyISO();
+
+  const consultar = useCallback(async () => {
+    setCargando(true); setErr("");
+    const [res, dd] = await Promise.all([
+      supabase.rpc("resumen_inasistencias", { desde, hasta }),
+      supabase.rpc("dias_con_registro", { desde, hasta }),
+    ]);
+    if (res.error || dd.error) { setErr((res.error || dd.error).message); setCargando(false); return; }
+    setDatos(res.data || []);
+    setDias(Number(dd.data) || 0);
+    setCargando(false);
+  }, [desde, hasta]);
+
+  useEffect(() => { consultar(); }, [consultar]);
+
+  const guardarLimites = (a, r) => {
+    setAmarillo(a); setRojo(r);
+    localStorage.setItem("seguimiento_amarillo", String(a));
+    localStorage.setItem("seguimiento_rojo", String(r));
+  };
+
+  const grupos = [...new Set(alumnos.map(a => `${a.semestre || "?"}|${a.grupo || "?"}`))]
+    .sort((x, y) => x.localeCompare(y, "es", { numeric: true }));
+
+  const lista = useMemo(() => {
+    if (!datos) return [];
+    const porAlumno = new Map(datos.map(d => [d.alumno_id, d]));
+    return alumnos
+      .filter(a => a.activo !== false)
+      .map(a => {
+        const d = porAlumno.get(a.id) || { presentes: 0, retardos: 0, justificadas: 0 };
+        const presentes = Number(d.presentes) || 0;
+        const justificadas = Number(d.justificadas) || 0;
+        const faltas = Math.max(0, dias - presentes - justificadas);
+        return { ...a, presentes, justificadas, retardos: Number(d.retardos) || 0,
+          faltas, sem: semaforoDe(faltas, amarillo, rojo) };
+      })
+      .sort((a, b) => (b.faltas - a.faltas) || (a.nombre || "").localeCompare(b.nombre || "", "es"));
+  }, [datos, alumnos, dias, amarillo, rojo]);
+
+  const visibles = lista
+    .filter(a => filtro === "todos" || a.sem === filtro)
+    .filter(a => grupo === "todos" || `${a.semestre || "?"}|${a.grupo || "?"}` === grupo);
+
+  const cuenta = (c) => lista.filter(a => a.sem === c).length;
+
+  const exportar = () => {
+    const filas = [["Alumno", "ID", "Semestre", "Grupo", "Días con registro",
+      "Asistencias", "Retardos", "Faltas", "Justificadas", "Situación", "Tutor", "Teléfono"]];
+    visibles.forEach(a => filas.push([a.nombre, a.id, a.semestre, a.grupo, dias,
+      a.presentes, a.retardos, a.faltas, a.justificadas, COLORES_SEM[a.sem].txt,
+      a.tutor || "", a.telefono || ""]));
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csv = "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
+    const el = document.createElement("a");
+    el.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    el.download = `seguimiento_inasistencias_${desde}_a_${hasta}.csv`;
+    el.click();
+    URL.revokeObjectURL(el.href);
+  };
+
+  const avisarTutor = (al) => {
+    const tel = soloDigitos(al.telefono);
+    if (!tel) { alert(`No hay teléfono registrado para el tutor de ${al.nombre}.`); return; }
+    const numero = tel.length === 10 ? "52" + tel : tel;
+    const msg = `Buen día. Le informamos que ${al.nombre} acumula ${al.faltas} inasistencia(s) ` +
+      `en lo que va del periodo. Le pedimos comunicarse con el plantel. CBTA No. 291.`;
+    window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`, "_blank");
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-4 space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <select className={inputCls + " !mt-0 !w-auto"} value={periodo} onChange={e => setPeriodo(e.target.value)}>
+            <option value="semestre">Semestre en curso</option>
+            <option value="30">Últimos 30 días</option>
+            <option value="7">Últimos 7 días</option>
+          </select>
+          <select className={inputCls + " !mt-0 !w-auto"} value={grupo} onChange={e => setGrupo(e.target.value)}>
+            <option value="todos">Todos los grupos</option>
+            {grupos.map(g => {
+              const [s, l] = g.split("|");
+              return <option key={g} value={g}>{s}° {l}</option>;
+            })}
+          </select>
+          <button className={btnSec + " !px-3 !py-1.5"} onClick={consultar}>
+            <RefreshCw size={13} className={cargando ? "animate-spin" : ""} />Actualizar
+          </button>
+          <button className={btnSec + " !px-3 !py-1.5 ml-auto"} onClick={exportar} disabled={!visibles.length}>
+            <Download size={13} />Exportar
+          </button>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+          <span>Del {desde} al {hasta} · <b>{dias}</b> día(s) con lista pasada.</span>
+          <span className="flex items-center gap-1.5 ml-auto">
+            Amarillo desde
+            <input type="number" min="1" className={inputCls + " !mt-0 !w-16 !py-1"} value={amarillo}
+              onChange={e => guardarLimites(Math.max(1, Number(e.target.value) || 1), rojo)} />
+            faltas · Rojo desde
+            <input type="number" min="1" className={inputCls + " !mt-0 !w-16 !py-1"} value={rojo}
+              onChange={e => guardarLimites(amarillo, Math.max(1, Number(e.target.value) || 1))} />
+            faltas
+          </span>
+        </div>
+      </Card>
+
+      {err && (
+        <Card className="p-4 text-sm text-rose-700 bg-rose-50 border-rose-200 flex items-start gap-2">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          No se pudo consultar: {err}
+          <span className="block text-xs">¿Ya ejecutaste seguimiento_inasistencias.sql en Supabase?</span>
+        </Card>
+      )}
+
+      <div className="grid grid-cols-3 gap-3">
+        {["verde", "amarillo", "rojo"].map(c => (
+          <button key={c} onClick={() => setFiltro(filtro === c ? "todos" : c)}
+            className={`rounded-2xl border p-4 text-left transition ${COLORES_SEM[c].chip} ${filtro === c ? "ring-2 ring-offset-1 ring-slate-400" : ""}`}>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: COLORES_SEM[c].punto }} />
+              <span className="text-[11px] uppercase font-semibold truncate">{COLORES_SEM[c].txt}</span>
+            </div>
+            <div className="text-2xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>{cuenta(c)}</div>
+          </button>
+        ))}
+      </div>
+
+      {filtro !== "todos" && (
+        <button className="text-xs text-slate-400 hover:underline" onClick={() => setFiltro("todos")}>
+          Ver a todos los alumnos
+        </button>
+      )}
+
+      <Card className="p-4">
+        {cargando ? (
+          <p className="text-sm text-slate-400 py-8 text-center flex items-center justify-center gap-2">
+            <Loader2 size={16} className="animate-spin" />Calculando…
+          </p>
+        ) : dias === 0 ? (
+          <p className="text-sm text-slate-400 py-8 text-center">
+            Todavía no se ha pasado lista en este periodo, así que no hay faltas que contar.
+          </p>
+        ) : visibles.length === 0 ? (
+          <p className="text-sm text-slate-400 py-8 text-center">Ningún alumno en esta categoría.</p>
+        ) : (
+          <div className="max-h-[32rem] overflow-y-auto">
+            {visibles.map(a => (
+              <div key={a.id} className="flex flex-col sm:flex-row sm:items-center gap-2 py-2.5 border-b border-slate-100 last:border-0">
+                <span className="w-2.5 h-2.5 rounded-full shrink-0 hidden sm:block"
+                  style={{ background: COLORES_SEM[a.sem].punto }} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium break-words">
+                    <span className="w-2.5 h-2.5 rounded-full inline-block mr-1.5 sm:hidden align-middle"
+                      style={{ background: COLORES_SEM[a.sem].punto }} />
+                    {a.nombre}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · asistió {a.presentes} de {dias}
+                    {a.retardos > 0 && ` · ${a.retardos} retardo(s)`}
+                    {a.justificadas > 0 && <span className="text-sky-600"> · {a.justificadas} justificada(s)</span>}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className={`text-xs font-bold px-2.5 py-1 rounded-full border ${COLORES_SEM[a.sem].chip}`}>
+                    {a.faltas} falta(s)
+                  </span>
+                  {a.sem !== "verde" && (
+                    <button className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                      onClick={() => avisarTutor(a)} title={a.telefono ? "Avisar al tutor por WhatsApp" : "Sin teléfono registrado"}>
+                      <MessageCircle size={13} />WhatsApp
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function PanelPadron({ alumnos, recargar }) {
   const [q, setQ] = useState("");
   const [grupo, setGrupo] = useState("todos");
