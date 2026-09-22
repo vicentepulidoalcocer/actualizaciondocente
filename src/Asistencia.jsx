@@ -899,7 +899,52 @@ function PanelPadron({ alumnos, recargar }) {
   const [subiendo, setSubiendo] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
-  const [modo, setModo] = useState("reemplazar");   // reemplazar | agregar
+  const [modo, setModo] = useState("reemplazar");   // reemplazar | eliminar | agregar
+  const [limpiando, setLimpiando] = useState(false);
+
+  /* Quita alumnos del padrón. Los que ya tienen asistencias registradas
+     NO se borran: se dan de baja, para no dejar registros de asistencia
+     apuntando a un alumno inexistente. Devuelve cuántos de cada caso. */
+  const quitarDelPadron = async (ids) => {
+    if (!ids.length) return { borrados: 0, conservados: 0 };
+    const protegidos = new Set();
+    for (let i = 0; i < ids.length; i += 100) {
+      const tanda = ids.slice(i, i + 100);
+      const { data } = await supabase.from("asistencias")
+        .select("alumno_id").in("alumno_id", tanda);
+      (data || []).forEach(r => protegidos.add(r.alumno_id));
+    }
+    const aBorrar = ids.filter(id => !protegidos.has(id));
+    for (let i = 0; i < aBorrar.length; i += 100) {
+      const { error } = await supabase.from("alumnos").delete().in("id", aBorrar.slice(i, i + 100));
+      if (error) throw new Error(error.message);
+    }
+    if (protegidos.size) {
+      const lista = [...protegidos];
+      for (let i = 0; i < lista.length; i += 100) {
+        await supabase.from("alumnos").update({ activo: false }).in("id", lista.slice(i, i + 100));
+      }
+    }
+    return { borrados: aBorrar.length, conservados: protegidos.size };
+  };
+
+  /* Botón para vaciar de una vez los que ya estaban dados de baja */
+  const limpiarBajas = async () => {
+    const bajas = alumnos.filter(a => a.activo === false);
+    if (!bajas.length) return;
+    if (!window.confirm(
+      `¿Borrar del padrón a ${bajas.length} alumno(s) dados de baja?\n\n` +
+      `Quien tenga asistencias registradas se conservará dado de baja para no perder su historial.\n\n` +
+      `Esto no se puede deshacer.`)) return;
+    setLimpiando(true); setErr(""); setMsg("");
+    try {
+      const r = await quitarDelPadron(bajas.map(a => a.id));
+      setMsg(`Se borraron ${r.borrados} alumno(s) del padrón.` +
+        (r.conservados ? ` ${r.conservados} se conservaron porque ya tienen asistencias registradas.` : ""));
+      await recargar();
+    } catch (e) { setErr("No se pudo limpiar: " + e.message); }
+    setLimpiando(false);
+  };
   const [semSel, setSemSel] = useState("todos");
   const [verBajas, setVerBajas] = useState(false);
   const [pendiente, setPendiente] = useState(null); // confirmación de bajas
@@ -997,6 +1042,11 @@ function PanelPadron({ alumnos, recargar }) {
         if (e2) throw new Error(e2.message);
         setMsg(`${registros.length} alumno(s) cargados o actualizados. ` +
           `${sobrantes.length} que ya no aparecen en la lista fueron dados de baja.`);
+      } else if (modo === "eliminar" && sobrantes.length) {
+        const r = await quitarDelPadron(sobrantes.map(a => a.id));
+        setMsg(`${registros.length} alumno(s) cargados o actualizados. ` +
+          `${r.borrados} que ya no aparecen en la lista se borraron del padrón.` +
+          (r.conservados ? ` ${r.conservados} se dieron de baja en vez de borrarse porque ya tienen asistencias registradas.` : ""));
       } else if (sobrantes.length) {
         setMsg(`${registros.length} alumno(s) cargados o actualizados. ` +
           `${sobrantes.length} del padrón no venían en el archivo y se conservaron activos.`);
@@ -1029,6 +1079,16 @@ function PanelPadron({ alumnos, recargar }) {
             </span>
           </label>
           <label className="flex items-start gap-2 text-sm cursor-pointer">
+            <input type="radio" className="mt-1" checked={modo === "eliminar"} onChange={() => setModo("eliminar")} />
+            <span>
+              <b>Borrarlos del padrón</b> — el archivo manda, sin acumular.
+              <span className="block text-xs text-slate-500">
+                Úsalo si solo te interesa la lista vigente. Quien tenga asistencias registradas
+                se da de baja en lugar de borrarse, para no perder su historial.
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-sm cursor-pointer">
             <input type="radio" className="mt-1" checked={modo === "agregar"} onChange={() => setModo("agregar")} />
             <span>
               <b>Conservarlos</b> — solo agrega y corrige.
@@ -1037,7 +1097,7 @@ function PanelPadron({ alumnos, recargar }) {
           </label>
           <p className="text-[11px] text-slate-400">
             Dar de baja no borra a nadie: el alumno deja de contar para la asistencia, pero su
-            historial se conserva y puedes reactivarlo cuando quieras.
+            historial se conserva y puedes reactivarlo cuando quieras. Borrar sí lo quita de la lista.
           </p>
         </div>
 
@@ -1068,6 +1128,12 @@ function PanelPadron({ alumnos, recargar }) {
           className={`px-3 py-2 rounded-xl text-xs font-semibold border transition ${verBajas ? "bg-[#1a2340] text-white border-[#1a2340]" : "bg-white border-slate-300 text-slate-600 hover:bg-slate-50"}`}>
           {verBajas ? `Viendo bajas (${bajas.length})` : `Ver bajas (${bajas.length})`}
         </button>
+        {verBajas && bajas.length > 0 && (
+          <button onClick={limpiarBajas} disabled={limpiando}
+            className="px-3 py-2 rounded-xl text-xs font-semibold border border-rose-300 text-rose-600 hover:bg-rose-50 disabled:opacity-50">
+            {limpiando ? "Borrando…" : `Borrar las ${bajas.length} bajas del padrón`}
+          </button>
+        )}
         <span className="text-xs text-slate-400">{lista.length} de {verBajas ? bajas.length : activos.length}</span>
       </Card>
 
