@@ -1,0 +1,47 @@
+# ================================================================
+# Mantener Supabase activo
+# ----------------------------------------------------------------
+# Supabase pausa los proyectos gratuitos que pasan una semana con
+# poca actividad. En temporada de clases el uso diario del portal lo
+# evita; el riesgo real son las vacaciones.
+#
+# Este flujo llama a la función "latido" dos veces al día. Usa los
+# mismos dos secretos que ya usa la publicación del sitio, así que
+# no hace falta configurar nada nuevo.
+#
+# Si el latido falla, el flujo termina en rojo y GitHub avisa por
+# correo, para enterarse antes de que Supabase pause el proyecto.
+# ================================================================
+
+name: Mantener Supabase activo
+
+on:
+  schedule:
+    # Horas en UTC: 14:00 y 23:00 equivalen a las 9:00 y 18:00 en
+    # Quintana Roo. Dos al día por si GitHub retrasa alguna ejecución.
+    - cron: "0 14 * * *"
+    - cron: "0 23 * * *"
+  workflow_dispatch:   # permite ejecutarlo a mano desde Actions
+
+permissions:
+  contents: read
+
+jobs:
+  latido:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enviar latido a Supabase
+        env:
+          URL: ${{ secrets.VITE_SUPABASE_URL }}
+          CLAVE: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          codigo=$(curl -sS -o respuesta.txt -w "%{http_code}" \
+            -X POST "$URL/rest/v1/rpc/latido" \
+            -H "apikey: $CLAVE" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          echo "Supabase respondió con código $codigo: $(cat respuesta.txt)"
+          if [ "$codigo" != "200" ]; then
+            echo "El latido falló. Revisa que se haya ejecutado latido.sql en Supabase."
+            exit 1
+          fi
