@@ -432,11 +432,54 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
 /* ================================================================
    PANEL DEL DÍA: indicadores, ausentes y WhatsApp
    ================================================================ */
+/* ---------------- avisos a tutores ----------------
+   Quiénes ya recibieron aviso se guarda en este navegador, por fecha.
+   Así, si control escolar se interrumpe a la mitad o recarga la
+   página, no vuelve a avisar a las mismas familias. */
+const clave_avisados = (fecha) => `avisos_tutor_${fecha}`;
+
+const leerAvisados = (fecha) => {
+  try { return new Set(JSON.parse(localStorage.getItem(clave_avisados(fecha)) || "[]")); }
+  catch { return new Set(); }
+};
+
+const guardarAvisados = (fecha, conjunto) => {
+  try { localStorage.setItem(clave_avisados(fecha), JSON.stringify([...conjunto])); }
+  catch { /* si el navegador no deja guardar, se sigue sin registro */ }
+};
+
+/* Número listo para WhatsApp: a 10 dígitos se le antepone 52 */
+const numeroWhats = (tel) => {
+  const t = soloDigitos(tel);
+  if (!t) return null;
+  return t.length === 10 ? "52" + t : t;
+};
+
+/* El mismo texto para el aviso individual y para el envío por lotes */
+const mensajeAusencia = (al, fecha) => {
+  const ubica = [al.semestre ? `${al.semestre}° semestre` : null, al.grupo ? `grupo ${al.grupo}` : null]
+    .filter(Boolean).join(", ");
+  return `Buen día. Le informamos que ${al.nombre}${ubica ? ` (${ubica})` : ""} no registró asistencia hoy ${fmtFechaLarga(fecha)}. CBTA No. 291.`;
+};
+
 /* Etiquetas legibles del tipo de justificación */
 const TIPOS_JUSTIFICACION = { medica: "Médica", personal: "Personal", otra: "Otra" };
 
 function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recargar }) {
   const [justificando, setJustificando] = useState(null);
+  const [lote, setLote] = useState(false);
+  const [avisados, setAvisados] = useState(() => leerAvisados(fecha));
+
+  // Al cambiar de día se lee el registro de avisos de ese día
+  useEffect(() => { setAvisados(leerAvisados(fecha)); }, [fecha]);
+
+  const marcarAvisado = (id) => {
+    setAvisados(prev => {
+      const n = new Set(prev); n.add(id);
+      guardarAvisados(fecha, n);
+      return n;
+    });
+  };
   const [grupo, setGrupo] = useState("todos");
   const [semestre, setSemestre] = useState("todos");
   const grupos = [...new Set(alumnos.map(a => a.grupo).filter(Boolean))].sort();
@@ -506,14 +549,17 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
   };
 
   const avisarTutor = (al) => {
-    const tel = soloDigitos(al.telefono);
-    if (!tel) { alert(`No hay teléfono registrado para el tutor de ${al.nombre}.`); return; }
-    const numero = tel.length === 10 ? "52" + tel : tel;
-    const ubica = [al.semestre ? `${al.semestre}° semestre` : null, al.grupo ? `grupo ${al.grupo}` : null]
-      .filter(Boolean).join(", ");
-    const msg = `Buen día. Le informamos que ${al.nombre}${ubica ? ` (${ubica})` : ""} no registró asistencia hoy ${fmtFechaLarga(fecha)}. CBTA No. 291.`;
-    window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`, "_blank");
+    const numero = numeroWhats(al.telefono);
+    if (!numero) { alert(`No hay teléfono registrado para el tutor de ${al.nombre}.`); return; }
+    window.open(`https://wa.me/${numero}?text=${encodeURIComponent(mensajeAusencia(al, fecha))}`, "_blank");
+    marcarAvisado(al.id);
   };
+
+  /* A quiénes falta avisar: ausentes sin justificación, con teléfono
+     y a los que todavía no se les ha mandado el mensaje hoy. */
+  const porAvisar = ausentes.filter(a =>
+    !justPorAlumno.has(a.id) && numeroWhats(a.telefono) && !avisados.has(a.id));
+  const sinTelefono = ausentes.filter(a => !justPorAlumno.has(a.id) && !numeroWhats(a.telefono));
 
   return (
     <div className="space-y-4">
@@ -567,6 +613,12 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
       <Card className="p-4">
         <div className="flex items-center justify-between mb-2">
           <h3 className="font-bold text-sm">Ausentes {grupo !== "todos" && `· grupo ${grupo}`}</h3>
+          {porAvisar.length > 0 && (
+            <button className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
+              onClick={() => setLote(true)}>
+              <MessageCircle size={13} />Avisar a los tutores ({porAvisar.length})
+            </button>
+          )}
           <span className="text-xs text-slate-400">
             {ausentes.length}
             {justificadosCount > 0 && <span className="text-sky-600 font-semibold"> · {justificadosCount} justificado(s)</span>}
@@ -590,6 +642,11 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
                   {just && (
                     <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700">
                       <ClipboardCheck size={10} />Justificado · {TIPOS_JUSTIFICACION[just.tipo] || just.tipo}
+                    </span>
+                  )}
+                  {!just && avisados.has(a.id) && (
+                    <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700">
+                      <CheckCircle2 size={10} />Tutor avisado
                     </span>
                   )}
                 </div>
@@ -616,6 +673,16 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
         </div>
       </Card>
 
+      {lote && (
+        <EnvioPorLotes
+          pendientes={porAvisar}
+          sinTelefono={sinTelefono}
+          fecha={fecha}
+          onAvisado={marcarAvisado}
+          onCerrar={() => setLote(false)}
+        />
+      )}
+
       {justificando && (
         <ModalJustificar
           alumno={justificando}
@@ -625,6 +692,112 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
           onQuitar={async () => { await quitarJustificacion(justificando.id); setJustificando(null); }}
         />
       )}
+    </div>
+  );
+}
+
+/* ================================================================
+   ENVÍO POR LOTES · avisa a los tutores uno tras otro
+   ----------------------------------------------------------------
+   No envía solo: WhatsApp no permite que una página mande mensajes
+   por su cuenta. Lo que hace es encadenar el trabajo: abre WhatsApp
+   con el mensaje ya escrito y, al volver, muestra al siguiente. Se
+   evita buscar cada nombre en la lista y se lleva la cuenta.
+   ================================================================ */
+
+function EnvioPorLotes({ pendientes, sinTelefono, fecha, onAvisado, onCerrar }) {
+  const [i, setI] = useState(0);
+  const [enviados, setEnviados] = useState(0);
+  const [omitidos, setOmitidos] = useState(0);
+
+  const total = pendientes.length;
+  const actual = pendientes[i] || null;
+  const terminado = i >= total;
+
+  const enviar = () => {
+    if (!actual) return;
+    const numero = numeroWhats(actual.telefono);
+    window.open(`https://wa.me/${numero}?text=${encodeURIComponent(mensajeAusencia(actual, fecha))}`, "_blank");
+    onAvisado(actual.id);
+    setEnviados(n => n + 1);
+    setI(n => n + 1);
+  };
+
+  const omitir = () => { setOmitidos(n => n + 1); setI(n => n + 1); };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 p-4 overflow-y-auto">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md my-8">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <h3 className="font-bold text-base" style={{ fontFamily: "'Archivo', sans-serif" }}>
+            Avisar a los tutores
+          </h3>
+          <button onClick={onCerrar} className="p-1 rounded-lg hover:bg-slate-100"><X size={18} /></button>
+        </div>
+
+        {terminado ? (
+          <div className="p-6 text-center space-y-3">
+            <CheckCircle2 size={36} className="text-emerald-600 mx-auto" />
+            <p className="font-semibold">Terminaste la lista</p>
+            <p className="text-sm text-slate-600">
+              {enviados} aviso(s) enviado(s){omitidos > 0 && `, ${omitidos} omitido(s)`}.
+            </p>
+            {sinTelefono.length > 0 && (
+              <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-left">
+                {sinTelefono.length} alumno(s) ausentes no tienen teléfono de tutor en el padrón,
+                así que no se les pudo avisar: {sinTelefono.slice(0, 5).map(a => a.nombre).join(", ")}
+                {sinTelefono.length > 5 && ` y ${sinTelefono.length - 5} más`}.
+              </p>
+            )}
+            <button className={btnPrim + " w-full"} onClick={onCerrar}>Cerrar</button>
+          </div>
+        ) : (
+          <div className="p-5 space-y-3">
+            {/* Avance */}
+            <div>
+              <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                <span><b className="text-[#1a2340]">{i + 1}</b> de {total}</span>
+                <span>{enviados} enviado(s){omitidos > 0 && ` · ${omitidos} omitido(s)`}</span>
+              </div>
+              <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
+                <div className="h-full bg-emerald-600 rounded-full transition-all duration-300"
+                  style={{ width: `${Math.round(100 * i / total)}%` }} />
+              </div>
+            </div>
+
+            <div className="border border-slate-200 rounded-xl p-3">
+              <p className="text-sm font-semibold break-words">{actual.nombre}</p>
+              <p className="text-xs text-slate-500">
+                {actual.semestre ? `${actual.semestre}° ` : ""}{actual.grupo || "—"}
+                {actual.tutor && <> · Tutor: {actual.tutor}</>}
+              </p>
+              <p className="text-xs text-slate-400 mt-0.5">Se enviará al {numeroWhats(actual.telefono)}</p>
+            </div>
+
+            <div className="bg-slate-50 rounded-xl p-3">
+              <p className="text-[11px] uppercase font-semibold text-slate-400 mb-1">Mensaje</p>
+              <p className="text-sm text-slate-700">{mensajeAusencia(actual, fecha)}</p>
+            </div>
+
+            <button className={btnPrim + " w-full !bg-emerald-600 hover:!bg-emerald-700"} onClick={enviar}>
+              <MessageCircle size={15} />Abrir WhatsApp y enviar
+            </button>
+            <div className="flex items-center justify-between">
+              <button className="text-xs font-semibold text-slate-500 hover:underline" onClick={omitir}>
+                Omitir a este alumno
+              </button>
+              <button className="text-xs font-semibold text-slate-400 hover:underline" onClick={onCerrar}>
+                Pausar y cerrar
+              </button>
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Al tocar el botón se abre WhatsApp con el mensaje escrito; ahí tienes que presionar
+              enviar. Cuando regreses a esta pantalla ya estará el siguiente alumno. Si cierras,
+              puedes retomar después: no se repiten los que ya avisaste hoy.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
