@@ -8,8 +8,8 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
-  TrendingUp, TrendingDown, Plus, Loader2, AlertTriangle, CheckCircle2,
-  Paperclip, X, Trash2, Download, Settings, MessageCircle, Search,
+  TrendingUp, TrendingDown, Plus, Loader2, AlertTriangle,
+  Paperclip, X, Trash2, MessageCircle, Search,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import { guardarArchivo, leerArchivo, eliminarArchivo, MAX_FILE_B64 } from "./lib/nube";
@@ -29,15 +29,6 @@ const fmtFecha = (iso) => {
   const [a, m, d] = String(iso).slice(0, 10).split("-").map(Number);
   return new Date(a, m - 1, d).toLocaleDateString("es-MX",
     { day: "numeric", month: "long", year: "numeric" });
-};
-
-const soloDigitos = (t) => (t || "").toString().replace(/\D/g, "");
-
-/* Número listo para WhatsApp: a 10 dígitos se le antepone 52 */
-const numeroWhats = (tel) => {
-  const t = soloDigitos(tel);
-  if (!t) return null;
-  return t.length === 10 ? "52" + t : t;
 };
 
 const leerComoBase64 = (file) => new Promise((res, rej) => {
@@ -73,19 +64,15 @@ const Card = ({ children, className = "", ...r }) => (
 export default function Finanzas({ user }) {
   const [tab, setTab] = useState("ingresos");
   const [movs, setMovs] = useState([]);
-  const [whatsapp, setWhatsapp] = useState("");
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState("");
 
   const cargar = useCallback(async () => {
     setCargando(true); setErr("");
-    const [mv, aj] = await Promise.all([
-      supabase.from("finanzas").select("*").order("fecha", { ascending: false }).order("creado", { ascending: false }),
-      supabase.from("finanzas_ajustes").select("whatsapp").eq("id", 1).maybeSingle(),
-    ]);
+    const mv = await supabase.from("finanzas").select("*")
+      .order("fecha", { ascending: false }).order("creado", { ascending: false });
     if (mv.error) { setErr(mv.error.message); setMovs([]); }
     else setMovs(mv.data || []);
-    setWhatsapp(aj.error ? "" : (aj.data?.whatsapp || ""));
     setCargando(false);
   }, []);
 
@@ -137,7 +124,7 @@ export default function Finanzas({ user }) {
       </div>
 
       <div className="flex gap-1 bg-slate-100 p-1 rounded-xl w-fit flex-wrap">
-        {[["ingresos", "Ingresos"], ["egresos", "Egresos"], ["ajustes", "Configuración"]].map(([id, txt]) => (
+        {[["ingresos", "Ingresos"], ["egresos", "Egresos"]].map(([id, txt]) => (
           <button key={id} onClick={() => setTab(id)}
             className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition ${
               tab === id ? "bg-white shadow-sm text-[#1a2340]" : "text-slate-500 hover:text-slate-700"}`}>
@@ -159,13 +146,10 @@ export default function Finanzas({ user }) {
         <Card className="p-8 text-center text-slate-400 text-sm flex items-center justify-center gap-2">
           <Loader2 size={16} className="animate-spin" />Consultando…
         </Card>
-      ) : tab === "ajustes" ? (
-        <Ajustes whatsapp={whatsapp} onGuardado={cargar} />
       ) : (
         <Movimientos
           tipo={tab === "ingresos" ? "ingreso" : "egreso"}
           lista={tab === "ingresos" ? ingresos : egresos}
-          whatsapp={whatsapp}
           user={user}
           recargar={cargar}
         />
@@ -178,7 +162,7 @@ export default function Finanzas({ user }) {
    LISTA Y ALTA DE MOVIMIENTOS
    ================================================================ */
 
-function Movimientos({ tipo, lista, whatsapp, user, recargar }) {
+function Movimientos({ tipo, lista, user, recargar }) {
   const [form, setForm] = useState(null);
   const [q, setQ] = useState("");
   const esEgreso = tipo === "egreso";
@@ -244,7 +228,7 @@ function Movimientos({ tipo, lista, whatsapp, user, recargar }) {
                       m.archivo_guardado ? (
                         <>
                           <VerFactura mov={m} />
-                          <EnviarFactura mov={m} whatsapp={whatsapp} />
+                          <EnviarFactura mov={m} />
                         </>
                       ) : (
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 border border-amber-200 text-amber-700">
@@ -450,22 +434,20 @@ function VerFactura({ mov }) {
   );
 }
 
-/* WhatsApp no permite adjuntar archivos desde un enlace. En celular
-   se usa el menú de compartir del sistema, que sí manda el archivo a
-   WhatsApp. En computadora eso no existe, así que se descarga la
-   factura y se abre la conversación con el texto, para adjuntarla a
-   mano: es lo más lejos que se puede llegar sin la API de pago. */
-function EnviarFactura({ mov, whatsapp }) {
+/* Enviar la factura por WhatsApp
+   ----------------------------------------------------------------
+   Un enlace de WhatsApp no puede llevar archivos adjuntos, así que
+   se usa el menú de compartir del teléfono, que sí manda el archivo
+   y deja elegir el contacto. En computadora ese menú no existe: ahí
+   se descarga la factura para adjuntarla a mano.
+   ================================================================ */
+
+function EnviarFactura({ mov }) {
   const [trabajando, setTrabajando] = useState(false);
-  const numero = numeroWhats(whatsapp);
 
   const texto = `Factura del egreso "${mov.concepto}" por ${fmtDinero(mov.monto)}, con fecha ${fmtFecha(mov.fecha)}. CBTA No. 291.`;
 
   const enviar = async () => {
-    if (!numero) {
-      alert("Primero configura el número de WhatsApp en la pestaña Configuración.");
-      return;
-    }
     setTrabajando(true);
     const f = await archivoDe("factura_" + mov.id, mov.archivo_nombre);
     setTrabajando(false);
@@ -476,76 +458,24 @@ function EnviarFactura({ mov, whatsapp }) {
       try {
         await navigator.share({ files: [archivo], text: texto });
         return;                       // el sistema ya mostró a dónde enviarlo
-      } catch { /* si se cancela, se sigue con la vía alterna */ }
+      } catch { return; }             // si se cancela, no se hace nada más
     }
 
-    // Vía alterna: se descarga la factura y se abre la conversación
+    /* En computadora: se descarga la factura y se abre WhatsApp Web
+       para adjuntarla en la conversación que corresponda. */
     const url = URL.createObjectURL(f.blob);
     const a = document.createElement("a");
     a.href = url; a.download = f.nombre; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
-    window.open(`https://wa.me/${numero}?text=${encodeURIComponent(texto)}`, "_blank");
+    window.open("https://web.whatsapp.com/", "_blank");
   };
 
   return (
     <button onClick={enviar} disabled={trabajando}
       className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
-      title={numero ? `Enviar al ${numero}` : "Falta configurar el número"}>
+      title="Compartir la factura por WhatsApp">
       {trabajando ? <Loader2 size={13} className="animate-spin" /> : <MessageCircle size={13} />}
       Enviar por WhatsApp
     </button>
-  );
-}
-
-/* ================================================================
-   CONFIGURACIÓN · número de WhatsApp
-   ================================================================ */
-
-function Ajustes({ whatsapp, onGuardado }) {
-  const [valor, setValor] = useState(whatsapp || "");
-  const [guardando, setGuardando] = useState(false);
-  const [msg, setMsg] = useState("");
-  const [err, setErr] = useState("");
-
-  const guardar = async () => {
-    const limpio = soloDigitos(valor);
-    if (limpio && limpio.length < 10) {
-      setErr("El número debe tener al menos 10 dígitos."); return;
-    }
-    setGuardando(true); setErr(""); setMsg("");
-    const { error } = await supabase.from("finanzas_ajustes")
-      .update({ whatsapp: limpio, actualizado: new Date().toISOString() })
-      .eq("id", 1);
-    if (error) { setErr(error.message); setGuardando(false); return; }
-    setMsg("Número actualizado.");
-    await onGuardado();
-    setGuardando(false);
-  };
-
-  return (
-    <Card className="p-5 space-y-3 max-w-md">
-      <div className="flex items-center gap-2">
-        <Settings size={15} className="text-slate-400" />
-        <h3 className="font-bold text-sm">Número para enviar facturas</h3>
-      </div>
-      <p className="text-sm text-slate-500">
-        A este número se mandan las facturas de los egresos. Se guarda en el sistema,
-        así que es el mismo desde cualquier equipo y se puede cambiar cuando haga falta.
-      </p>
-      <label className="block">
-        <span className="text-xs font-semibold text-slate-600">Número de WhatsApp</span>
-        <input className={inputCls} inputMode="tel" placeholder="9831234567"
-          value={valor} onChange={e => setValor(e.target.value)} />
-        <span className="block text-[11px] text-slate-400 mt-1">
-          Diez dígitos para México. Si es de otro país, escribe la clave por delante.
-          {numeroWhats(valor) && ` Se usará: ${numeroWhats(valor)}`}
-        </span>
-      </label>
-      {err && <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{err}</p>}
-      {msg && <p className="text-sm text-emerald-700 flex items-start gap-1.5"><CheckCircle2 size={14} className="mt-0.5 shrink-0" />{msg}</p>}
-      <button className={btnPrim} onClick={guardar} disabled={guardando}>
-        {guardando && <Loader2 size={14} className="animate-spin" />}Guardar número
-      </button>
-    </Card>
   );
 }
