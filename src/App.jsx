@@ -27,6 +27,7 @@ import {
 } from "./lib/nube";
 const Asistencia = React.lazy(() => import("./Asistencia"));
 const AsistenciaDocente = React.lazy(() => import("./AsistenciaDocente"));
+const Finanzas = React.lazy(() => import("./Finanzas"));
 const Ausentes = React.lazy(() => import("./Ausentes"));
 import {
   soportaPush, esIOS, instaladoEnInicio, permisoActual,
@@ -1102,6 +1103,7 @@ export default function App() {
     ]},
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
     { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
+    { id: "finanzas", label: "Finanzas", icono: TrendingUp },
     { id: "ranking_general", label: "Ranking general", icono: Medal },
     { id: "actividad", label: "Actividad reciente", icono: Activity },
     { id: "respaldo", label: "Respaldo", icono: Download },
@@ -1121,6 +1123,7 @@ export default function App() {
     { id: "calendario", label: "Calendario académico", icono: CalendarDays },
   ] : user.rol === "administrativo" ? [
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
+    { id: "finanzas", label: "Finanzas", icono: TrendingUp },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "calendario", label: "Calendario académico", icono: CalendarDays },
   ] : user.rol === "personal_administrativo" ? [
@@ -1240,6 +1243,11 @@ export default function App() {
             ? <RankingGeneral db={db} user={user} />
             : <Ranking db={db} user={user} />)}
           {pagina === "ranking_entregas" && esRolAcademico(user.rol) && <RankingEntregas db={db} />}
+          {pagina === "finanzas" && esRolControlEscolar(user.rol) && (
+            <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}>
+              <Finanzas user={user} />
+            </React.Suspense>
+          )}
           {pagina === "asistencia_docente" && veAsistenciaDocente(user.rol) && (
             <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}>
               <AsistenciaDocente user={user} usuarios={db.users} />
