@@ -386,15 +386,37 @@ function FirmaSemana({ usuarioId, lunes, segundos }) {
 
 function MiSemana({ usuarioId, nombre, propia = false }) {
   const [lunes, setLunes] = useState(() => lunesDe(new Date()));
+  const [ubicado, setUbicado] = useState(false);   // ¿ya se eligió la semana de arranque?
   const [filas, setFilas] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState("");
+
+  /* El reporte del checador se carga días después, así que la semana
+     en curso casi siempre está vacía. En lugar de abrir ahí y obligar
+     a retroceder, se abre en la última semana que SÍ tiene registros.
+     Solo se hace al entrar: después manda la navegación de la persona. */
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      if (!usuarioId) { setUbicado(true); return; }
+      const { data } = await supabase
+        .from("checadas").select("fecha")
+        .eq("usuario_id", usuarioId)
+        .order("fecha", { ascending: false }).limit(1);
+      if (!vivo) return;
+      const ultima = data?.[0]?.fecha;
+      if (ultima) setLunes(lunesDe(new Date(`${ultima}T12:00:00`)));
+      setUbicado(true);
+    })();
+    return () => { vivo = false; };
+  }, [usuarioId]);
 
   const desde = isoDe(lunes);
   const hasta = isoDe(sumarDias(lunes, 5)); // lunes a sábado
 
   const cargar = useCallback(async () => {
     if (!usuarioId) { setFilas([]); setCargando(false); return; }
+    if (!ubicado) return;            // aún se está eligiendo la semana
     setCargando(true); setErr("");
     const { data, error } = await supabase
       .from("checadas").select("*")
@@ -404,7 +426,7 @@ function MiSemana({ usuarioId, nombre, propia = false }) {
     if (error) setErr(error.message);
     setFilas(error ? [] : (data || []));
     setCargando(false);
-  }, [usuarioId, desde, hasta]);
+  }, [usuarioId, desde, hasta, ubicado]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -564,16 +586,34 @@ const ROLES_QUE_CHECAN = ["docente", "personal_administrativo"];
 
 function PanelFirmas({ usuarios }) {
   const [lunes, setLunes] = useState(() => lunesDe(new Date()));
+  const [ubicado, setUbicado] = useState(false);
   const [horas, setHoras] = useState(new Map());   // usuario_id → segundos
   const [firmas, setFirmas] = useState(new Map()); // usuario_id → firma
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState("");
   const [retirando, setRetirando] = useState("");
 
+  /* Se abre en la última semana cargada, no en la semana en curso,
+     que casi siempre está vacía porque el reporte llega después. */
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const { data } = await supabase
+        .from("checadas").select("fecha")
+        .order("fecha", { ascending: false }).limit(1);
+      if (!vivo) return;
+      const ultima = data?.[0]?.fecha;
+      if (ultima) setLunes(lunesDe(new Date(`${ultima}T12:00:00`)));
+      setUbicado(true);
+    })();
+    return () => { vivo = false; };
+  }, []);
+
   const desde = isoDe(lunes);
   const hasta = isoDe(sumarDias(lunes, 5));
 
   const cargar = useCallback(async () => {
+    if (!ubicado) return;            // aún se está eligiendo la semana
     setCargando(true); setErr("");
     /* Una semana de todo el personal son unas 120 filas: muy por
        debajo del tope de 1000, así que se puede sumar aquí. */
@@ -591,7 +631,7 @@ function PanelFirmas({ usuarios }) {
     setHoras(h);
     setFirmas(new Map((fi.data || []).map((f) => [f.usuario_id, f])));
     setCargando(false);
-  }, [desde, hasta]);
+  }, [desde, hasta, ubicado]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
