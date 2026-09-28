@@ -2945,6 +2945,23 @@ function nombreSeguro(txt, max = 60) {
     .trim().replace(/\s+/g, "_").slice(0, max) || "sin_nombre";
 }
 
+/* Trae una tabla completa para el respaldo. Supabase entrega máximo
+   1000 filas por consulta, y la asistencia de alumnos las supera en
+   pocos días: sin esto, el respaldo saldría incompleto sin avisar. */
+async function tablaCompleta(tabla, columnas = "*", orden = null) {
+  const TAM = 1000;
+  let inicio = 0, todo = [];
+  for (;;) {
+    let q = supabase.from(tabla).select(columnas).range(inicio, inicio + TAM - 1);
+    if (orden) q = q.order(orden);
+    const { data, error } = await q;
+    if (error) return { data: [], error };          // tabla ausente o sin permiso
+    todo = todo.concat(data || []);
+    if (!data || data.length < TAM) return { data: todo, error: null };
+    inicio += TAM;
+  }
+}
+
 const csvTexto = (filas) => {
   const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   return "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
@@ -3188,10 +3205,103 @@ function Respaldo({ db, user }) {
         NOMBRE_TIPO_ENTREGA[e.tipo] || e.tipo, e.titulo, e.fecha ? new Date(e.fecha).toLocaleString("es-MX") : ""]));
       zip.file(`Indices/entregas_planeaciones_${sello}.csv`, csvTexto(fEnt));
 
+      /* ================================================================
+         Control escolar, personal y finanzas
+         ----------------------------------------------------------------
+         Estas tablas no pasan por el "db" de la aplicación, así que se
+         consultan aquí directamente. Si alguna todavía no existe en la
+         base, se omite sin romper el respaldo: por eso cada una revisa
+         su propio error en lugar de interrumpir todo.
+         ================================================================ */
+      setProgreso({ hechos: 0, total: 0, actual: "control escolar y finanzas" });
+
+      /* Documentos que no viven en el "db": facturas de egresos y
+         comprobantes de permisos. Se juntan aquí para bajarlos junto
+         con el resto de los archivos. */
+      const docsExtra = [];
+      const nombreAlumno = new Map();
+
+      const alum = await tablaCompleta("alumnos", "*", "nombre");
+      if (!alum.error && alum.data.length) {
+        alum.data.forEach(a => nombreAlumno.set(a.id, a.nombre));
+        const f = [["ID / Matrícula", "Alumno", "Semestre", "Grupo", "Tutor", "Teléfono", "Situación"]];
+        alum.data.forEach(a => f.push([a.id, a.nombre, a.semestre, a.grupo,
+          a.tutor || "", a.telefono || "", a.activo === false ? "Baja" : "Activo"]));
+        zip.file(`Indices/alumnos_padron_${sello}.csv`, csvTexto(f));
+      }
+
+      const asis = await tablaCompleta("asistencias", "*", "fecha");
+      if (!asis.error && asis.data.length) {
+        const f = [["Fecha", "ID / Matrícula", "Alumno", "Semestre", "Grupo", "Hora", "Estado"]];
+        asis.data.forEach(r => f.push([r.fecha, r.alumno_id, r.nombre, r.semestre,
+          r.grupo, r.hora, r.estado]));
+        zip.file(`Indices/alumnos_asistencias_${sello}.csv`, csvTexto(f));
+      }
+
+      const just = await tablaCompleta("justificaciones", "*", "fecha");
+      if (!just.error && just.data.length) {
+        const f = [["Fecha", "ID / Matrícula", "Alumno", "Tipo", "Motivo"]];
+        just.data.forEach(j => f.push([j.fecha, j.alumno_id,
+          nombreAlumno.get(j.alumno_id) || "", j.tipo, j.motivo || ""]));
+        zip.file(`Indices/alumnos_justificaciones_${sello}.csv`, csvTexto(f));
+      }
+
+      const nombrePersonal = (id) => db.users.find(u => u.id === id)?.nombre || "";
+
+      const chec = await tablaCompleta("checadas", "*", "fecha");
+      if (!chec.error && chec.data.length) {
+        const f = [["Fecha", "Persona", "Número de reloj", "Entrada", "Salida", "Horas trabajadas", "Nota"]];
+        chec.data.forEach(c => {
+          const seg = Number(c.segundos) || 0;
+          f.push([c.fecha, nombrePersonal(c.usuario_id), c.reloj_id, c.entrada || "", c.salida || "",
+            `${Math.floor(seg / 3600)}:${String(Math.floor((seg % 3600) / 60)).padStart(2, "0")}`,
+            c.nota || ""]);
+        });
+        zip.file(`Indices/personal_checadas_${sello}.csv`, csvTexto(f));
+      }
+
+      const perm = await tablaCompleta("permisos_personal", "*", "fecha");
+      if (!perm.error && perm.data.length) {
+        const f = [["Fecha", "Persona", "Motivo", "Observaciones", "Documento", "Registrado por"]];
+        perm.data.forEach(x => f.push([x.fecha, nombrePersonal(x.usuario_id), x.motivo,
+          x.observaciones || "", x.archivo_nombre || "", nombrePersonal(x.registrado_por)]));
+        zip.file(`Indices/personal_permisos_${sello}.csv`, csvTexto(f));
+        perm.data.filter(x => x.archivo_guardado).forEach(x => docsExtra.push({
+          clave: "permiso_" + x.id,
+          ruta: `Personal/Permisos/${nombreSeguro(nombrePersonal(x.usuario_id) || "personal", 40)}__${x.fecha}`,
+        }));
+      }
+
+      const firm = await tablaCompleta("firmas_semana", "*", "lunes");
+      if (!firm.error && firm.data.length) {
+        const f = [["Semana (lunes)", "Persona", "Horas avaladas", "Fecha y hora de la firma"]];
+        firm.data.forEach(x => {
+          const seg = Number(x.segundos) || 0;
+          f.push([x.lunes, nombrePersonal(x.usuario_id),
+            `${Math.floor(seg / 3600)}:${String(Math.floor((seg % 3600) / 60)).padStart(2, "0")}`,
+            x.firmado_en ? new Date(x.firmado_en).toLocaleString("es-MX") : ""]);
+        });
+        zip.file(`Indices/personal_firmas_semana_${sello}.csv`, csvTexto(f));
+      }
+
+      const fin = await tablaCompleta("finanzas", "*", "fecha");
+      if (!fin.error && fin.data.length) {
+        const f = [["Fecha", "Tipo", "Concepto", "Monto", "Observaciones",
+                    "¿Con factura?", "Archivo de la factura", "Registrado por"]];
+        fin.data.forEach(m => f.push([m.fecha, m.tipo === "egreso" ? "Egreso" : "Ingreso",
+          m.concepto, m.monto, m.observaciones || "",
+          m.con_factura ? "Sí" : "No", m.archivo_nombre || "", nombrePersonal(m.registrado_por)]));
+        zip.file(`Indices/finanzas_movimientos_${sello}.csv`, csvTexto(f));
+        fin.data.filter(m => m.archivo_guardado).forEach(m => docsExtra.push({
+          clave: "factura_" + m.id,
+          ruta: `Finanzas/Facturas/${m.fecha}__${nombreSeguro(m.concepto, 50)}`,
+        }));
+      }
+
       /* ---- Documentos originales ---- */
       let fallidos = 0, guardados = 0;
       if (incluirArchivos) {
-        const items = inventario();
+        const items = [...inventario(), ...docsExtra];
         setProgreso({ hechos: 0, total: items.length, actual: "" });
         for (let i = 0; i < items.length; i++) {
           const it = items[i];
@@ -3277,8 +3387,11 @@ de cada ciclo escolar.
         <div>
           <h3 className="font-bold text-sm mb-2">Qué incluye el respaldo</h3>
           <ul className="text-sm text-slate-600 space-y-1">
-            <li>• <b>Índices en CSV</b>: constancias, grados, formación complementaria, docentes, avisos y acuses de enterado.</li>
-            <li>• <b>Documentos originales</b> con nombres legibles, en una carpeta por docente.</li>
+            <li>• <b>Formación docente</b>: constancias, grados, formación complementaria, docentes, avisos, acuses y entregas.</li>
+            <li>• <b>Control escolar</b>: padrón de alumnos, asistencias del QR y justificaciones.</li>
+            <li>• <b>Personal</b>: checadas del reloj, permisos y firmas semanales.</li>
+            <li>• <b>Finanzas</b>: ingresos y egresos, con sus facturas.</li>
+            <li>• <b>Documentos originales</b> con nombres legibles, organizados por carpetas.</li>
             <li>• <b>Nota explicativa</b> con la fecha del respaldo y el resumen del contenido.</li>
           </ul>
         </div>
@@ -3287,7 +3400,8 @@ de cada ciclo escolar.
           <input type="checkbox" className="mt-0.5" checked={incluirArchivos}
             onChange={e => setIncluirArchivos(e.target.checked)} disabled={estado === "trabajando"} />
           <span>
-            Incluir los {totalArchivos} documentos originales (PDF e imágenes).
+            Incluir los documentos originales (PDF e imágenes): al menos {totalArchivos},
+            más las facturas y comprobantes de permisos.
             <span className="block text-xs text-slate-500 mt-0.5">
               Si lo desmarcas, el respaldo solo trae los índices en Excel: se genera en segundos y pesa muy poco.
             </span>
