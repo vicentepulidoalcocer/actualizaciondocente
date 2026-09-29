@@ -124,7 +124,7 @@ export default function Asistencia({ user }) {
 
   /* Registra una asistencia: primero en pantalla, luego en la nube */
   const registrar = useCallback(async (datos) => {
-    const { id } = datos;
+    const { id, manual = false } = datos;   // manual: se buscó por nombre
     if (!id) return { ok: false, msg: "Código no reconocido" };
     const yaEsta = registrosHoy.find(r => r.alumno_id === id);
     if (yaEsta) {
@@ -156,6 +156,7 @@ export default function Asistencia({ user }) {
       nombre: enPadron.nombre,
       grupo: enPadron.grupo || "",
       semestre: enPadron.semestre || "",
+      manual,
       registrado_por: user.id,
     };
 
@@ -242,7 +243,7 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
   const [estado, setEstado] = useState({ msg: "Cámara apagada", tipo: "" });
   const [busqueda, setBusqueda] = useState("");
 
-  const procesarTexto = useCallback(async (texto) => {
+  const procesarTexto = useCallback(async (texto, manual = false) => {
     // Evita releer el mismo código varias veces por segundo
     const ahora = Date.now();
     if (texto === ultimoRef.current.texto && ahora - ultimoRef.current.t < 3000) return;
@@ -253,7 +254,7 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
        dato siempre está vigente aunque la credencial sea de hace años.
        Las credenciales antiguas traían "ID|Nombre|Grupo|Generación":
        se sigue leyendo el primer campo y se ignora el resto. */
-    const datos = { id: texto.split("|")[0].trim() };
+    const datos = { id: texto.split("|")[0].trim(), manual };
 
     const r = await registrar(datos);
     setEstado({ msg: r.msg, tipo: !r.ok ? (r.tipo === "repetido" ? "warn" : "err")
@@ -319,7 +320,7 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
   }, [alumnos, busqueda]);
 
   const registrarPorNombre = async (alumno) => {
-    await procesarTexto(alumno.id);
+    await procesarTexto(alumno.id, true);   // sin credencial: queda marcado
     setBusqueda("");
   };
 
@@ -415,6 +416,11 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
                 <div className="text-sm font-medium truncate">{r.nombre}</div>
                 <div className="text-xs text-slate-500">
                   {r.semestre ? `${r.semestre}° ` : ""}{r.grupo || "—"} · ID {r.alumno_id}
+                  {r.manual && (
+                    <span className="ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded bg-violet-50 border border-violet-200 text-violet-700">
+                      MANUAL
+                    </span>
+                  )}
                 </div>
               </div>
               <div className="text-right shrink-0">
@@ -532,12 +538,13 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
   });
 
   const exportarCSV = () => {
-    const filas = [["ID", "Nombre", "Semestre", "Grupo", "Fecha", "Hora", "Estado"]];
-    presentes.forEach(r => filas.push([r.alumno_id, r.nombre, r.semestre, r.grupo, r.fecha, r.hora, r.estado]));
+    const filas = [["ID", "Nombre", "Semestre", "Grupo", "Fecha", "Hora", "Estado", "Registro"]];
+    presentes.forEach(r => filas.push([r.alumno_id, r.nombre, r.semestre, r.grupo, r.fecha, r.hora,
+      r.estado, r.manual ? "Manual" : "Escaneado"]));
     ausentes.forEach(a => {
       const j = justPorAlumno.get(a.id);
       filas.push([a.id, a.nombre, a.semestre, a.grupo, fecha, "",
-        j ? `Justificado (${TIPOS_JUSTIFICACION[j.tipo] || j.tipo})` : "Ausente"]);
+        j ? `Justificado (${TIPOS_JUSTIFICACION[j.tipo] || j.tipo})` : "Ausente", ""]);
     });
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const csv = "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
@@ -889,6 +896,9 @@ function PanelHistorial({ alumnos, user }) {
   const [err, setErr] = useState("");
   const [detalle, setDetalle] = useState(null);      // fecha abierta
   const [filasDia, setFilasDia] = useState([]);      // alumnos de esa fecha
+  const [justDia, setJustDia] = useState([]);        // justificaciones de esa fecha
+  const [vistaDia, setVistaDia] = useState("presentes");
+  const [justificando, setJustificando] = useState(null);
   const [cargandoDia, setCargandoDia] = useState(false);
   const [borrando, setBorrando] = useState(null);
   const [exportando, setExportando] = useState(false);
@@ -910,12 +920,45 @@ function PanelHistorial({ alumnos, user }) {
 
   /* El detalle de un día sí se pide completo, pero es un solo día:
      nunca pasa del padrón. */
-  const abrirDia = async (fecha) => {
-    setDetalle(fecha); setFilasDia([]); setCargandoDia(true);
-    const { data, error } = await supabase.from("asistencias")
-      .select("*").eq("fecha", fecha).order("hora");
-    setFilasDia(error ? [] : (data || []));
+  const cargarDia = useCallback(async (fecha) => {
+    setCargandoDia(true);
+    const [as, ju] = await Promise.all([
+      supabase.from("asistencias").select("*").eq("fecha", fecha).order("hora"),
+      supabase.from("justificaciones").select("*").eq("fecha", fecha),
+    ]);
+    setFilasDia(as.error ? [] : (as.data || []));
+    setJustDia(ju.error ? [] : (ju.data || []));
     setCargandoDia(false);
+  }, []);
+
+  /* Quién faltó ese día: el padrón vigente menos quienes registraron. */
+  const justPorAlumnoDia = new Map(justDia.map(j => [j.alumno_id, j]));
+  const idsPresentesDia = new Set(filasDia.map(r => r.alumno_id));
+  const ausentesDia = alumnos
+    .filter(a => a.activo !== false && !idsPresentesDia.has(a.id))
+    .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"));
+
+  const abrirDia = async (fecha) => {
+    setDetalle(fecha); setFilasDia([]); setJustDia([]); setVistaDia("presentes");
+    await cargarDia(fecha);
+  };
+
+  /* Justificar una falta de un día anterior. Es el mismo mecanismo del
+     Panel del día, pero aplicado a la fecha que se está consultando:
+     no siempre se sabe el mismo día que alguien traía justificante. */
+  const guardarJustificacionDia = async ({ alumno_id, tipo, motivo }) => {
+    const { error } = await supabase.from("justificaciones").upsert(
+      { alumno_id, fecha: detalle, tipo, motivo, registrado_por: user?.id },
+      { onConflict: "alumno_id,fecha" });
+    if (error) throw new Error(error.message);
+    await cargarDia(detalle);
+  };
+
+  const quitarJustificacionDia = async (alumno_id) => {
+    const { error } = await supabase.from("justificaciones")
+      .delete().eq("alumno_id", alumno_id).eq("fecha", detalle);
+    if (error) throw new Error(error.message);
+    await cargarDia(detalle);
   };
 
   const totalPadron = alumnos.filter(a => a.activo !== false).length;
@@ -954,8 +997,9 @@ function PanelHistorial({ alumnos, user }) {
       if (!data || data.length < TAM) break;
       inicio += TAM;
     }
-    const filas = [["Fecha", "ID", "Nombre", "Semestre", "Grupo", "Hora", "Estado"]];
-    todos.forEach(r => filas.push([r.fecha, r.alumno_id, r.nombre, r.semestre, r.grupo, r.hora, r.estado]));
+    const filas = [["Fecha", "ID", "Nombre", "Semestre", "Grupo", "Hora", "Estado", "Registro"]];
+    todos.forEach(r => filas.push([r.fecha, r.alumno_id, r.nombre, r.semestre, r.grupo, r.hora,
+      r.estado, r.manual ? "Manual" : "Escaneado"]));
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const csv = "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
     const a = document.createElement("a");
@@ -1040,26 +1084,87 @@ function PanelHistorial({ alumnos, user }) {
               </div>
             </div>
             <div className="p-4 max-h-[70vh] overflow-y-auto">
+              <div className="flex gap-1 bg-slate-100 p-1 rounded-xl w-fit mb-3">
+                {[["presentes", `Asistieron (${filasDia.length})`],
+                  ["ausentes", `Faltaron (${ausentesDia.length})`]].map(([id, txt]) => (
+                  <button key={id} onClick={() => setVistaDia(id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                      vistaDia === id ? "bg-white shadow-sm text-[#1a2340]" : "text-slate-500 hover:text-slate-700"}`}>
+                    {txt}
+                  </button>
+                ))}
+              </div>
+
               {cargandoDia && (
                 <p className="text-sm text-slate-400 py-6 text-center flex items-center justify-center gap-2">
                   <Loader2 size={15} className="animate-spin" />Consultando…
                 </p>
               )}
-              {!cargandoDia && filasDia.map(r => (
+
+              {!cargandoDia && vistaDia === "presentes" && filasDia.map(r => (
                 <div key={r.id} className="flex items-center gap-3 py-2 border-b border-slate-100 last:border-0">
                   <span className={`w-2 h-2 rounded-full shrink-0 ${r.estado === "Retardo" ? "bg-amber-500" : "bg-emerald-500"}`} />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">{r.nombre}</div>
                     <div className="text-xs text-slate-500">
-                  {r.semestre ? `${r.semestre}° ` : ""}{r.grupo || "—"} · ID {r.alumno_id}
-                </div>
+                      {r.semestre ? `${r.semestre}° ` : ""}{r.grupo || "—"} · ID {r.alumno_id}
+                      {r.manual && (
+                        <span className="ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded bg-violet-50 border border-violet-200 text-violet-700">
+                          MANUAL
+                        </span>
+                      )}
+                    </div>
                   </div>
                   <div className="text-xs font-semibold shrink-0">{(r.hora || "").slice(0, 5)}</div>
                 </div>
               ))}
+
+              {!cargandoDia && vistaDia === "ausentes" && (
+                <>
+                  {ausentesDia.length === 0 && (
+                    <p className="text-sm text-emerald-700 py-6 text-center">
+                      Ese día no faltó nadie del padrón.
+                    </p>
+                  )}
+                  {ausentesDia.map(a => {
+                    const just = justPorAlumnoDia.get(a.id);
+                    return (
+                      <div key={a.id} className="flex flex-col sm:flex-row sm:items-center gap-2 py-2 border-b border-slate-100 last:border-0">
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium break-words">{a.nombre}</div>
+                          <div className="text-xs text-slate-500">
+                            {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · ID {a.id}
+                          </div>
+                          {just && (
+                            <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700">
+                              <ClipboardCheck size={10} />Justificado · {TIPOS_JUSTIFICACION[just.tipo] || just.tipo}
+                            </span>
+                          )}
+                        </div>
+                        <button className={`inline-flex items-center justify-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border shrink-0 ${
+                          just ? "border-slate-300 text-slate-600 hover:bg-slate-50"
+                               : "border-sky-300 text-sky-700 hover:bg-sky-50"}`}
+                          onClick={() => setJustificando(a)}>
+                          {just ? <><Pencil size={13} />Editar</> : <><ClipboardCheck size={13} />Justificar</>}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </>
+              )}
             </div>
           </div>
         </div>
+      )}
+
+      {justificando && (
+        <ModalJustificar
+          alumno={justificando}
+          existente={justPorAlumnoDia.get(justificando.id) || null}
+          onClose={() => setJustificando(null)}
+          onGuardar={async (datos) => { await guardarJustificacionDia(datos); setJustificando(null); }}
+          onQuitar={async () => { await quitarJustificacionDia(justificando.id); setJustificando(null); }}
+        />
       )}
     </div>
   );
