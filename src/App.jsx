@@ -1095,7 +1095,7 @@ export default function App() {
       { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
     ]},
     { id: "g_academico", label: "Académico y Competencias", icono: BookOpen, hijos: [
-      { id: "calendario", label: "Calendario académico", icono: CalendarDays },
+      { id: "calendario", label: "Calendarios", icono: CalendarDays },
       { id: "programas", label: "Programas de Estudio", icono: BookOpen },
       { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
       { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
@@ -1113,31 +1113,31 @@ export default function App() {
     { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: pendValidacion },
     { id: "docentes", label: "Expedientes docentes", icono: Users },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
-    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
+    { id: "calendario", label: "Calendarios", icono: CalendarDays },
     { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
     { id: "perfil_inst", label: "Perfil académico institucional", icono: GraduationCap },
     { id: "metas", label: "Metas y ciclos", icono: Target },
   ] : user.rol === "coord_tutorias" ? [
     { id: "tutorias", label: "Tutorías", icono: Users },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
-    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
+    { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "administrativo" ? [
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
     { id: "finanzas", label: "Finanzas", icono: TrendingUp },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
-    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
+    { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "personal_administrativo" ? [
     { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
     { id: "avisos", label: "Avisos", icono: Megaphone },
-    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
+    { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "jefe_rh" ? [
     { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
-    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
+    { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "jefe_academico" ? [
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
-    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
+    { id: "calendario", label: "Calendarios", icono: CalendarDays },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
     { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
@@ -1147,7 +1147,7 @@ export default function App() {
     { id: "mi_asignacion", label: "Mi asignación", icono: FolderOpen, badge: pendientesEntrega(db, user.id) },
     { id: "ausentes", label: "Alumnos ausentes", icono: Users },
     { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
-    { id: "calendario", label: "Calendario académico", icono: CalendarDays },
+    { id: "calendario", label: "Calendarios", icono: CalendarDays },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "cursos", label: "Mis cursos", icono: BookOpen },
     { id: "expediente", label: "Mi perfil académico", icono: GraduationCap },
@@ -3821,25 +3821,230 @@ function VisorCalendario({ cal }) {
    calendarios que ya existían no tenían "tipo" guardado: se tratan
    como "academico" para no perder lo ya publicado. */
 const TIPOS_CALENDARIO = [
-  ["academico", "Calendario académico", "Fechas del ciclo: exámenes, entregas, vacaciones y eventos institucionales."],
-  ["homenajes", "Calendario de Homenajes", "Quién organiza el homenaje cívico de cada fecha del mes."],
+  ["academico", "Académico", "Calendario académico",
+   "Fechas del ciclo: exámenes, entregas, vacaciones y eventos institucionales."],
+  ["homenajes", "Homenajes", "Calendario de Homenajes",
+   "Quién organiza el homenaje cívico de cada fecha del mes."],
+  ["baetam", "BAETAM", "Calendario BAETAM",
+   "Horarios y fechas del Bachillerato en Ambientes Educativos Tecnológicos y Modalidades."],
+  ["fechas", "Fechas clave", "Fechas importantes",
+   "Fechas sueltas que todo el personal debe tener presente."],
 ];
 
 function PantallaCalendarios({ db, user, mutar, puedeEditar }) {
   const [tipo, setTipo] = useState("academico");
-  const info = TIPOS_CALENDARIO.find(t => t[0] === tipo);
+  const info = TIPOS_CALENDARIO.find(t => t[0] === tipo) || TIPOS_CALENDARIO[0];
   return (
     <div className="space-y-4">
-      <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
-        {TIPOS_CALENDARIO.map(([id, txt]) => (
-          <button key={id} onClick={() => setTipo(id)}
-            className={`px-3 py-2 rounded-lg text-sm font-semibold transition ${tipo === id ? "bg-white text-[#1a2340] shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
-            {txt}
-          </button>
-        ))}
+      <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Calendarios</h2>
+
+      {/* Con cuatro pestañas ya no caben en el ancho de un teléfono, así
+          que la fila se desliza en lugar de encimarse. Las etiquetas son
+          cortas a propósito; el nombre completo va en el encabezado. */}
+      <div className="-mx-1 px-1 overflow-x-auto">
+        <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-max min-w-full">
+          {TIPOS_CALENDARIO.map(([id, corto]) => (
+            <button key={id} onClick={() => setTipo(id)}
+              className={`flex-1 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-semibold transition ${tipo === id ? "bg-white text-[#1a2340] shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+              {corto}
+            </button>
+          ))}
+        </div>
       </div>
-      <CalendarioAcademico db={db} user={user} mutar={mutar} puedeEditar={puedeEditar}
-        tipo={tipo} titulo={info[1]} descripcion={info[2]} />
+
+      {tipo === "fechas"
+        ? <FechasImportantes user={user} puedeEditar={puedeEditar}
+            titulo={info[2]} descripcion={info[3]} />
+        : <CalendarioAcademico db={db} user={user} mutar={mutar} puedeEditar={puedeEditar}
+            tipo={tipo} titulo={info[2]} descripcion={info[3]} />}
+    </div>
+  );
+}
+
+/* ================================================================
+   FECHAS IMPORTANTES · el cuarto calendario
+   ----------------------------------------------------------------
+   No lleva PDF: son fechas sueltas que se capturan a mano y que todo
+   el personal ve resaltadas. Las próximas se destacan según lo cerca
+   que estén; las que ya pasaron se guardan aparte para no estorbar.
+   ================================================================ */
+
+const diasFaltantes = (iso) => {
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  const [a, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  return Math.round((new Date(a, m - 1, d) - hoy) / 86400000);
+};
+
+const fmtFechaCorta = (iso) => {
+  const [a, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  return new Date(a, m - 1, d).toLocaleDateString("es-MX",
+    { weekday: "long", day: "numeric", month: "long" });
+};
+
+/* El color depende de qué tan cerca está, para que se vea de un
+   vistazo qué es urgente y qué todavía no. */
+const tonoFecha = (dias) =>
+  dias < 0  ? { caja: "bg-slate-50 border-slate-200", texto: "text-slate-400", etiqueta: "Ya pasó" }
+: dias === 0 ? { caja: "bg-rose-50 border-rose-300", texto: "text-rose-700", etiqueta: "HOY" }
+: dias === 1 ? { caja: "bg-rose-50 border-rose-200", texto: "text-rose-700", etiqueta: "Mañana" }
+: dias <= 7  ? { caja: "bg-amber-50 border-amber-200", texto: "text-amber-700", etiqueta: `En ${dias} días` }
+:              { caja: "bg-white border-slate-200", texto: "text-slate-500", etiqueta: `En ${dias} días` };
+
+function FechasImportantes({ user, puedeEditar, titulo, descripcion }) {
+  const [lista, setLista] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [err, setErr] = useState("");
+  const [form, setForm] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [verPasadas, setVerPasadas] = useState(false);
+
+  const cargar = useCallback(async () => {
+    setCargando(true); setErr("");
+    const { data, error } = await supabase
+      .from("fechas_importantes").select("*").order("fecha");
+    if (error) setErr(error.message);
+    setLista(error ? [] : (data || []));
+    setCargando(false);
+  }, []);
+
+  useEffect(() => { cargar(); }, [cargar]);
+
+  const guardar = async () => {
+    if (!form.titulo.trim()) { setErr("Escribe de qué se trata la fecha."); return; }
+    if (!form.fecha) { setErr("Elige la fecha."); return; }
+    setGuardando(true); setErr("");
+    const fila = {
+      fecha: form.fecha, titulo: form.titulo.trim(),
+      detalle: (form.detalle || "").trim(), publicado_por: user.id,
+    };
+    const { error } = form.id
+      ? await supabase.from("fechas_importantes").update(fila).eq("id", form.id)
+      : await supabase.from("fechas_importantes").insert(fila);
+    if (error) { setErr(error.message); setGuardando(false); return; }
+    await cargar();
+    setForm(null); setGuardando(false);
+  };
+
+  const eliminar = async (f) => {
+    if (!window.confirm(`¿Eliminar "${f.titulo}"? Dejará de verse para todo el personal.`)) return;
+    const { error } = await supabase.from("fechas_importantes").delete().eq("id", f.id);
+    if (error) { alert("No se pudo eliminar: " + error.message); return; }
+    await cargar();
+  };
+
+  const proximas = lista.filter(f => diasFaltantes(f.fecha) >= 0);
+  const pasadas = lista.filter(f => diasFaltantes(f.fecha) < 0).reverse();
+
+  const Renglon = ({ f }) => {
+    const dias = diasFaltantes(f.fecha);
+    const t = tonoFecha(dias);
+    return (
+      <div className={`border rounded-xl p-3 ${t.caja}`}>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="text-sm font-bold break-words">{f.titulo}</span>
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${t.caja} ${t.texto}`}>
+                {t.etiqueta}
+              </span>
+            </div>
+            <div className={`text-xs capitalize ${t.texto}`}>{fmtFechaCorta(f.fecha)}</div>
+            {f.detalle && <p className="text-xs text-slate-600 mt-1 break-words">{f.detalle}</p>}
+          </div>
+          {puedeEditar && (
+            <div className="flex gap-1 shrink-0">
+              <button className="p-1.5 rounded-lg hover:bg-white/70 text-slate-500" title="Editar"
+                onClick={() => { setForm({ ...f }); setErr(""); }}><Pencil size={15}/></button>
+              <button className="p-1.5 rounded-lg hover:bg-white/70 text-rose-500" title="Eliminar"
+                onClick={() => eliminar(f)}><Trash2 size={15}/></button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-lg font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>{titulo}</h3>
+          <p className="text-sm text-slate-500">{descripcion}</p>
+        </div>
+        {puedeEditar && (
+          <button className={btnPrim} onClick={() => {
+            setForm({ fecha: "", titulo: "", detalle: "" }); setErr("");
+          }}><Plus size={15}/>Agregar fecha</button>
+        )}
+      </div>
+
+      {err && !form && (
+        <Card className="p-4 text-sm text-rose-700 bg-rose-50 border-rose-200 flex items-start gap-2">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          <span>No se pudo consultar: {err}
+            <span className="block text-xs">¿Ya se ejecutó fechas_importantes.sql en Supabase?</span>
+          </span>
+        </Card>
+      )}
+
+      {cargando ? (
+        <Card className="p-8 text-center text-slate-400 text-sm flex items-center justify-center gap-2">
+          <Loader2 size={16} className="animate-spin" />Consultando…
+        </Card>
+      ) : (
+        <>
+          {proximas.length === 0 ? (
+            <Card className="p-8 text-center text-sm text-slate-400">
+              {puedeEditar ? "No hay fechas próximas. Agrega la primera."
+                           : "Por ahora no hay fechas marcadas."}
+            </Card>
+          ) : (
+            <div className="space-y-2">
+              {proximas.map(f => <Renglon key={f.id} f={f} />)}
+            </div>
+          )}
+
+          {pasadas.length > 0 && (
+            <div className="space-y-2">
+              <button className="text-xs font-semibold text-slate-400 hover:underline"
+                onClick={() => setVerPasadas(v => !v)}>
+                {verPasadas ? "Ocultar" : "Ver"} las {pasadas.length} fecha(s) que ya pasaron
+              </button>
+              {verPasadas && pasadas.map(f => <Renglon key={f.id} f={f} />)}
+            </div>
+          )}
+        </>
+      )}
+
+      {form && (
+        <Modal titulo={form.id ? "Editar fecha" : "Nueva fecha importante"} onClose={() => setForm(null)} ancho="max-w-md">
+          <div className="space-y-3">
+            <Campo label="¿De qué se trata?">
+              <input className={inputCls} maxLength={120} placeholder="Cierre de captura de calificaciones"
+                value={form.titulo} onChange={e => setForm({ ...form, titulo: e.target.value })} />
+            </Campo>
+            <Campo label="Fecha">
+              <input type="date" className={inputCls} value={form.fecha}
+                onChange={e => setForm({ ...form, fecha: e.target.value })} />
+            </Campo>
+            <Campo label="Detalle (opcional)">
+              <textarea className={inputCls + " resize-none"} rows={2} maxLength={300}
+                placeholder="Hasta las 6:00 p. m. en el sistema de control escolar"
+                value={form.detalle} onChange={e => setForm({ ...form, detalle: e.target.value })} />
+            </Campo>
+            <p className="text-[11px] text-slate-400">
+              Todo el personal la verá resaltada, y con más color conforme se acerque.
+            </p>
+            {err && <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0"/>{err}</p>}
+          </div>
+          <div className="flex justify-end gap-2 mt-4">
+            <button className={btnSec} onClick={() => setForm(null)} disabled={guardando}>Cancelar</button>
+            <button className={btnPrim} onClick={guardar} disabled={guardando}>
+              {guardando && <Loader2 size={14} className="animate-spin"/>}Guardar
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -3880,7 +4085,7 @@ function CalendarioAcademico({ db, user, mutar, puedeEditar, tipo = "academico",
         if (i >= 0) d.calendarios[i] = { ...d.calendarios[i], ...base };
         else d.calendarios.push(base);
         if (esNuevo) {
-          const emoji = tipo === "homenajes" ? "🎖️" : "🗓️";
+          const emoji = tipo === "homenajes" ? "🎖️" : tipo === "baetam" ? "📘" : "🗓️";
           d.users.filter(u => u.rol === "docente" && u.activo).forEach(u =>
             notificar(d, u.id, `${emoji} Se publicó “${base.titulo}” (${tituloPantalla}).`));
           registrarActividad(d, `Se publicó “${base.titulo}” (${tituloPantalla}).`);
@@ -3958,7 +4163,7 @@ function CalendarioAcademico({ db, user, mutar, puedeEditar, tipo = "academico",
         <Modal titulo={form.id ? "Editar" : `Publicar · ${tituloPantalla}`} onClose={() => setForm(null)}>
           <div className="space-y-3">
             <Campo label="Título">
-              <input className={inputCls} placeholder={tipo === "homenajes" ? "Homenajes — septiembre 2026" : "Calendario académico 2026–2027"}
+              <input className={inputCls} placeholder={tipo === "homenajes" ? "Homenajes — septiembre 2026" : tipo === "baetam" ? "Horarios BAETAM — agosto 2026" : "Calendario académico 2026–2027"}
                 value={form.titulo} onChange={e => setForm({ ...form, titulo: e.target.value })} />
             </Campo>
             <div className="grid sm:grid-cols-2 gap-3">
