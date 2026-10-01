@@ -201,6 +201,7 @@ export default function Ausentes({ db, user }) {
   const [alumnos, setAlumnos] = useState(null);
   const [registros, setRegistros] = useState([]);
   const [justificaciones, setJustificaciones] = useState([]);
+  const [diaEspecial, setDiaEspecial] = useState(null);
   const [cargando, setCargando] = useState(false);
   const [err, setErr] = useState("");
 
@@ -260,10 +261,11 @@ export default function Ausentes({ db, user }) {
     if (!misGrupos.length) return;
     setCargando(true); setErr("");
     try {
-      const [al, as, ju] = await Promise.all([
+      const [al, as, ju, dc] = await Promise.all([
         supabase.from("alumnos_basico").select("*"),
         supabase.from("asistencias_basico").select("*").eq("fecha", fecha),
         supabase.from("justificaciones_basico").select("*").eq("fecha", fecha),
+        supabase.from("dias_clase").select("*").eq("fecha", fecha).maybeSingle(),
       ]);
       if (al.error) throw new Error(al.error.message);
       if (as.error) throw new Error(as.error.message);
@@ -272,6 +274,7 @@ export default function Ausentes({ db, user }) {
       /* Si la vista de justificaciones aún no existe, la pantalla sigue
          mostrando los ausentes con normalidad. */
       setJustificaciones(ju.error ? [] : (ju.data || []));
+      setDiaEspecial(dc.error ? null : (dc.data || null));
     } catch (e) { setErr(e.message); }
     setCargando(false);
   }, [fecha, misGrupos.length]);
@@ -303,6 +306,14 @@ export default function Ausentes({ db, user }) {
   const totalJustificados = porGrupo.reduce((n, g) => n + g.justificados.length, 0);
   const totalAlumnos = porGrupo.reduce((n, g) => n + g.total, 0);
   const sinPadron = alumnos && porGrupo.every(g => g.total === 0);
+  /* Si no hay ni un registro ese día, es que no se pasó lista: no
+     tiene sentido mostrar a todo el grupo como ausente. */
+  const sinLista = alumnos && registros.length === 0;
+  /* Grupos del docente que SÍ tuvieron clase ese día. Si el día está
+     marcado como especial, los demás no aparecen: no les tocaba. */
+  const gruposConClase = porGrupo.filter(g =>
+    !diaEspecial || (diaEspecial.grupos || []).includes(`${g.sem}|${g.letra}`));
+  const sinClaseHoy = alumnos && !sinLista && gruposConClase.length === 0;
 
   const exportar = () => {
     const filas = [["Fecha", "Semestre", "Grupo", "ID", "Alumno", "Situación"]];
@@ -373,7 +384,38 @@ export default function Ausentes({ db, user }) {
         </Card>
       )}
 
-      {alumnos && !sinPadron && (
+      {alumnos && !sinPadron && sinLista && (
+        <Card className="p-6 text-center space-y-2">
+          <CalendarDays size={28} className="text-slate-300 mx-auto" />
+          <p className="text-sm font-semibold text-slate-700">
+            Ese día no se registró la asistencia con QR
+          </p>
+          <p className="text-xs text-slate-500">
+            No hay ninguna lectura de credencial en toda la escuela, así que no se puede
+            saber quién faltó. Puede ser que no hubiera clases o que no se haya escaneado.
+          </p>
+          <p className="text-xs text-slate-400">
+            Elige otra fecha arriba para ver las ausencias de tus grupos.
+          </p>
+        </Card>
+      )}
+
+      {alumnos && !sinPadron && !sinLista && sinClaseHoy && (
+        <Card className="p-6 text-center space-y-2">
+          <CalendarDays size={28} className="text-slate-300 mx-auto" />
+          <p className="text-sm font-semibold text-slate-700">
+            Tus grupos no tuvieron clase ese día
+          </p>
+          <p className="text-xs text-slate-500">
+            {diaEspecial?.motivo
+              ? `Control escolar lo marcó como día especial: ${diaEspecial.motivo}.`
+              : "Control escolar lo marcó como día especial."}
+            {" "}A tus alumnos no se les cuenta falta.
+          </p>
+        </Card>
+      )}
+
+      {alumnos && !sinPadron && !sinLista && !sinClaseHoy && (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <Card className="p-4">
@@ -398,7 +440,7 @@ export default function Ausentes({ db, user }) {
             </Card>
           </div>
 
-          {porGrupo.map(g => (
+          {gruposConClase.map(g => (
             <Card key={`${g.sem}${g.letra}`} className="p-4">
               <div className="flex flex-wrap items-center gap-2 mb-2">
                 <h3 className="font-bold text-sm">{g.sem}° “{g.letra}”</h3>
