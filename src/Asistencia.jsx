@@ -1429,6 +1429,7 @@ function PanelSeguimiento({ alumnos }) {
   const [err, setErr] = useState("");
   const [filtro, setFiltro] = useState("todos");
   const [grupo, setGrupo] = useState("todos");
+  const [detalleAlumno, setDetalleAlumno] = useState(null);
 
   const desde = periodo === "semestre" ? inicioSemestre()
     : periodo === "30" ? haceDias(30) : haceDias(7);
@@ -1630,7 +1631,8 @@ function PanelSeguimiento({ alumnos }) {
               <div key={a.id} className="flex flex-col sm:flex-row sm:items-center gap-2 py-2.5 border-b border-slate-100 last:border-0">
                 <span className="w-2.5 h-2.5 rounded-full shrink-0 hidden sm:block"
                   style={{ background: COLORES_SEM[a.sem].punto }} />
-                <div className="flex-1 min-w-0">
+                <button className="flex-1 min-w-0 text-left hover:underline"
+                  onClick={() => setDetalleAlumno(a)} title="Ver en qué fechas faltó">
                   <div className="text-sm font-medium break-words">
                     <span className="w-2.5 h-2.5 rounded-full inline-block mr-1.5 sm:hidden align-middle"
                       style={{ background: COLORES_SEM[a.sem].punto }} />
@@ -1641,7 +1643,7 @@ function PanelSeguimiento({ alumnos }) {
                     {a.retardos > 0 && ` · ${a.retardos} retardo(s)`}
                     {a.justificadas > 0 && <span className="text-sky-600"> · {a.justificadas} justificada(s)</span>}
                   </div>
-                </div>
+                </button>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className={`text-xs font-bold px-2.5 py-1 rounded-full border ${COLORES_SEM[a.sem].chip}`}>
                     {a.faltas} falta(s)
@@ -1659,6 +1661,148 @@ function PanelSeguimiento({ alumnos }) {
         )}
       </Card>
       {sinCredencial.length > 0 && <SinCredencial lista={sinCredencial} />}
+
+      {detalleAlumno && (
+        <FaltasDelAlumno
+          alumno={detalleAlumno}
+          desde={desde}
+          hasta={hasta}
+          onCerrar={() => setDetalleAlumno(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ================================================================
+   EN QUÉ FECHAS FALTÓ UN ALUMNO
+   ----------------------------------------------------------------
+   Se comparan los días que le tocaron a su grupo contra los días en
+   que sí registró asistencia. Lo que queda son sus faltas, con las
+   justificadas señaladas aparte.
+   ================================================================ */
+
+function FaltasDelAlumno({ alumno, desde, hasta, onCerrar }) {
+  const [faltas, setFaltas] = useState([]);
+  const [presentes, setPresentes] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      setCargando(true); setErr("");
+      const [fe, dc, as, ju] = await Promise.all([
+        supabase.rpc("fechas_con_lista", { desde, hasta }),
+        supabase.from("dias_clase").select("fecha, grupos, motivo")
+          .gte("fecha", desde).lte("fecha", hasta),
+        supabase.from("asistencias").select("fecha, estado, manual")
+          .eq("alumno_id", alumno.id).gte("fecha", desde).lte("fecha", hasta),
+        supabase.from("justificaciones").select("fecha, tipo, motivo")
+          .eq("alumno_id", alumno.id).gte("fecha", desde).lte("fecha", hasta),
+      ]);
+      if (!vivo) return;
+      if (fe.error) { setErr(fe.error.message); setCargando(false); return; }
+
+      const excepciones = new Map((dc.error ? [] : (dc.data || []))
+        .map(d => [String(d.fecha).slice(0, 10), d]));
+      const asistio = new Map((as.error ? [] : (as.data || []))
+        .map(r => [String(r.fecha).slice(0, 10), r]));
+      const justificada = new Map((ju.error ? [] : (ju.data || []))
+        .map(j => [String(j.fecha).slice(0, 10), j]));
+
+      const sinVenir = [];
+      (fe.data || []).forEach(f => {
+        const dia = String(f.fecha).slice(0, 10);
+        const exc = excepciones.get(dia);
+        // Si ese día su grupo no tuvo clase, no es falta
+        if (!tuvoClase(exc, alumno.semestre, alumno.grupo)) return;
+        if (asistio.has(dia)) return;
+        sinVenir.push({ fecha: dia, just: justificada.get(dia) || null });
+      });
+
+      setFaltas(sinVenir.reverse());
+      setPresentes([...asistio.entries()].map(([f, r]) => ({ fecha: f, ...r })).reverse());
+      setCargando(false);
+    })();
+    return () => { vivo = false; };
+  }, [alumno.id, alumno.semestre, alumno.grupo, desde, hasta]);
+
+  const sinJustificar = faltas.filter(f => !f.just);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 p-4 overflow-y-auto" onClick={onCerrar}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md my-8" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-2 px-5 py-4 border-b border-slate-200">
+          <div className="min-w-0">
+            <h3 className="font-bold text-base break-words" style={{ fontFamily: "'Archivo', sans-serif" }}>
+              {alumno.nombre}
+            </h3>
+            <p className="text-xs text-slate-500">
+              {alumno.semestre ? `${alumno.semestre}° ` : ""}{alumno.grupo || "—"} · del {desde} al {hasta}
+            </p>
+          </div>
+          <button onClick={onCerrar} className="p-1 rounded-lg hover:bg-slate-100 shrink-0"><X size={18} /></button>
+        </div>
+
+        <div className="p-5 space-y-3 max-h-[70vh] overflow-y-auto">
+          {err && (
+            <p className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2.5">
+              No se pudo consultar: {err}
+            </p>
+          )}
+
+          {cargando ? (
+            <p className="text-sm text-slate-400 py-6 text-center flex items-center justify-center gap-2">
+              <Loader2 size={15} className="animate-spin" />Consultando…
+            </p>
+          ) : (
+            <>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2">
+                  <div className="text-lg font-bold text-emerald-700">{presentes.length}</div>
+                  <div className="text-[10px] uppercase font-semibold text-emerald-700">Asistió</div>
+                </div>
+                <div className="bg-rose-50 border border-rose-200 rounded-xl p-2">
+                  <div className="text-lg font-bold text-rose-700">{sinJustificar.length}</div>
+                  <div className="text-[10px] uppercase font-semibold text-rose-700">Faltó</div>
+                </div>
+                <div className="bg-sky-50 border border-sky-200 rounded-xl p-2">
+                  <div className="text-lg font-bold text-sky-700">{faltas.length - sinJustificar.length}</div>
+                  <div className="text-[10px] uppercase font-semibold text-sky-700">Justificó</div>
+                </div>
+              </div>
+
+              {faltas.length === 0 ? (
+                <p className="text-sm text-emerald-700 py-4 text-center">
+                  No faltó ningún día en este periodo.
+                </p>
+              ) : (
+                <div>
+                  <p className="text-xs font-semibold text-slate-600 mb-1.5">Días que no asistió</p>
+                  <div className="space-y-1">
+                    {faltas.map(f => (
+                      <div key={f.fecha} className={`flex flex-wrap items-center gap-2 text-sm rounded-lg px-2.5 py-1.5 border ${
+                        f.just ? "bg-sky-50 border-sky-200" : "bg-rose-50 border-rose-200"}`}>
+                        <span className="capitalize flex-1 min-w-0">{fmtFechaLarga(f.fecha)}</span>
+                        {f.just && (
+                          <span className="text-[10px] font-bold text-sky-700 shrink-0">
+                            JUSTIFICADA · {(TIPOS_JUSTIFICACION[f.just.tipo] || f.just.tipo || "").toUpperCase()}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <p className="text-[11px] text-slate-400">
+                No se cuentan los días en que su grupo no tuvo clase.
+              </p>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
