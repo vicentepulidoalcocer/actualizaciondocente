@@ -1222,6 +1222,7 @@ function PanelSeguimiento({ alumnos }) {
   const [rojo, setRojo] = useState(
     () => Number(localStorage.getItem("seguimiento_rojo")) || 6);
   const [datos, setDatos] = useState(null);
+  const [manuales, setManuales] = useState([]);
   const [dias, setDias] = useState(0);
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState("");
@@ -1241,6 +1242,25 @@ function PanelSeguimiento({ alumnos }) {
     if (res.error || dd.error) { setErr((res.error || dd.error).message); setCargando(false); return; }
     setDatos(res.data || []);
     setDias(Number(dd.data) || 0);
+
+    /* Registros hechos a mano: alumnos que asistieron pero no
+       presentaron credencial. Se piden por tandas porque, aunque hoy
+       son pocos, con los meses podrían pasar del tope de 1000. */
+    const TAM = 1000;
+    let inicio = 0, todos = [];
+    for (;;) {
+      const { data, error } = await supabase.from("asistencias")
+        .select("alumno_id, fecha")
+        .eq("manual", true)
+        .gte("fecha", desde).lte("fecha", hasta)
+        .order("fecha", { ascending: false })
+        .range(inicio, inicio + TAM - 1);
+      if (error) break;                      // si falla, la sección no aparece
+      todos = todos.concat(data || []);
+      if (!data || data.length < TAM) break;
+      inicio += TAM;
+    }
+    setManuales(todos);
     setCargando(false);
   }, [desde, hasta]);
 
@@ -1270,6 +1290,23 @@ function PanelSeguimiento({ alumnos }) {
       })
       .sort((a, b) => (b.faltas - a.faltas) || (a.nombre || "").localeCompare(b.nombre || "", "es"));
   }, [datos, alumnos, dias, amarillo, rojo]);
+
+  /* Quiénes asistieron sin credencial, cuántas veces y qué días */
+  const sinCredencial = useMemo(() => {
+    const porAlumno = new Map();
+    manuales.forEach(m => {
+      if (!porAlumno.has(m.alumno_id)) porAlumno.set(m.alumno_id, []);
+      porAlumno.get(m.alumno_id).push(m.fecha);
+    });
+    return [...porAlumno.entries()]
+      .map(([id, fechas]) => {
+        const al = alumnos.find(a => a.id === id);
+        return { id, nombre: al?.nombre || "(fuera del padrón)",
+          semestre: al?.semestre, grupo: al?.grupo,
+          veces: fechas.length, fechas: [...fechas].sort().reverse() };
+      })
+      .sort((a, b) => (b.veces - a.veces) || (a.nombre || "").localeCompare(b.nombre || "", "es"));
+  }, [manuales, alumnos]);
 
   const visibles = lista
     .filter(a => filtro === "todos" || a.sem === filtro)
@@ -1411,7 +1448,75 @@ function PanelSeguimiento({ alumnos }) {
           </div>
         )}
       </Card>
+      {sinCredencial.length > 0 && <SinCredencial lista={sinCredencial} />}
     </div>
+  );
+}
+
+/* ================================================================
+   ALUMNOS SIN CREDENCIAL
+   ----------------------------------------------------------------
+   Quienes se registraron buscándolos por nombre: sí asistieron, pero
+   no traían credencial o no leyó. Sirve para saber a quién hay que
+   reponérsela y con qué frecuencia ocurre.
+   ================================================================ */
+
+function SinCredencial({ lista }) {
+  const [abierto, setAbierto] = useState(null);
+
+  const exportar = () => {
+    const filas = [["Alumno", "ID / Matrícula", "Semestre", "Grupo", "Veces sin credencial", "Fechas"]];
+    lista.forEach(a => filas.push([a.nombre, a.id, a.semestre || "", a.grupo || "",
+      a.veces, a.fechas.join("; ")]));
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csv = "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
+    const el = document.createElement("a");
+    el.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    el.download = "alumnos_sin_credencial.csv";
+    el.click();
+    URL.revokeObjectURL(el.href);
+  };
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <h3 className="font-bold text-sm">Alumnos sin credencial</h3>
+        <button className={btnSec + " !px-3 !py-1.5"} onClick={exportar}>
+          <Download size={13} />Exportar
+        </button>
+      </div>
+      <p className="text-xs text-slate-500 mb-3">
+        Asistieron y se registraron a mano porque no traían credencial o no leyó.
+        Toca un nombre para ver en qué días ocurrió.
+      </p>
+      <div className="max-h-80 overflow-y-auto">
+        {lista.map(a => (
+          <div key={a.id} className="border-b border-slate-100 last:border-0">
+            <button className="w-full text-left py-2.5 flex items-center gap-3 hover:bg-slate-50 px-2 -mx-2 rounded-lg"
+              onClick={() => setAbierto(abierto === a.id ? null : a.id)}>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium break-words">{a.nombre}</div>
+                <div className="text-xs text-slate-500">
+                  {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · ID {a.id}
+                </div>
+              </div>
+              <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-violet-50 border border-violet-200 text-violet-700 shrink-0">
+                {a.veces} vez(ces)
+              </span>
+            </button>
+            {abierto === a.id && (
+              <div className="pb-3 pl-2 flex flex-wrap gap-1.5">
+                {a.fechas.map(f => (
+                  <span key={f} className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                    {f}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
