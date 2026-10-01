@@ -196,7 +196,7 @@ export default function AsistenciaDocente({ user, usuarios = [] }) {
       {!esRH && <MisPermisos usuarioId={user.id} />}
       {esRH && tab === "personal" && <PanelPersonal usuarios={usuarios} />}
       {esRH && tab === "firmas" && <PanelFirmas usuarios={usuarios} />}
-      {esRH && tab === "permisos" && <PanelPermisos user={user} usuarios={usuarios} />}
+      {esRH && tab === "permisos" && <PanelPermisos user={user} usuarios={usuarios} esAdmin={user.rol === "admin"} />}
       {esRH && tab === "cargar" && <CargarSemana user={user} usuarios={usuarios} />}
       {esRH && tab === "vinculos" && <Vinculacion usuarios={usuarios} />}
     </div>
@@ -756,7 +756,7 @@ function PanelFirmas({ usuarios }) {
   );
 }
 
-function PanelPermisos({ user, usuarios }) {
+function PanelPermisos({ user, usuarios, esAdmin = false }) {
   const [filas, setFilas] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState("");
@@ -987,10 +987,14 @@ function PanelPermisos({ user, usuarios }) {
                 )}
                 <VerDocumento permiso={f} />
               </div>
-              <button className="text-xs font-semibold text-rose-600 hover:underline shrink-0 text-left"
-                onClick={() => eliminar(f)}>
-                Eliminar
-              </button>
+              {/* Eliminar un permiso no deja rastro, así que queda
+                  reservado a la administración general. */}
+              {esAdmin && (
+                <button className="text-xs font-semibold text-rose-600 hover:underline shrink-0 text-left"
+                  onClick={() => eliminar(f)}>
+                  Eliminar
+                </button>
+              )}
             </div>
           ))}
         </Card>
