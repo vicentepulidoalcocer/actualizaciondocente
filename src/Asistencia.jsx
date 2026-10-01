@@ -69,6 +69,7 @@ export default function Asistencia({ user }) {
   const [alumnos, setAlumnos] = useState([]);
   const [registrosHoy, setRegistrosHoy] = useState([]);
   const [justificaciones, setJustificaciones] = useState([]);
+  const [diaEspecial, setDiaEspecial] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState("");
   const [horaLimite, setHoraLimite] = useState(
@@ -80,10 +81,11 @@ export default function Asistencia({ user }) {
   const cargar = useCallback(async () => {
     setCargando(true); setErr("");
     try {
-      const [al, as, ju] = await Promise.all([
+      const [al, as, ju, dc] = await Promise.all([
         supabase.from("alumnos").select("*").order("nombre"),
         supabase.from("asistencias").select("*").eq("fecha", hoyISO()).order("hora"),
         supabase.from("justificaciones").select("*").eq("fecha", hoyISO()),
+        supabase.from("dias_clase").select("*").eq("fecha", hoyISO()).maybeSingle(),
       ]);
       if (al.error) throw new Error(al.error.message);
       if (as.error) throw new Error(as.error.message);
@@ -92,6 +94,7 @@ export default function Asistencia({ user }) {
       /* Si la tabla de justificaciones aún no existe, se trabaja sin
          ellas en lugar de dejar inservible toda la pantalla. */
       setJustificaciones(ju.error ? [] : (ju.data || []));
+      setDiaEspecial(dc.error ? null : (dc.data || null));
     } catch (e) { setErr(e.message); }
     setCargando(false);
   }, []);
@@ -222,7 +225,8 @@ export default function Asistencia({ user }) {
       )}
       {!cargando && tab === "dashboard" && (
         <PanelDia alumnos={alumnos} registros={registrosHoy} fecha={fecha}
-          justificaciones={justificaciones} user={user} recargar={cargar} />
+          justificaciones={justificaciones} user={user} recargar={cargar}
+          diaEspecial={diaEspecial} />
       )}
       {!cargando && tab === "historial" && <PanelHistorial alumnos={alumnos} user={user} />}
       {!cargando && tab === "seguimiento" && <PanelSeguimiento alumnos={alumnos} />}
@@ -468,10 +472,20 @@ const mensajeAusencia = (al, fecha) => {
   return `Buen día. Le informamos que ${al.nombre}${ubica ? ` (${ubica})` : ""} no registró asistencia hoy ${fmtFechaLarga(fecha)}. CBTA No. 291.`;
 };
 
+/* ---------------- días especiales ----------------
+   Un día marcado indica qué grupos SÍ tuvieron clase. Si un grupo no
+   está en la lista, ese día no cuenta para él: ni ausentes ni falta.
+   Sin marca, el día es normal y cuenta para todos. */
+const claveGrupo = (sem, letra) => `${sem || ""}|${letra || ""}`;
+
+const tuvoClase = (excepcion, sem, letra) =>
+  !excepcion || (excepcion.grupos || []).includes(claveGrupo(sem, letra));
+
 /* Etiquetas legibles del tipo de justificación */
 const TIPOS_JUSTIFICACION = { medica: "Médica", personal: "Personal", otra: "Otra" };
 
-function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recargar }) {
+function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recargar, diaEspecial = null }) {
+  const [marcandoDia, setMarcandoDia] = useState(false);
   const [justificando, setJustificando] = useState(null);
   const [lote, setLote] = useState(false);
   const [avisados, setAvisados] = useState(() => leerAvisados(fecha));
@@ -498,7 +512,11 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
   const padron = delGrupo(alumnos.filter(a => a.activo !== false));
   const presentes = delGrupo(registros);
   const idsPresentes = new Set(presentes.map(r => r.alumno_id));
-  const ausentes = padron.filter(a => !idsPresentes.has(a.id));
+  /* Si el día está marcado como especial, los grupos que no tuvieron
+     clase quedan fuera: no son ausentes, simplemente no les tocaba. */
+  const ausentes = padron
+    .filter(a => !idsPresentes.has(a.id))
+    .filter(a => tuvoClase(diaEspecial, a.semestre, a.grupo));
   const pct = padron.length ? Math.round(100 * presentes.length / padron.length) : 0;
 
   // Justificación vigente de cada ausente, por su ID
@@ -583,6 +601,29 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
         </div>
         <button className={btnSec + " !px-3 !py-1.5"} onClick={exportarCSV}><Download size={13} />Exportar a Excel</button>
       </div>
+
+      {diaEspecial ? (
+        <Card className="p-3 bg-sky-50 border-sky-200 flex flex-wrap items-center gap-2">
+          <ClipboardCheck size={15} className="text-sky-700 shrink-0" />
+          <span className="text-sm text-sky-900 flex-1 min-w-[180px]">
+            <b>Día especial</b>
+            {diaEspecial.motivo && ` · ${diaEspecial.motivo}`}
+            {" · "}
+            {(diaEspecial.grupos || []).length === 0
+              ? "sin clases para nadie"
+              : `solo con clase: ${(diaEspecial.grupos || []).map(g => g.replace("|", "° ")).join(", ")}`}
+          </span>
+          <button className="text-xs font-semibold text-sky-700 hover:underline"
+            onClick={() => setMarcandoDia(true)}>Cambiar</button>
+        </Card>
+      ) : (
+        <div className="text-right">
+          <button className="text-xs font-semibold text-slate-400 hover:text-slate-600 hover:underline"
+            onClick={() => setMarcandoDia(true)}>
+            ¿Hoy no hubo clases normales? Márcalo
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Stat icono={Users} label="En el padrón" valor={padron.length} />
@@ -680,6 +721,17 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
         </div>
       </Card>
 
+      {marcandoDia && (
+        <MarcarDiaEspecial
+          fecha={fecha}
+          alumnos={alumnos}
+          actual={diaEspecial}
+          user={user}
+          onCerrar={() => setMarcandoDia(false)}
+          onListo={async () => { setMarcandoDia(false); await recargar(); }}
+        />
+      )}
+
       {lote && (
         <EnvioPorLotes
           pendientes={porAvisar}
@@ -711,6 +763,120 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
    con el mensaje ya escrito y, al volver, muestra al siguiente. Se
    evita buscar cada nombre en la lista y se lleva la cuenta.
    ================================================================ */
+
+/* ================================================================
+   MARCAR UN DÍA ESPECIAL
+   ----------------------------------------------------------------
+   Se eligen los grupos que SÍ tuvieron clase. Los demás quedan fuera
+   de las ausencias de ese día y el día no les cuenta en el
+   seguimiento de faltas. Si no se elige ninguno, es un día sin
+   clases para todo el plantel.
+   ================================================================ */
+
+function MarcarDiaEspecial({ fecha, alumnos, actual, user, onCerrar, onListo }) {
+  const [motivo, setMotivo] = useState(actual?.motivo || "");
+  const [elegidos, setElegidos] = useState(() => new Set(actual?.grupos || []));
+  const [guardando, setGuardando] = useState(false);
+  const [err, setErr] = useState("");
+
+  /* Todos los grupos del padrón, ordenados */
+  const grupos = [...new Set(alumnos.filter(a => a.activo !== false)
+    .map(a => claveGrupo(a.semestre, a.grupo)))]
+    .sort((x, y) => x.localeCompare(y, "es", { numeric: true }));
+
+  const alternar = (g) => setElegidos(prev => {
+    const n = new Set(prev);
+    n.has(g) ? n.delete(g) : n.add(g);
+    return n;
+  });
+
+  const guardar = async () => {
+    setGuardando(true); setErr("");
+    const { error } = await supabase.from("dias_clase").upsert({
+      fecha, motivo: motivo.trim(), grupos: [...elegidos], registrado_por: user?.id,
+    }, { onConflict: "fecha" });
+    if (error) { setErr(error.message); setGuardando(false); return; }
+    await onListo();
+    setGuardando(false);
+  };
+
+  const quitarMarca = async () => {
+    if (!window.confirm("¿Quitar la marca? El día volverá a contar como normal para todos los grupos.")) return;
+    setGuardando(true); setErr("");
+    const { error } = await supabase.from("dias_clase").delete().eq("fecha", fecha);
+    if (error) { setErr(error.message); setGuardando(false); return; }
+    await onListo();
+    setGuardando(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 p-4 overflow-y-auto" onClick={onCerrar}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md my-8" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+          <h3 className="font-bold text-base" style={{ fontFamily: "'Archivo', sans-serif" }}>
+            Día especial
+          </h3>
+          <button onClick={onCerrar} className="p-1 rounded-lg hover:bg-slate-100"><X size={18} /></button>
+        </div>
+
+        <div className="p-5 space-y-3">
+          <p className="text-sm text-slate-600">{fmtFechaLarga(fecha)}</p>
+
+          <label className="block">
+            <span className="text-xs font-semibold text-slate-600">¿Qué pasó ese día?</span>
+            <input className={inputCls} maxLength={120}
+              placeholder="Consejo técnico · Solo se citó a 5° C · Media jornada"
+              value={motivo} onChange={e => setMotivo(e.target.value)} />
+          </label>
+
+          <div>
+            <span className="text-xs font-semibold text-slate-600">
+              ¿Qué grupos SÍ tuvieron clase?
+            </span>
+            <p className="text-[11px] text-slate-400 mb-2">
+              Los que no marques quedan fuera: ese día no se les cuenta como falta.
+              Si no marcas ninguno, no hubo clases para nadie.
+            </p>
+            <div className="flex flex-wrap gap-1.5">
+              {grupos.map(g => {
+                const activo = elegidos.has(g);
+                return (
+                  <button key={g} type="button" onClick={() => alternar(g)}
+                    className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg border transition ${
+                      activo ? "bg-[#1a2340] text-white border-[#1a2340]"
+                             : "bg-white border-slate-300 text-slate-600 hover:bg-slate-50"}`}>
+                    {g.replace("|", "° ")}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex gap-3 mt-2">
+              <button type="button" className="text-[11px] text-slate-400 hover:underline"
+                onClick={() => setElegidos(new Set(grupos))}>Marcar todos</button>
+              <button type="button" className="text-[11px] text-slate-400 hover:underline"
+                onClick={() => setElegidos(new Set())}>Ninguno</button>
+            </div>
+          </div>
+
+          {err && <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{err}</p>}
+
+          <div className="flex items-center justify-between pt-1">
+            {actual
+              ? <button className="text-xs font-semibold text-rose-600 hover:underline disabled:opacity-50"
+                  onClick={quitarMarca} disabled={guardando}>Quitar la marca</button>
+              : <span />}
+            <div className="flex gap-2">
+              <button className={btnSec} onClick={onCerrar} disabled={guardando}>Cancelar</button>
+              <button className={btnPrim} onClick={guardar} disabled={guardando}>
+                {guardando && <Loader2 size={14} className="animate-spin" />}Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function EnvioPorLotes({ pendientes, sinTelefono, fecha, onAvisado, onCerrar }) {
   const [i, setI] = useState(0);
@@ -897,6 +1063,8 @@ function PanelHistorial({ alumnos, user }) {
   const [detalle, setDetalle] = useState(null);      // fecha abierta
   const [filasDia, setFilasDia] = useState([]);      // alumnos de esa fecha
   const [justDia, setJustDia] = useState([]);        // justificaciones de esa fecha
+  const [excepDia, setExcepDia] = useState(null);    // ¿fue día especial?
+  const [marcandoDia, setMarcandoDia] = useState(false);
   const [vistaDia, setVistaDia] = useState("presentes");
   const [justificando, setJustificando] = useState(null);
   const [cargandoDia, setCargandoDia] = useState(false);
@@ -922,12 +1090,14 @@ function PanelHistorial({ alumnos, user }) {
      nunca pasa del padrón. */
   const cargarDia = useCallback(async (fecha) => {
     setCargandoDia(true);
-    const [as, ju] = await Promise.all([
+    const [as, ju, dc] = await Promise.all([
       supabase.from("asistencias").select("*").eq("fecha", fecha).order("hora"),
       supabase.from("justificaciones").select("*").eq("fecha", fecha),
+      supabase.from("dias_clase").select("*").eq("fecha", fecha).maybeSingle(),
     ]);
     setFilasDia(as.error ? [] : (as.data || []));
     setJustDia(ju.error ? [] : (ju.data || []));
+    setExcepDia(dc.error ? null : (dc.data || null));
     setCargandoDia(false);
   }, []);
 
@@ -936,6 +1106,7 @@ function PanelHistorial({ alumnos, user }) {
   const idsPresentesDia = new Set(filasDia.map(r => r.alumno_id));
   const ausentesDia = alumnos
     .filter(a => a.activo !== false && !idsPresentesDia.has(a.id))
+    .filter(a => tuvoClase(excepDia, a.semestre, a.grupo))
     .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"));
 
   const abrirDia = async (fecha) => {
@@ -1084,6 +1255,22 @@ function PanelHistorial({ alumnos, user }) {
               </div>
             </div>
             <div className="p-4 max-h-[70vh] overflow-y-auto">
+              {excepDia && (
+                <div className="mb-3 text-xs bg-sky-50 border border-sky-200 text-sky-900 rounded-xl p-2.5">
+                  <b>Día especial</b>{excepDia.motivo && ` · ${excepDia.motivo}`}
+                  {" · "}
+                  {(excepDia.grupos || []).length === 0
+                    ? "sin clases para nadie"
+                    : `solo con clase: ${(excepDia.grupos || []).map(g => g.replace("|", "° ")).join(", ")}`}
+                </div>
+              )}
+              <div className="mb-3 text-right">
+                <button className="text-xs font-semibold text-slate-400 hover:text-slate-600 hover:underline"
+                  onClick={() => setMarcandoDia(true)}>
+                  {excepDia ? "Cambiar la marca del día" : "Marcar como día especial"}
+                </button>
+              </div>
+
               <div className="flex gap-1 bg-slate-100 p-1 rounded-xl w-fit mb-3">
                 {[["presentes", `Asistieron (${filasDia.length})`],
                   ["ausentes", `Faltaron (${ausentesDia.length})`]].map(([id, txt]) => (
@@ -1157,6 +1344,17 @@ function PanelHistorial({ alumnos, user }) {
         </div>
       )}
 
+      {marcandoDia && detalle && (
+        <MarcarDiaEspecial
+          fecha={detalle}
+          alumnos={alumnos}
+          actual={excepDia}
+          user={user}
+          onCerrar={() => setMarcandoDia(false)}
+          onListo={async () => { setMarcandoDia(false); await cargarDia(detalle); }}
+        />
+      )}
+
       {justificando && (
         <ModalJustificar
           alumno={justificando}
@@ -1223,6 +1421,7 @@ function PanelSeguimiento({ alumnos }) {
     () => Number(localStorage.getItem("seguimiento_rojo")) || 6);
   const [datos, setDatos] = useState(null);
   const [manuales, setManuales] = useState([]);
+  const [diasGrupo, setDiasGrupo] = useState(new Map());
   const [dias, setDias] = useState(0);
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState("");
@@ -1235,13 +1434,19 @@ function PanelSeguimiento({ alumnos }) {
 
   const consultar = useCallback(async () => {
     setCargando(true); setErr("");
-    const [res, dd] = await Promise.all([
+    const [res, dd, dg] = await Promise.all([
       supabase.rpc("resumen_inasistencias", { desde, hasta }),
       supabase.rpc("dias_con_registro", { desde, hasta }),
+      supabase.rpc("dias_por_grupo", { desde, hasta }),
     ]);
     if (res.error || dd.error) { setErr((res.error || dd.error).message); setCargando(false); return; }
     setDatos(res.data || []);
     setDias(Number(dd.data) || 0);
+    /* Cada grupo tiene su propio número de días: los días marcados
+       como especiales solo cuentan para quienes sí tuvieron clase.
+       Si la función aún no existe, se usa el conteo general. */
+    setDiasGrupo(dg.error ? new Map()
+      : new Map((dg.data || []).map(r => [`${r.semestre}|${r.grupo}`, Number(r.dias) || 0])));
 
     /* Registros hechos a mano: alumnos que asistieron pero no
        presentaron credencial. Se piden por tandas porque, aunque hoy
@@ -1284,12 +1489,15 @@ function PanelSeguimiento({ alumnos }) {
         const d = porAlumno.get(a.id) || { presentes: 0, retardos: 0, justificadas: 0 };
         const presentes = Number(d.presentes) || 0;
         const justificadas = Number(d.justificadas) || 0;
-        const faltas = Math.max(0, dias - presentes - justificadas);
+        /* Días que de verdad le tocaban a este alumno, según su grupo */
+        const suyos = diasGrupo.has(`${a.semestre || ""}|${a.grupo || ""}`)
+          ? diasGrupo.get(`${a.semestre || ""}|${a.grupo || ""}`) : dias;
+        const faltas = Math.max(0, suyos - presentes - justificadas);
         return { ...a, presentes, justificadas, retardos: Number(d.retardos) || 0,
-          faltas, sem: semaforoDe(faltas, amarillo, rojo) };
+          diasSuyos: suyos, faltas, sem: semaforoDe(faltas, amarillo, rojo) };
       })
       .sort((a, b) => (b.faltas - a.faltas) || (a.nombre || "").localeCompare(b.nombre || "", "es"));
-  }, [datos, alumnos, dias, amarillo, rojo]);
+  }, [datos, alumnos, dias, diasGrupo, amarillo, rojo]);
 
   /* Quiénes asistieron sin credencial, cuántas veces y qué días */
   const sinCredencial = useMemo(() => {
@@ -1317,7 +1525,7 @@ function PanelSeguimiento({ alumnos }) {
   const exportar = () => {
     const filas = [["Alumno", "ID", "Semestre", "Grupo", "Días con registro",
       "Asistencias", "Retardos", "Faltas", "Justificadas", "Situación", "Tutor", "Teléfono"]];
-    visibles.forEach(a => filas.push([a.nombre, a.id, a.semestre, a.grupo, dias,
+    visibles.forEach(a => filas.push([a.nombre, a.id, a.semestre, a.grupo, a.diasSuyos,
       a.presentes, a.retardos, a.faltas, a.justificadas, COLORES_SEM[a.sem].txt,
       a.tutor || "", a.telefono || ""]));
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
@@ -1427,7 +1635,7 @@ function PanelSeguimiento({ alumnos }) {
                     {a.nombre}
                   </div>
                   <div className="text-xs text-slate-500">
-                    {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · asistió {a.presentes} de {dias}
+                    {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · asistió {a.presentes} de {a.diasSuyos}
                     {a.retardos > 0 && ` · ${a.retardos} retardo(s)`}
                     {a.justificadas > 0 && <span className="text-sky-600"> · {a.justificadas} justificada(s)</span>}
                   </div>
