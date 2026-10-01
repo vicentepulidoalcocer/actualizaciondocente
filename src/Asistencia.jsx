@@ -1783,7 +1783,7 @@ function PanelEstadisticas({ alumnos }) {
   const [tipo, setTipo] = useState("semana");
   const [salto, setSalto] = useState(0);
   const [datos, setDatos] = useState([]);
-  const [diasGrupo, setDiasGrupo] = useState(new Map());
+  const [diasNormales, setDiasNormales] = useState(0);
   const [cargando, setCargando] = useState(true);
   const [err, setErr] = useState("");
 
@@ -1791,14 +1791,12 @@ function PanelEstadisticas({ alumnos }) {
 
   const consultar = useCallback(async () => {
     setCargando(true); setErr("");
-    const [est, dg] = await Promise.all([
-      supabase.rpc("estadisticas_asistencia", { desde, hasta }),
-      supabase.rpc("dias_por_grupo", { desde, hasta }),
-    ]);
+    const est = await supabase.rpc("estadisticas_asistencia", { desde, hasta });
     if (est.error) { setErr(est.error.message); setCargando(false); return; }
     setDatos(est.data || []);
-    setDiasGrupo(dg.error ? new Map()
-      : new Map((dg.data || []).map(r => [`${r.semestre}|${r.grupo}`, Number(r.dias) || 0])));
+    /* Los días normales del periodo: el mismo número para todos los
+       grupos, porque los días especiales quedan fuera. */
+    setDiasNormales(Number(est.data?.[0]?.dias) || 0);
     setCargando(false);
   }, [desde, hasta]);
 
@@ -1817,7 +1815,7 @@ function PanelEstadisticas({ alumnos }) {
       const retardos = Number(d.retardos) || 0;
       const inscritos = alumnos.filter(a => a.activo !== false
         && (a.semestre || "") === sem && (a.grupo || "") === letra).length;
-      const dias = diasGrupo.has(g) ? diasGrupo.get(g) : 0;
+      const dias = diasNormales;
       const esperados = inscritos * dias;
       return {
         clave: g, nombre: `${sem}° ${letra}`, inscritos, dias, registros, retardos,
@@ -1825,7 +1823,7 @@ function PanelEstadisticas({ alumnos }) {
         puntualidad: registros ? Math.round(100 * (registros - retardos) / registros) : null,
       };
     });
-  }, [datos, alumnos, diasGrupo]);
+  }, [datos, alumnos, diasNormales]);
 
   const conDatos = filas.filter(f => f.dias > 0);
   const promedioAsis = conDatos.length
@@ -1973,9 +1971,9 @@ function PanelEstadisticas({ alumnos }) {
           </Card>
 
           <p className="text-[11px] text-slate-400">
-            La asistencia se calcula sobre los días que le tocaron a cada grupo, así que los
-            días marcados como especiales no lo perjudican. La puntualidad se mide solo entre
-            quienes sí asistieron.
+            Los días marcados como especiales quedan fuera de estas estadísticas: un día en
+            que solo se citó a un grupo distorsionaría el panorama. La puntualidad se mide
+            únicamente entre quienes sí asistieron.
           </p>
         </>
       )}
