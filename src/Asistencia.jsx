@@ -11,11 +11,11 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import {
   Camera, CameraOff, Users, Clock, CheckCircle2, AlertTriangle, Download,
   Upload, Search, Loader2, TrendingUp, MessageCircle, CalendarDays, X, RefreshCw,
-  Trash2, UserMinus, UserCheck, ClipboardCheck, Pencil,
+  Trash2, UserMinus, UserCheck, ClipboardCheck, Pencil, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
-  LineChart, Line,
+  LineChart, Line, Legend,
 } from "recharts";
 import { supabase } from "./lib/supabase";
 
@@ -184,6 +184,7 @@ export default function Asistencia({ user }) {
     ["dashboard", "Panel del día", TrendingUp],
     ["historial", "Historial", CalendarDays],
     ["seguimiento", "Seguimiento", AlertTriangle],
+    ["estadisticas", "Estadísticas", TrendingUp],
     ["padron", "Alumnos", Users],
   ];
 
@@ -230,6 +231,7 @@ export default function Asistencia({ user }) {
       )}
       {!cargando && tab === "historial" && <PanelHistorial alumnos={alumnos} user={user} />}
       {!cargando && tab === "seguimiento" && <PanelSeguimiento alumnos={alumnos} />}
+      {!cargando && tab === "estadisticas" && <PanelEstadisticas alumnos={alumnos} />}
       {!cargando && tab === "padron" && <PanelPadron alumnos={alumnos} recargar={cargar} />}
     </div>
   );
@@ -1725,6 +1727,259 @@ function SinCredencial({ lista }) {
         ))}
       </div>
     </Card>
+  );
+}
+
+/* ================================================================
+   ESTADÍSTICAS POR GRUPO
+   ----------------------------------------------------------------
+   Dos indicadores distintos, que conviene no confundir:
+
+   ASISTENCIA  = de todas las veces que un alumno del grupo debió
+                 presentarse, cuántas se presentó. Se calcula sobre
+                 los días que le tocaron a ESE grupo, así que los
+                 días marcados como especiales no lo perjudican.
+
+   PUNTUALIDAD = de las veces que sí llegaron, cuántas fueron antes
+                 de la hora límite. Un grupo puede tener asistencia
+                 baja y puntualidad alta: pocos vienen, pero los que
+                 vienen llegan temprano.
+   ================================================================ */
+
+const PERIODOS_EST = [
+  ["semana", "Semanal"],
+  ["mes", "Mensual"],
+  ["semestre", "Semestral"],
+];
+
+/* Rango de fechas según el periodo y cuántos saltos atrás */
+function rangoPeriodo(tipo, desplazamiento) {
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  if (tipo === "semana") {
+    const d = new Date(hoy);
+    const dow = d.getDay();
+    d.setDate(d.getDate() - (dow === 0 ? 6 : dow - 1) + desplazamiento * 7);
+    const fin = new Date(d); fin.setDate(fin.getDate() + 5);  // lunes a sábado
+    return { desde: isoDe(d), hasta: isoDe(fin),
+      titulo: `${d.toLocaleDateString("es-MX", { day: "numeric", month: "short" })} al ${fin.toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}` };
+  }
+  if (tipo === "mes") {
+    const d = new Date(hoy.getFullYear(), hoy.getMonth() + desplazamiento, 1);
+    const fin = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    return { desde: isoDe(d), hasta: isoDe(fin),
+      titulo: d.toLocaleDateString("es-MX", { month: "long", year: "numeric" }) };
+  }
+  // Semestre: agosto-enero o febrero-julio
+  const a = hoy.getFullYear(), m = hoy.getMonth() + 1;
+  const desde = m >= 8 ? `${a}-08-01` : m === 1 ? `${a - 1}-08-01` : `${a}-02-01`;
+  const hasta = m >= 8 ? `${a + 1}-01-31` : m === 1 ? `${a}-01-31` : `${a}-07-31`;
+  const nombre = (m >= 8 || m === 1) ? "agosto – enero" : "febrero – julio";
+  return { desde, hasta, titulo: `Semestre ${nombre}` };
+}
+
+const colorPct = (p) => p >= 90 ? "#059669" : p >= 75 ? "#E8871E" : "#e11d48";
+
+function PanelEstadisticas({ alumnos }) {
+  const [tipo, setTipo] = useState("semana");
+  const [salto, setSalto] = useState(0);
+  const [datos, setDatos] = useState([]);
+  const [diasGrupo, setDiasGrupo] = useState(new Map());
+  const [cargando, setCargando] = useState(true);
+  const [err, setErr] = useState("");
+
+  const { desde, hasta, titulo } = rangoPeriodo(tipo, salto);
+
+  const consultar = useCallback(async () => {
+    setCargando(true); setErr("");
+    const [est, dg] = await Promise.all([
+      supabase.rpc("estadisticas_asistencia", { desde, hasta }),
+      supabase.rpc("dias_por_grupo", { desde, hasta }),
+    ]);
+    if (est.error) { setErr(est.error.message); setCargando(false); return; }
+    setDatos(est.data || []);
+    setDiasGrupo(dg.error ? new Map()
+      : new Map((dg.data || []).map(r => [`${r.semestre}|${r.grupo}`, Number(r.dias) || 0])));
+    setCargando(false);
+  }, [desde, hasta]);
+
+  useEffect(() => { consultar(); }, [consultar]);
+
+  const filas = useMemo(() => {
+    const porGrupo = new Map(datos.map(d => [`${d.semestre}|${d.grupo}`, d]));
+    const grupos = [...new Set(alumnos.filter(a => a.activo !== false)
+      .map(a => `${a.semestre || ""}|${a.grupo || ""}`))]
+      .sort((x, y) => x.localeCompare(y, "es", { numeric: true }));
+
+    return grupos.map(g => {
+      const [sem, letra] = g.split("|");
+      const d = porGrupo.get(g) || { registros: 0, retardos: 0 };
+      const registros = Number(d.registros) || 0;
+      const retardos = Number(d.retardos) || 0;
+      const inscritos = alumnos.filter(a => a.activo !== false
+        && (a.semestre || "") === sem && (a.grupo || "") === letra).length;
+      const dias = diasGrupo.has(g) ? diasGrupo.get(g) : 0;
+      const esperados = inscritos * dias;
+      return {
+        clave: g, nombre: `${sem}° ${letra}`, inscritos, dias, registros, retardos,
+        asistencia: esperados ? Math.round(100 * registros / esperados) : null,
+        puntualidad: registros ? Math.round(100 * (registros - retardos) / registros) : null,
+      };
+    });
+  }, [datos, alumnos, diasGrupo]);
+
+  const conDatos = filas.filter(f => f.dias > 0);
+  const promedioAsis = conDatos.length
+    ? Math.round(conDatos.reduce((s, f) => s + (f.asistencia || 0), 0) / conDatos.length) : 0;
+  const promedioPunt = conDatos.length
+    ? Math.round(conDatos.reduce((s, f) => s + (f.puntualidad || 0), 0) / conDatos.length) : 0;
+
+  const exportar = () => {
+    const f = [["Periodo", "Grupo", "Inscritos", "Días con clase", "Asistencias registradas",
+      "Retardos", "% de asistencia", "% de puntualidad"]];
+    conDatos.forEach(x => f.push([titulo, x.nombre, x.inscritos, x.dias, x.registros,
+      x.retardos, x.asistencia, x.puntualidad]));
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csv = "\uFEFF" + f.map(r => r.map(esc).join(",")).join("\n");
+    const el = document.createElement("a");
+    el.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    el.download = `estadisticas_${desde}_a_${hasta}.csv`;
+    el.click();
+    URL.revokeObjectURL(el.href);
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-3 space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex gap-1 bg-slate-100 p-1 rounded-xl">
+            {PERIODOS_EST.map(([id, txt]) => (
+              <button key={id} onClick={() => { setTipo(id); setSalto(0); }}
+                className={`px-3 py-1.5 rounded-lg text-sm font-semibold transition ${
+                  tipo === id ? "bg-white shadow-sm text-[#1a2340]" : "text-slate-500 hover:text-slate-700"}`}>
+                {txt}
+              </button>
+            ))}
+          </div>
+          <button className={btnSec + " !px-3 !py-1.5 ml-auto"} onClick={exportar} disabled={!conDatos.length}>
+            <Download size={13} />Exportar
+          </button>
+        </div>
+
+        {tipo !== "semestre" && (
+          <div className="flex items-center justify-between gap-2">
+            <button className={btnSec + " !px-3 !py-1.5"} onClick={() => setSalto(n => n - 1)}>
+              <ChevronLeft size={15} />Anterior
+            </button>
+            <span className="text-sm font-bold text-center capitalize">{titulo}</span>
+            <button className={btnSec + " !px-3 !py-1.5"} disabled={salto >= 0}
+              onClick={() => setSalto(n => n + 1)}>
+              Siguiente<ChevronRight size={15} />
+            </button>
+          </div>
+        )}
+        {tipo === "semestre" && (
+          <p className="text-sm font-bold text-center capitalize">{titulo}</p>
+        )}
+      </Card>
+
+      {err && (
+        <Card className="p-4 text-sm text-rose-700 bg-rose-50 border-rose-200 flex items-start gap-2">
+          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+          <span>No se pudo consultar: {err}
+            <span className="block text-xs">¿Ya se ejecutó estadisticas_grupo.sql en Supabase?</span>
+          </span>
+        </Card>
+      )}
+
+      {cargando ? (
+        <Card className="p-8 text-center text-slate-400 text-sm flex items-center justify-center gap-2">
+          <Loader2 size={16} className="animate-spin" />Calculando…
+        </Card>
+      ) : conDatos.length === 0 ? (
+        <Card className="p-8 text-center text-sm text-slate-400">
+          No se pasó lista en este periodo.
+        </Card>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <Card className="p-4">
+              <div className="text-[11px] uppercase font-semibold text-slate-400 mb-1">Asistencia del plantel</div>
+              <div className="text-2xl font-bold" style={{ fontFamily: "'Archivo', sans-serif", color: colorPct(promedioAsis) }}>
+                {promedioAsis}%
+              </div>
+              <div className="text-[11px] text-slate-400">promedio de los {conDatos.length} grupos</div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-[11px] uppercase font-semibold text-slate-400 mb-1">Puntualidad del plantel</div>
+              <div className="text-2xl font-bold" style={{ fontFamily: "'Archivo', sans-serif", color: colorPct(promedioPunt) }}>
+                {promedioPunt}%
+              </div>
+              <div className="text-[11px] text-slate-400">de quienes sí asistieron</div>
+            </Card>
+          </div>
+
+          <Card className="p-4">
+            <h3 className="font-bold text-sm mb-3">Comparación entre grupos</h3>
+            <ResponsiveContainer width="100%" height={Math.max(200, conDatos.length * 40)}>
+              <BarChart data={conDatos} layout="vertical" margin={{ top: 4, right: 30, left: 4, bottom: 4 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" horizontal={false} />
+                <XAxis type="number" domain={[0, 100]} unit="%" tick={{ fontSize: 11 }} />
+                <YAxis type="category" dataKey="nombre" width={55} tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(v, n) => [`${v}%`, n === "asistencia" ? "Asistencia" : "Puntualidad"]} />
+                <Legend formatter={v => v === "asistencia" ? "Asistencia" : "Puntualidad"} wrapperStyle={{ fontSize: 12 }} />
+                <Bar dataKey="asistencia" fill="#1a2340" radius={[0, 4, 4, 0]} />
+                <Bar dataKey="puntualidad" fill="#38bdf8" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </Card>
+
+          <Card className="overflow-hidden">
+            <div className="hidden sm:grid grid-cols-[1fr_1fr_1fr_1.2fr] gap-2 px-4 py-2 bg-slate-50 border-b border-slate-200 text-[11px] uppercase font-semibold text-slate-400">
+              <span>Grupo</span><span>Asistencia</span><span>Puntualidad</span><span>Detalle</span>
+            </div>
+            {conDatos.map(f => (
+              <div key={f.clave} className="px-4 py-3 border-b border-slate-100 last:border-0">
+                <div className="sm:grid sm:grid-cols-[1fr_1fr_1fr_1.2fr] sm:gap-2 sm:items-center">
+                  <div className="text-sm font-bold">{f.nombre}</div>
+
+                  <div className="flex items-center gap-2 mt-1 sm:mt-0">
+                    <span className="sm:hidden text-[11px] text-slate-400 w-20">Asistencia</span>
+                    <div className="flex-1 h-2 rounded-full bg-slate-200 overflow-hidden max-w-[120px]">
+                      <div className="h-full rounded-full"
+                        style={{ width: `${f.asistencia ?? 0}%`, background: colorPct(f.asistencia ?? 0) }} />
+                    </div>
+                    <span className="text-sm font-semibold" style={{ color: colorPct(f.asistencia ?? 0) }}>
+                      {f.asistencia ?? "—"}%
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 mt-1 sm:mt-0">
+                    <span className="sm:hidden text-[11px] text-slate-400 w-20">Puntualidad</span>
+                    <div className="flex-1 h-2 rounded-full bg-slate-200 overflow-hidden max-w-[120px]">
+                      <div className="h-full rounded-full"
+                        style={{ width: `${f.puntualidad ?? 0}%`, background: colorPct(f.puntualidad ?? 0) }} />
+                    </div>
+                    <span className="text-sm font-semibold" style={{ color: colorPct(f.puntualidad ?? 0) }}>
+                      {f.puntualidad ?? "—"}%
+                    </span>
+                  </div>
+
+                  <div className="text-xs text-slate-500 mt-1 sm:mt-0">
+                    {f.inscritos} inscritos · {f.dias} día(s) · {f.retardos} retardo(s)
+                  </div>
+                </div>
+              </div>
+            ))}
+          </Card>
+
+          <p className="text-[11px] text-slate-400">
+            La asistencia se calcula sobre los días que le tocaron a cada grupo, así que los
+            días marcados como especiales no lo perjudican. La puntualidad se mide solo entre
+            quienes sí asistieron.
+          </p>
+        </>
+      )}
+    </div>
   );
 }
 
