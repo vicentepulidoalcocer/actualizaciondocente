@@ -1227,7 +1227,11 @@ export default function App() {
         </aside>
 
         {/* Contenido */}
-        <main className="flex-1 p-4 lg:p-6 max-w-7xl mx-auto w-full">
+        {/* "min-w-0" es necesario: sin él, un elemento ancho dentro del
+            contenido estira la página más allá de la pantalla del
+            teléfono, y el encabezado —que sí mide el ancho de la
+            ventana— aparece cortado. */}
+        <main className="flex-1 min-w-0 p-4 lg:p-6 max-w-7xl mx-auto w-full">
           {pagina === "dashboard" && tieneTablero(user.rol) && (user.rol === "jefe_academico"
             ? <DashboardAcademico db={db} irA={irA} />
             : user.rol === "admin"
