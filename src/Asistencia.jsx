@@ -39,8 +39,11 @@ const normaliza = (t) => (t || "").toString()
 const btnPrim = "inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#1a2340] text-white text-sm font-semibold hover:bg-[#26305a] transition disabled:opacity-50";
 const btnSec = "inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-slate-300 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition disabled:opacity-50";
 const inputCls = "mt-1 w-full px-3 py-2 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#1a2340]/20";
+/* "min-w-0" evita que una tarjeta con contenido ancho estire la
+   página: dentro de una cuadrícula o una fila flexible, sin esto
+   toma su ancho natural en vez del disponible. */
 const Card = ({ children, className = "", ...r }) => (
-  <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm ${className}`} {...r}>{children}</div>
+  <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm min-w-0 ${className}`} {...r}>{children}</div>
 );
 /* La etiqueta se parte en dos renglones si hace falta. Antes no podía
    encogerse y, en pantallas angostas, empujaba el ancho de toda la
@@ -345,8 +348,11 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
   const retardos = registrosHoy.filter(r => r.estado === "Retardo").length;
 
   return (
-    <div className="grid lg:grid-cols-2 gap-4">
-      <div className="space-y-3">
+    {/* "min-w-0" en la cuadrícula y en su columna: sin ellos, el
+        contenido toma su ancho natural en lugar del disponible y
+        estira la página más allá de la pantalla del teléfono. */}
+    <div className="grid lg:grid-cols-2 gap-4 min-w-0">
+      <div className="space-y-3 min-w-0">
         <Card className="p-4 space-y-3">
           <div className="relative rounded-2xl overflow-hidden bg-slate-900 aspect-[4/3]">
             <video ref={videoRef} playsInline autoPlay muted className="w-full h-full object-cover" />
