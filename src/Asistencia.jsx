@@ -42,9 +42,15 @@ const inputCls = "mt-1 w-full px-3 py-2 rounded-xl border border-slate-300 text-
 const Card = ({ children, className = "", ...r }) => (
   <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm ${className}`} {...r}>{children}</div>
 );
+/* La etiqueta se parte en dos renglones si hace falta. Antes no podía
+   encogerse y, en pantallas angostas, empujaba el ancho de toda la
+   página: por eso el encabezado se veía cortado en el teléfono. */
 const Stat = ({ icono: Ico, label, valor, sub, color = "text-slate-900" }) => (
-  <Card className="p-4">
-    <div className="flex items-center gap-2 text-slate-400 mb-1"><Ico size={15} /><span className="text-[11px] uppercase font-semibold">{label}</span></div>
+  <Card className="p-3 sm:p-4">
+    <div className="flex items-start gap-1.5 text-slate-400 mb-1 min-w-0">
+      <Ico size={15} className="shrink-0 mt-0.5" />
+      <span className="text-[11px] uppercase font-semibold leading-tight break-words min-w-0">{label}</span>
+    </div>
     <div className={`text-2xl font-bold ${color}`} style={{ fontFamily: "'Archivo', sans-serif" }}>{valor}</div>
     {sub && <div className="text-[11px] text-slate-400 mt-0.5">{sub}</div>}
   </Card>
@@ -404,7 +410,7 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
           </div>
         </Card>
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           <Stat icono={CheckCircle2} label="Asistencias" valor={asistencias} />
           <Stat icono={Clock} label="Retardos" valor={retardos} color="text-amber-600" />
           <Stat icono={Users} label="Total del día" valor={registrosHoy.length} sub={`límite ${horaLimite}`} />
@@ -627,11 +633,19 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
         </div>
       )}
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      {/* Ausentes son todos los que no se presentaron; los justificados
+          son una parte de ellos, no un grupo aparte. Por eso la tarjeta
+          de ausentes lo aclara cuando los hay. */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <Stat icono={Users} label="En el padrón" valor={padron.length} />
         <Stat icono={CheckCircle2} label="Presentes" valor={presentes.length} sub={`${pct}% de asistencia`} />
         <Stat icono={Clock} label="Retardos" valor={presentes.filter(r => r.estado === "Retardo").length} color="text-amber-600" />
-        <Stat icono={AlertTriangle} label="Ausentes" valor={ausentes.length} color={ausentes.length ? "text-rose-600" : "text-slate-900"} />
+        <Stat icono={AlertTriangle} label="Ausentes" valor={ausentes.length}
+          color={ausentes.length ? "text-rose-600" : "text-slate-900"}
+          sub={justificadosCount > 0 ? `${ausentes.length - justificadosCount} sin justificar` : undefined} />
+        <Stat icono={ClipboardCheck} label="Justificados" valor={justificadosCount}
+          color={justificadosCount ? "text-sky-600" : "text-slate-900"}
+          sub={justificadosCount > 0 ? "de los ausentes" : undefined} />
       </div>
 
       {padron.length === 0 && (
