@@ -347,10 +347,10 @@ function PanelEscaneo({ registrar, registrosHoy, horaLimite, alumnos }) {
   const asistencias = registrosHoy.filter(r => r.estado === "Asistencia").length;
   const retardos = registrosHoy.filter(r => r.estado === "Retardo").length;
 
+  /* "min-w-0" en la cuadrícula y en su columna: sin ellos, el
+     contenido toma su ancho natural en lugar del disponible y estira
+     la página más allá de la pantalla del teléfono. */
   return (
-    {/* "min-w-0" en la cuadrícula y en su columna: sin ellos, el
-        contenido toma su ancho natural en lugar del disponible y
-        estira la página más allá de la pantalla del teléfono. */}
     <div className="grid lg:grid-cols-2 gap-4 min-w-0">
       <div className="space-y-3 min-w-0">
         <Card className="p-4 space-y-3">
