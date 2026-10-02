@@ -3831,6 +3831,8 @@ const TIPOS_CALENDARIO = [
    "Quién organiza el homenaje cívico de cada fecha del mes."],
   ["baetam", "BAETAM", "Calendario BAETAM",
    "Horarios y fechas del Bachillerato en Ambientes Educativos Tecnológicos y Modalidades."],
+  ["mural", "Periódico mural", "Periódico mural",
+   "A qué grupo o academia le toca el periódico mural de cada periodo."],
   ["fechas", "Fechas clave", "Fechas importantes",
    "Fechas sueltas que todo el personal debe tener presente."],
 ];
@@ -4089,7 +4091,7 @@ function CalendarioAcademico({ db, user, mutar, puedeEditar, tipo = "academico",
         if (i >= 0) d.calendarios[i] = { ...d.calendarios[i], ...base };
         else d.calendarios.push(base);
         if (esNuevo) {
-          const emoji = tipo === "homenajes" ? "🎖️" : tipo === "baetam" ? "📘" : "🗓️";
+          const emoji = tipo === "homenajes" ? "🎖️" : tipo === "baetam" ? "📘" : tipo === "mural" ? "📰" : "🗓️";
           d.users.filter(u => u.rol === "docente" && u.activo).forEach(u =>
             notificar(d, u.id, `${emoji} Se publicó “${base.titulo}” (${tituloPantalla}).`));
           registrarActividad(d, `Se publicó “${base.titulo}” (${tituloPantalla}).`);
@@ -4167,7 +4169,7 @@ function CalendarioAcademico({ db, user, mutar, puedeEditar, tipo = "academico",
         <Modal titulo={form.id ? "Editar" : `Publicar · ${tituloPantalla}`} onClose={() => setForm(null)}>
           <div className="space-y-3">
             <Campo label="Título">
-              <input className={inputCls} placeholder={tipo === "homenajes" ? "Homenajes — septiembre 2026" : tipo === "baetam" ? "Horarios BAETAM — agosto 2026" : "Calendario académico 2026–2027"}
+              <input className={inputCls} placeholder={tipo === "homenajes" ? "Homenajes — septiembre 2026" : tipo === "baetam" ? "Horarios BAETAM — agosto 2026" : tipo === "mural" ? "Periódico mural — octubre 2026" : "Calendario académico 2026–2027"}
                 value={form.titulo} onChange={e => setForm({ ...form, titulo: e.target.value })} />
             </Campo>
             <div className="grid sm:grid-cols-2 gap-3">
