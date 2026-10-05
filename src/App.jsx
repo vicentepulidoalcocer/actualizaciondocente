@@ -1087,7 +1087,7 @@ export default function App() {
   const nav = user.rol === "admin" ? [
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
-    { id: "docentes", label: "Docentes", icono: Users },
+    { id: "docentes", label: "Docentes y administrativos", icono: Users },
     { id: "g_formacion", label: "Formación Docente", icono: Award, hijos: [
       { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: pendValidacion },
       { id: "metas", label: "Metas y ciclos", icono: Target },
@@ -6920,7 +6920,7 @@ function Docentes({ db, mutar, irA, esAdmin = true }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>{esAdmin ? "Docentes" : "Expedientes docentes"}</h2>
+        <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>{esAdmin ? "Docentes y administrativos" : "Expedientes docentes"}</h2>
         {esAdmin && <button className={btnPrim} onClick={() => setEditando({ nombre: "", email: "", area: "", asignaturas: "", nuevaPass: "" })}><Plus size={15}/>Agregar docente</button>}
       </div>
       <Card className="p-4">
@@ -6982,6 +6982,10 @@ function Docentes({ db, mutar, irA, esAdmin = true }) {
           </div>
         </Modal>
       )}
+
+      {/* El personal administrativo vive aquí, junto a los docentes:
+          son las dos clases de personal con cuenta en el portal. */}
+      {esAdmin && <PersonalAdministrativo db={db} mutar={mutar} />}
     </div>
   );
 }
@@ -7928,7 +7932,6 @@ function Administracion({ db, user, mutar, esAdmin = true, modo = "todo" }) {
 
       {verSistema && esAdmin && <JefesDepartamento db={db} mutar={mutar} />}
 
-      {verSistema && esAdmin && <PersonalAdministrativo db={db} mutar={mutar} />}
 
       {verSistema && <NotificacionesCelular user={user} />}
       {verSistema && <MiCuenta user={user} soloTarjeta />}
