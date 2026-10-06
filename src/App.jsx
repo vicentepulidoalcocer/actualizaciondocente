@@ -3825,6 +3825,11 @@ function VisorCalendario({ cal }) {
    calendarios que ya existían no tenían "tipo" guardado: se tratan
    como "academico" para no perder lo ya publicado. */
 const TIPOS_CALENDARIO = [
+  /* "Fechas clave" va primero porque es lo único que cambia seguido y
+     lo que conviene que el personal vea al entrar. Los demás son PDF
+     que se consultan cuando hacen falta. */
+  ["fechas", "Fechas clave", "Fechas importantes",
+   "Fechas sueltas que todo el personal debe tener presente."],
   ["academico", "Académico", "Calendario académico",
    "Fechas del ciclo: exámenes, entregas, vacaciones y eventos institucionales."],
   ["homenajes", "Homenajes", "Calendario de Homenajes",
@@ -3833,12 +3838,10 @@ const TIPOS_CALENDARIO = [
    "Horarios y fechas del Bachillerato en Ambientes Educativos Tecnológicos y Modalidades."],
   ["mural", "Periódico mural", "Periódico mural",
    "A qué grupo o academia le toca el periódico mural de cada periodo."],
-  ["fechas", "Fechas clave", "Fechas importantes",
-   "Fechas sueltas que todo el personal debe tener presente."],
 ];
 
 function PantallaCalendarios({ db, user, mutar, puedeEditar }) {
-  const [tipo, setTipo] = useState("academico");
+  const [tipo, setTipo] = useState("fechas");
   const info = TIPOS_CALENDARIO.find(t => t[0] === tipo) || TIPOS_CALENDARIO[0];
   return (
     <div className="space-y-4">
