@@ -12,12 +12,14 @@ import {
   Camera, CameraOff, Users, Clock, CheckCircle2, AlertTriangle, Download,
   Upload, Search, Loader2, TrendingUp, MessageCircle, CalendarDays, X, RefreshCw,
   Trash2, UserMinus, UserCheck, ClipboardCheck, Pencil, ChevronLeft, ChevronRight,
+  Paperclip,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
   LineChart, Line, Legend,
 } from "recharts";
 import { supabase } from "./lib/supabase";
+import { guardarArchivo, leerArchivo, eliminarArchivo, MAX_FILE_B64 } from "./lib/nube";
 
 /* ---------------- utilidades ---------------- */
 const hoyISO = () => {
@@ -495,6 +497,32 @@ const claveGrupo = (sem, letra) => `${sem || ""}|${letra || ""}`;
 const tuvoClase = (excepcion, sem, letra) =>
   !excepcion || (excepcion.grupos || []).includes(claveGrupo(sem, letra));
 
+/* ---------------- documento del justificante ----------------
+   La foto o el PDF se guarda con una clave formada por el alumno y
+   la fecha. Como no puede haber dos justificaciones del mismo alumno
+   el mismo día, esa clave es única por sí sola y al reemplazar una
+   justificación el documento se sobrescribe, que es lo correcto. */
+const claveJustificante = (alumnoId, fecha) => `justif_${alumnoId}_${fecha}`;
+
+const leerComoBase64 = (file) => new Promise((res, rej) => {
+  const fr = new FileReader();
+  fr.onload = () => res(String(fr.result).split(",")[1]);
+  fr.onerror = () => rej(new Error("No se pudo leer el archivo."));
+  fr.readAsDataURL(file);
+});
+
+/* Reconstruye el documento guardado para abrirlo en otra pestaña */
+const abrirJustificante = async (alumnoId, fecha) => {
+  const f = await leerArchivo(claveJustificante(alumnoId, fecha));
+  if (!f) { alert("No se pudo abrir el justificante."); return; }
+  const bytes = atob(f.base64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([arr], { type: f.mime || "application/pdf" }));
+  window.open(url, "_blank");
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+};
+
 /* Etiquetas legibles del tipo de justificación */
 const TIPOS_JUSTIFICACION = { medica: "Médica", personal: "Personal", otra: "Otra" };
 
@@ -537,11 +565,8 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
   const justPorAlumno = new Map((justificaciones || []).map(j => [j.alumno_id, j]));
   const justificadosCount = ausentes.filter(a => justPorAlumno.has(a.id)).length;
 
-  const guardarJustificacion = async ({ alumno_id, tipo, motivo }) => {
-    const { error } = await supabase.from("justificaciones").upsert(
-      { alumno_id, fecha, tipo, motivo, registrado_por: user?.id },
-      { onConflict: "alumno_id,fecha" });
-    if (error) throw new Error(error.message);
+  const guardarJustificacion = async (datos) => {
+    await guardarConJustificante(datos, fecha, user, justPorAlumno);
     await recargar();
   };
 
@@ -549,6 +574,9 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
     const { error } = await supabase.from("justificaciones")
       .delete().eq("alumno_id", alumno_id).eq("fecha", fecha);
     if (error) throw new Error(error.message);
+    /* El documento se retira con la justificación: si no, quedaría
+       ocupando espacio sin nada que lo relacione con nadie. */
+    await eliminarArchivo(claveJustificante(alumno_id, fecha));
     await recargar();
   };
 
@@ -710,8 +738,17 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
                     {a.tutor && <> · Tutor: {a.tutor}</>}
                   </div>
                   {just && (
-                    <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700">
-                      <ClipboardCheck size={10} />Justificado · {TIPOS_JUSTIFICACION[just.tipo] || just.tipo}
+                    <span className="flex flex-wrap items-center gap-1.5 mt-1">
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700">
+                        <ClipboardCheck size={10} />Justificado · {TIPOS_JUSTIFICACION[just.tipo] || just.tipo}
+                      </span>
+                      {just.archivo_guardado && (
+                        <button className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 hover:underline"
+                          onClick={() => abrirJustificante(a.id, fecha)}
+                          title={just.archivo_nombre || "Ver el justificante"}>
+                          <Paperclip size={10} />Ver justificante
+                        </button>
+                      )}
                     </span>
                   )}
                   {!just && avisados.has(a.id) && (
@@ -768,6 +805,7 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
         <ModalJustificar
           alumno={justificando}
           existente={justPorAlumno.get(justificando.id) || null}
+          fecha={fecha}
           onClose={() => setJustificando(null)}
           onGuardar={async (datos) => { await guardarJustificacion(datos); setJustificando(null); }}
           onQuitar={async () => { await quitarJustificacion(justificando.id); setJustificando(null); }}
@@ -1000,16 +1038,59 @@ function EnvioPorLotes({ pendientes, sinTelefono, fecha, onAvisado, onCerrar }) 
 /* ================================================================
    Justificar (o editar/quitar) la falta de un alumno
    ================================================================ */
-function ModalJustificar({ alumno, existente, onClose, onGuardar, onQuitar }) {
+/* Guarda la justificación junto con su documento, si lo hay.
+   La usan por igual el panel del día y el historial, para que
+   justificar hoy o justificar un día pasado funcionen idéntico.
+
+   El orden importa: primero se sube el documento y solo si eso sale
+   bien se registra la justificación. Al revés, un fallo de red
+   dejaría una justificación diciendo que tiene documento cuando no
+   lo tiene. */
+async function guardarConJustificante({ alumno_id, tipo, motivo, archivo, quitarDoc }, fecha, user, previas) {
+  const clave = claveJustificante(alumno_id, fecha);
+  const antes = previas?.get?.(alumno_id) || null;
+
+  let nombre = antes?.archivo_nombre || null;
+  let guardado = !!antes?.archivo_guardado;
+
+  if (archivo) {
+    const b64 = await leerComoBase64(archivo);
+    if (b64.length > MAX_FILE_B64) {
+      throw new Error("El justificante supera el límite de ~7.5 MB. Toma la foto con menos resolución o comprime el PDF.");
+    }
+    const r = await guardarArchivo(clave, b64, archivo.type || "application/pdf", archivo.name);
+    if (!r.guardado) throw new Error("No se pudo guardar el justificante. " + (r.error || ""));
+    nombre = archivo.name;
+    guardado = true;
+  } else if (quitarDoc && guardado) {
+    await eliminarArchivo(clave);
+    nombre = null;
+    guardado = false;
+  }
+
+  const { error } = await supabase.from("justificaciones").upsert(
+    { alumno_id, fecha, tipo, motivo,
+      archivo_nombre: nombre, archivo_guardado: guardado,
+      registrado_por: user?.id },
+    { onConflict: "alumno_id,fecha" });
+  if (error) throw new Error(error.message);
+}
+
+function ModalJustificar({ alumno, existente, fecha, onClose, onGuardar, onQuitar }) {
   const [tipo, setTipo] = useState(existente?.tipo || "medica");
   const [motivo, setMotivo] = useState(existente?.motivo || "");
+  const [archivo, setArchivo] = useState(null);     // el que se acaba de elegir
+  const [quitarDoc, setQuitarDoc] = useState(false); // retirar el que ya había
   const [guardando, setGuardando] = useState(false);
   const [quitando, setQuitando] = useState(false);
   const [err, setErr] = useState("");
 
   const guardar = async () => {
     setGuardando(true); setErr("");
-    try { await onGuardar({ alumno_id: alumno.id, tipo, motivo: motivo.trim() }); }
+    try {
+      await onGuardar({ alumno_id: alumno.id, tipo, motivo: motivo.trim(),
+        archivo, quitarDoc });
+    }
     catch (e) { setErr(e.message); setGuardando(false); }
   };
 
@@ -1045,9 +1126,59 @@ function ModalJustificar({ alumno, existente, onClose, onGuardar, onQuitar }) {
               placeholder="Ej. Cita médica, trámite familiar…"
               value={motivo} onChange={e => setMotivo(e.target.value)} />
           </label>
+          {/* Documento del justificante: receta, oficio o constancia */}
+          <div className="border border-slate-200 rounded-xl p-3 space-y-2">
+            <span className="text-xs font-semibold text-slate-600">
+              Justificante (opcional)
+            </span>
+
+            {/* El que ya estaba guardado, si lo hay */}
+            {existente?.archivo_guardado && !quitarDoc && !archivo && (
+              <div className="flex flex-wrap items-center gap-2 text-xs bg-sky-50 border border-sky-200 rounded-lg px-2.5 py-1.5">
+                <Paperclip size={12} className="text-sky-600 shrink-0" />
+                <button type="button" className="flex-1 min-w-0 text-left text-sky-700 font-medium truncate hover:underline"
+                  onClick={() => abrirJustificante(alumno.id, fecha)}>
+                  {existente.archivo_nombre || "Ver justificante"}
+                </button>
+                <button type="button" className="text-rose-500 hover:text-rose-700 shrink-0"
+                  title="Quitar este documento" onClick={() => setQuitarDoc(true)}>
+                  <X size={13} />
+                </button>
+              </div>
+            )}
+
+            {quitarDoc && !archivo && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                El documento se retirará al guardar.{" "}
+                <button type="button" className="font-semibold hover:underline"
+                  onClick={() => setQuitarDoc(false)}>Conservarlo</button>
+              </p>
+            )}
+
+            {/* Elegir uno nuevo */}
+            {!archivo ? (
+              <input type="file" className="text-sm w-full"
+                accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/*"
+                onChange={e => { setArchivo(e.target.files[0] || null); setQuitarDoc(false); }} />
+            ) : (
+              <div className="flex items-center gap-2 text-xs bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5">
+                <Paperclip size={12} className="text-emerald-600 shrink-0" />
+                <span className="flex-1 truncate">{archivo.name}</span>
+                <button type="button" className="text-rose-500 hover:text-rose-700 shrink-0"
+                  onClick={() => setArchivo(null)}><X size={13} /></button>
+              </div>
+            )}
+
+            <p className="text-[11px] text-slate-400">
+              Foto o PDF de la receta, el oficio o la constancia. Hasta ~7.5 MB.
+              {existente?.archivo_guardado && !quitarDoc && " Si eliges otro, reemplaza al actual."}
+            </p>
+          </div>
+
           <p className="text-[11px] text-slate-400">
-            El motivo solo lo ve control escolar y administración. A los docentes
-            únicamente les aparece que el alumno está justificado y el tipo.
+            El motivo y el justificante solo los ven control escolar y
+            administración. A los docentes únicamente les aparece que el alumno
+            está justificado y el tipo.
           </p>
           {err && <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{err}</p>}
           <div className="flex items-center justify-between pt-2">
@@ -1139,11 +1270,8 @@ function PanelHistorial({ alumnos, user }) {
   /* Justificar una falta de un día anterior. Es el mismo mecanismo del
      Panel del día, pero aplicado a la fecha que se está consultando:
      no siempre se sabe el mismo día que alguien traía justificante. */
-  const guardarJustificacionDia = async ({ alumno_id, tipo, motivo }) => {
-    const { error } = await supabase.from("justificaciones").upsert(
-      { alumno_id, fecha: detalle, tipo, motivo, registrado_por: user?.id },
-      { onConflict: "alumno_id,fecha" });
-    if (error) throw new Error(error.message);
+  const guardarJustificacionDia = async (datos) => {
+    await guardarConJustificante(datos, detalle, user, justPorAlumnoDia);
     await cargarDia(detalle);
   };
 
@@ -1151,6 +1279,7 @@ function PanelHistorial({ alumnos, user }) {
     const { error } = await supabase.from("justificaciones")
       .delete().eq("alumno_id", alumno_id).eq("fecha", detalle);
     if (error) throw new Error(error.message);
+    await eliminarArchivo(claveJustificante(alumno_id, detalle));
     await cargarDia(detalle);
   };
 
@@ -1345,8 +1474,17 @@ function PanelHistorial({ alumnos, user }) {
                             {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · ID {a.id}
                           </div>
                           {just && (
-                            <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700">
-                              <ClipboardCheck size={10} />Justificado · {TIPOS_JUSTIFICACION[just.tipo] || just.tipo}
+                            <span className="flex flex-wrap items-center gap-1.5 mt-1">
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-50 border border-sky-200 text-sky-700">
+                                <ClipboardCheck size={10} />Justificado · {TIPOS_JUSTIFICACION[just.tipo] || just.tipo}
+                              </span>
+                              {just.archivo_guardado && (
+                                <button className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 hover:underline"
+                                  onClick={() => abrirJustificante(a.id, detalle)}
+                                  title={just.archivo_nombre || "Ver el justificante"}>
+                                  <Paperclip size={10} />Ver justificante
+                                </button>
+                              )}
                             </span>
                           )}
                         </div>
@@ -1381,6 +1519,7 @@ function PanelHistorial({ alumnos, user }) {
         <ModalJustificar
           alumno={justificando}
           existente={justPorAlumnoDia.get(justificando.id) || null}
+          fecha={detalle}
           onClose={() => setJustificando(null)}
           onGuardar={async (datos) => { await guardarJustificacionDia(datos); setJustificando(null); }}
           onQuitar={async () => { await quitarJustificacionDia(justificando.id); setJustificando(null); }}
