@@ -4654,6 +4654,208 @@ function ProgramasDocente({ db }) {
    Panorama del cumplimiento de planeaciones, planes e informes.
    ================================================================ */
 
+/* ================================================================
+   AVANCE DETALLADO POR DOCENTE
+   ----------------------------------------------------------------
+   Para cada docente, cuánto lleva de cada tipo de entrega. Un tipo
+   solo aparece si le corresponde: a quien no es tutor no se le pide
+   ficha de identificación, y mostrarle "0 de 0" sería ruido.
+
+   Al tocar un docente se abre el detalle por actividad, que es
+   donde se ve exactamente qué falta.
+   ================================================================ */
+
+const TIPOS_SEGUIMIENTO = ["planeacion", "plan", "informe", "ficha"];
+
+const colorAvance = (pct) =>
+  pct >= 100 ? "#059669" : pct >= 60 ? "#E8871E" : pct > 0 ? "#eab308" : "#e11d48";
+
+/* Barra de avance con su cifra al lado */
+const BarraAvance = ({ pct, ancho = "w-full" }) => (
+  <span className={`inline-block h-2 rounded-full bg-slate-200 overflow-hidden ${ancho}`}>
+    <span className="block h-full rounded-full transition-all"
+      style={{ width: `${Math.min(pct, 100)}%`, background: colorAvance(pct) }} />
+  </span>
+);
+
+function AvanceDetallado({ db, filas, ciclo, periodo, irA }) {
+  const [q, setQ] = useState("");
+  const [soloRezago, setSoloRezago] = useState(false);
+  const [abierto, setAbierto] = useState(null);
+
+  /* Por docente: cuánto lleva de cada tipo, contando solo los tipos
+     que de verdad le tocan. */
+  const detalle = useMemo(() => filas.map(f => {
+    const tipos = TIPOS_SEGUIMIENTO.map(t => {
+      let req = 0, ent = 0;
+      f.encargos.forEach(e => {
+        const n = e.requisitos[t];
+        if (n === undefined || n === null || !n) return;
+        req += n;
+        ent += Math.min(entregasDe(db, f.asig.docenteId, ciclo, e.clave, t, periodo).length, n);
+      });
+      return { tipo: t, nombre: PLURAL_TIPO_ENTREGA[t], req, ent,
+        pct: req ? Math.round(100 * ent / req) : 0 };
+    }).filter(x => x.req > 0);          // lo que no le toca, no se muestra
+
+    /* El detalle por actividad: qué pide cada encargo y qué lleva */
+    const actividades = f.encargos.map(e => {
+      const partes = TIPOS_SEGUIMIENTO.map(t => {
+        const n = e.requisitos[t];
+        if (n === undefined || n === null || !n) return null;
+        const ent = Math.min(entregasDe(db, f.asig.docenteId, ciclo, e.clave, t, periodo).length, n);
+        return { tipo: t, nombre: NOMBRE_TIPO_ENTREGA[t], req: n, ent,
+          pct: Math.round(100 * ent / n) };
+      }).filter(Boolean);
+      const req = partes.reduce((s, x) => s + x.req, 0);
+      const ent = partes.reduce((s, x) => s + x.ent, 0);
+      return { ...e, partes, req, ent, pct: req ? Math.round(100 * ent / req) : 0 };
+    }).filter(a => a.partes.length > 0)
+      .sort((a, b) => a.pct - b.pct);
+
+    return { ...f, tipos, actividades,
+      captura: !!capturaDe(db, f.asig.docenteId, ciclo, periodo) };
+  }), [filas, db, ciclo, periodo]);
+
+  const visibles = detalle
+    .filter(f => !soloRezago || f.av.pct < 100)
+    .filter(f => {
+      const t = q.trim().toLowerCase();
+      return !t || (f.asig.nombreExtraido || "").toLowerCase().includes(t);
+    });
+
+  const exportar = () => {
+    const fs = [["Docente", "Ciclo", "Semestre", "Tipo de entrega",
+      "Requeridas", "Entregadas", "Pendientes", "% de avance"]];
+    detalle.forEach(f => {
+      f.tipos.forEach(t => fs.push([f.asig.nombreExtraido, ciclo, nombrePeriodo(periodo),
+        t.nombre, t.req, t.ent, Math.max(t.req - t.ent, 0), t.pct + "%"]));
+      fs.push([f.asig.nombreExtraido, ciclo, nombrePeriodo(periodo),
+        "Captura de seguimiento", 1, f.captura ? 1 : 0, f.captura ? 0 : 1,
+        f.captura ? "100%" : "0%"]);
+    });
+    descargarCSV(`avance_por_tipo_${ciclo}_${periodo}`, fs);
+  };
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <h3 className="font-bold text-sm">Avance detallado por docente</h3>
+        <button className={btnSec + " !px-3 !py-1.5"} onClick={exportar} disabled={!detalle.length}>
+          <Download size={13} />Exportar
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <div className="relative flex-1 min-w-[160px]">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input className={inputCls + " !mt-0 !pl-9"} placeholder="Buscar docente…"
+            value={q} onChange={e => setQ(e.target.value)} />
+        </div>
+        <button onClick={() => setSoloRezago(v => !v)}
+          className={`px-3 py-2 rounded-xl text-xs font-semibold border transition ${
+            soloRezago ? "bg-[#1a2340] text-white border-[#1a2340]"
+                       : "bg-white border-slate-300 text-slate-600 hover:bg-slate-50"}`}>
+          Solo con pendientes
+        </button>
+      </div>
+
+      {visibles.length === 0 ? (
+        <p className="text-sm text-slate-400 py-8 text-center">
+          {q ? "Ningún docente coincide con la búsqueda."
+             : soloRezago ? "Todos los docentes están al corriente."
+             : "No hay asignaciones en este periodo."}
+        </p>
+      ) : (
+        <div className="max-h-[36rem] overflow-y-auto -mx-1 px-1">
+          {visibles.map(f => {
+            const abre = abierto === f.asig.id;
+            return (
+              <div key={f.asig.id} className="border-b border-slate-100 last:border-0 py-2.5">
+                <button className="w-full text-left" onClick={() => setAbierto(abre ? null : f.asig.id)}>
+                  <div className="flex items-center gap-3">
+                    <span className="flex-1 min-w-0">
+                      <span className="block text-sm font-semibold break-words">
+                        {f.asig.nombreExtraido || "Sin nombre"}
+                      </span>
+                      <span className="block text-xs text-slate-400">
+                        {f.encargos.length} actividad(es)
+                        {f.asig.totalHoras ? ` · ${f.asig.totalHoras} h` : ""}
+                      </span>
+                    </span>
+                    <span className="shrink-0 w-24 hidden sm:block"><BarraAvance pct={f.av.pct} /></span>
+                    <span className="shrink-0 text-sm font-bold w-12 text-right"
+                      style={{ color: colorAvance(f.av.pct) }}>{f.av.pct}%</span>
+                    <ChevronRight size={15}
+                      className={`shrink-0 text-slate-300 transition-transform ${abre ? "rotate-90" : ""}`} />
+                  </div>
+
+                  {/* Desglose por tipo: solo los que le corresponden */}
+                  <div className="flex flex-wrap gap-1.5 mt-1.5">
+                    {f.tipos.map(t => (
+                      <span key={t.tipo}
+                        className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2 py-1 rounded-lg border"
+                        style={{ borderColor: colorAvance(t.pct) + "55",
+                                 background: colorAvance(t.pct) + "12",
+                                 color: colorAvance(t.pct) }}>
+                        {t.nombre} {t.ent}/{t.req}
+                      </span>
+                    ))}
+                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg border"
+                      style={{ borderColor: (f.captura ? "#059669" : "#e11d48") + "55",
+                               background: (f.captura ? "#059669" : "#e11d48") + "12",
+                               color: f.captura ? "#059669" : "#e11d48" }}>
+                      {f.captura ? <CheckCircle2 size={11} /> : <AlertTriangle size={11} />}
+                      Captura de seguimiento
+                    </span>
+                  </div>
+                </button>
+
+                {/* Detalle por actividad */}
+                {abre && (
+                  <div className="mt-3 space-y-2 pl-1">
+                    {f.actividades.map(a => (
+                      <div key={a.clave} className="bg-slate-50 rounded-xl p-3">
+                        <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1.5">
+                          <span className="text-xs font-bold break-words">{a.actividad}</span>
+                          {a.grupos.length > 0 && (
+                            <span className="text-[11px] text-slate-400">{a.grupos.join(", ")}</span>
+                          )}
+                        </div>
+                        <div className="space-y-1">
+                          {a.partes.map(p => (
+                            <div key={p.tipo} className="flex items-center gap-2">
+                              <span className="text-[11px] text-slate-600 flex-1 min-w-0 truncate">{p.nombre}</span>
+                              <BarraAvance pct={p.pct} ancho="w-16 sm:w-24" />
+                              <span className="text-[11px] font-semibold w-10 text-right"
+                                style={{ color: colorAvance(p.pct) }}>{p.ent}/{p.req}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    {f.asig.docenteId && (
+                      <button className="text-xs font-semibold text-indigo-600 hover:underline"
+                        onClick={() => irA && irA("docentes", f.asig.docenteId)}>
+                        Abrir el expediente de este docente
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <p className="text-[11px] text-slate-400 mt-3">
+        Cada docente solo muestra los tipos de entrega que le corresponden según su
+        asignación. La captura de seguimiento se pide una vez por semestre a todos.
+      </p>
+    </Card>
+  );
+}
+
 function DashboardAcademico({ db, irA, compacto = false }) {
   const [cicloSel, setCicloSel] = useState(db.config.cicloActual);
   const [periodoSel, setPeriodoSel] = useState(periodoDeFecha());
@@ -4827,6 +5029,9 @@ function DashboardAcademico({ db, irA, compacto = false }) {
               </BarChart>
             </ResponsiveContainer>
           </Card>
+
+          <AvanceDetallado db={db} filas={filas} ciclo={cicloSel}
+            periodo={periodoSel} irA={irA} />
 
           <div className="grid lg:grid-cols-2 gap-4">
             <Card className="p-4">
