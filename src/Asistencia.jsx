@@ -1574,7 +1574,22 @@ const COLORES_SEM = {
   rojo:     { chip: "bg-rose-50 border-rose-200 text-rose-800",         punto: "#e11d48", txt: "Atención urgente" },
 };
 
+/* Etiquetas del semáforo según lo que se está midiendo */
+const ETIQUETA_SEM = {
+  faltas:   { verde: "Al corriente", amarillo: "En riesgo",            rojo: "Atención urgente" },
+  retardos: { verde: "Puntuales",    amarillo: "Llegan tarde seguido", rojo: "Atención urgente" },
+};
+
 function PanelSeguimiento({ alumnos }) {
+  /* Faltas y retardos son problemas distintos: uno es no venir, el
+     otro es venir tarde. Cada uno tiene su propio semáforo y sus
+     propios límites, porque 5 faltas y 5 retardos no pesan igual. */
+  const [modo, setModo] = useState(
+    () => localStorage.getItem("seguimiento_modo") === "retardos" ? "retardos" : "faltas");
+  const [amarilloR, setAmarilloR] = useState(
+    () => Number(localStorage.getItem("seguimiento_retardos_amarillo")) || 3);
+  const [rojoR, setRojoR] = useState(
+    () => Number(localStorage.getItem("seguimiento_retardos_rojo")) || 6);
   const [periodo, setPeriodo] = useState("semestre");
   const [amarillo, setAmarillo] = useState(
     () => Number(localStorage.getItem("seguimiento_amarillo")) || 3);
@@ -1634,10 +1649,26 @@ function PanelSeguimiento({ alumnos }) {
   useEffect(() => { consultar(); }, [consultar]);
 
   const guardarLimites = (a, r) => {
-    setAmarillo(a); setRojo(r);
-    localStorage.setItem("seguimiento_amarillo", String(a));
-    localStorage.setItem("seguimiento_rojo", String(r));
+    if (modo === "retardos") {
+      setAmarilloR(a); setRojoR(r);
+      localStorage.setItem("seguimiento_retardos_amarillo", String(a));
+      localStorage.setItem("seguimiento_retardos_rojo", String(r));
+    } else {
+      setAmarillo(a); setRojo(r);
+      localStorage.setItem("seguimiento_amarillo", String(a));
+      localStorage.setItem("seguimiento_rojo", String(r));
+    }
   };
+
+  const cambiarModo = (m) => {
+    setModo(m); setFiltro("todos");
+    localStorage.setItem("seguimiento_modo", m);
+  };
+
+  // Límites vigentes según lo que se está viendo
+  const limA = modo === "retardos" ? amarilloR : amarillo;
+  const limR = modo === "retardos" ? rojoR : rojo;
+  const unidad = modo === "retardos" ? "retardos" : "faltas";
 
   const grupos = [...new Set(alumnos.map(a => `${a.semestre || "?"}|${a.grupo || "?"}`))]
     .sort((x, y) => x.localeCompare(y, "es", { numeric: true }));
@@ -1655,11 +1686,19 @@ function PanelSeguimiento({ alumnos }) {
         const suyos = diasGrupo.has(`${a.semestre || ""}|${a.grupo || ""}`)
           ? diasGrupo.get(`${a.semestre || ""}|${a.grupo || ""}`) : dias;
         const faltas = Math.max(0, suyos - presentes - justificadas);
-        return { ...a, presentes, justificadas, retardos: Number(d.retardos) || 0,
-          diasSuyos: suyos, faltas, sem: semaforoDe(faltas, amarillo, rojo) };
+        const retardos = Number(d.retardos) || 0;
+        const sem = modo === "retardos"
+          ? semaforoDe(retardos, amarilloR, rojoR)
+          : semaforoDe(faltas, amarillo, rojo);
+        return { ...a, presentes, justificadas, retardos, diasSuyos: suyos, faltas, sem,
+          // de las veces que vino, qué porcentaje llegó tarde
+          pctRetardo: presentes ? Math.round(100 * retardos / presentes) : 0 };
       })
-      .sort((a, b) => (b.faltas - a.faltas) || (a.nombre || "").localeCompare(b.nombre || "", "es"));
-  }, [datos, alumnos, dias, diasGrupo, amarillo, rojo]);
+      .sort((a, b) => {
+        const k = modo === "retardos" ? "retardos" : "faltas";
+        return (b[k] - a[k]) || (a.nombre || "").localeCompare(b.nombre || "", "es");
+      });
+  }, [datos, alumnos, dias, diasGrupo, amarillo, rojo, modo, amarilloR, rojoR]);
 
   /* Quiénes asistieron sin credencial, cuántas veces y qué días */
   const sinCredencial = useMemo(() => {
@@ -1688,13 +1727,13 @@ function PanelSeguimiento({ alumnos }) {
     const filas = [["Alumno", "ID", "Semestre", "Grupo", "Días con registro",
       "Asistencias", "Retardos", "Faltas", "Justificadas", "Situación", "Tutor", "Teléfono"]];
     visibles.forEach(a => filas.push([a.nombre, a.id, a.semestre, a.grupo, a.diasSuyos,
-      a.presentes, a.retardos, a.faltas, a.justificadas, COLORES_SEM[a.sem].txt,
+      a.presentes, a.retardos, a.faltas, a.justificadas, ETIQUETA_SEM[modo][a.sem],
       a.tutor || "", a.telefono || ""]));
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const csv = "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
     const el = document.createElement("a");
     el.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    el.download = `seguimiento_inasistencias_${desde}_a_${hasta}.csv`;
+    el.download = `seguimiento_${modo}_${desde}_a_${hasta}.csv`;
     el.click();
     URL.revokeObjectURL(el.href);
   };
@@ -1703,13 +1742,26 @@ function PanelSeguimiento({ alumnos }) {
     const tel = soloDigitos(al.telefono);
     if (!tel) { alert(`No hay teléfono registrado para el tutor de ${al.nombre}.`); return; }
     const numero = tel.length === 10 ? "52" + tel : tel;
-    const msg = `Buen día. Le informamos que ${al.nombre} acumula ${al.faltas} inasistencia(s) ` +
-      `en lo que va del periodo. Le pedimos comunicarse con el plantel. CBTA No. 291.`;
+    const msg = modo === "retardos"
+      ? `Buen día. Le informamos que ${al.nombre} acumula ${al.retardos} retardo(s) ` +
+        `en lo que va del periodo. Le pedimos apoyarnos para que llegue a tiempo. CBTA No. 291.`
+      : `Buen día. Le informamos que ${al.nombre} acumula ${al.faltas} inasistencia(s) ` +
+        `en lo que va del periodo. Le pedimos comunicarse con el plantel. CBTA No. 291.`;
     window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`, "_blank");
   };
 
   return (
     <div className="space-y-4">
+      <div className="flex gap-1 bg-slate-100 p-1 rounded-xl w-fit">
+        {[["faltas", "Faltas"], ["retardos", "Retardos"]].map(([id, txt]) => (
+          <button key={id} onClick={() => cambiarModo(id)}
+            className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition ${
+              modo === id ? "bg-white shadow-sm text-[#1a2340]" : "text-slate-500 hover:text-slate-700"}`}>
+            {txt}
+          </button>
+        ))}
+      </div>
+
       <Card className="p-4 space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <select className={inputCls + " !mt-0 !w-auto"} value={periodo} onChange={e => setPeriodo(e.target.value)}>
@@ -1736,12 +1788,12 @@ function PanelSeguimiento({ alumnos }) {
           <span>Del {desde} al {hasta} · <b>{dias}</b> día(s) con lista pasada.</span>
           <span className="flex items-center gap-1.5 ml-auto">
             Amarillo desde
-            <input type="number" min="1" className={inputCls + " !mt-0 !w-16 !py-1"} value={amarillo}
-              onChange={e => guardarLimites(Math.max(1, Number(e.target.value) || 1), rojo)} />
-            faltas · Rojo desde
-            <input type="number" min="1" className={inputCls + " !mt-0 !w-16 !py-1"} value={rojo}
-              onChange={e => guardarLimites(amarillo, Math.max(1, Number(e.target.value) || 1))} />
-            faltas
+            <input type="number" min="1" className={inputCls + " !mt-0 !w-16 !py-1"} value={limA}
+              onChange={e => guardarLimites(Math.max(1, Number(e.target.value) || 1), limR)} />
+            {unidad} · Rojo desde
+            <input type="number" min="1" className={inputCls + " !mt-0 !w-16 !py-1"} value={limR}
+              onChange={e => guardarLimites(limA, Math.max(1, Number(e.target.value) || 1))} />
+            {unidad}
           </span>
         </div>
       </Card>
@@ -1760,7 +1812,7 @@ function PanelSeguimiento({ alumnos }) {
             className={`rounded-2xl border p-4 text-left transition ${COLORES_SEM[c].chip} ${filtro === c ? "ring-2 ring-offset-1 ring-slate-400" : ""}`}>
             <div className="flex items-center gap-2 mb-1">
               <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: COLORES_SEM[c].punto }} />
-              <span className="text-[11px] uppercase font-semibold truncate">{COLORES_SEM[c].txt}</span>
+              <span className="text-[11px] uppercase font-semibold truncate">{ETIQUETA_SEM[modo][c]}</span>
             </div>
             <div className="text-2xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>{cuenta(c)}</div>
           </button>
@@ -1780,7 +1832,7 @@ function PanelSeguimiento({ alumnos }) {
           </p>
         ) : dias === 0 ? (
           <p className="text-sm text-slate-400 py-8 text-center">
-            Todavía no se ha pasado lista en este periodo, así que no hay faltas que contar.
+            Todavía no se ha pasado lista en este periodo, así que no hay {unidad} que contar.
           </p>
         ) : visibles.length === 0 ? (
           <p className="text-sm text-slate-400 py-8 text-center">Ningún alumno en esta categoría.</p>
@@ -1791,21 +1843,26 @@ function PanelSeguimiento({ alumnos }) {
                 <span className="w-2.5 h-2.5 rounded-full shrink-0 hidden sm:block"
                   style={{ background: COLORES_SEM[a.sem].punto }} />
                 <button className="flex-1 min-w-0 text-left hover:underline"
-                  onClick={() => setDetalleAlumno(a)} title="Ver en qué fechas faltó">
+                  onClick={() => setDetalleAlumno(a)}
+                  title={modo === "retardos" ? "Ver qué días llegó tarde" : "Ver en qué fechas faltó"}>
                   <div className="text-sm font-medium break-words">
                     <span className="w-2.5 h-2.5 rounded-full inline-block mr-1.5 sm:hidden align-middle"
                       style={{ background: COLORES_SEM[a.sem].punto }} />
                     {a.nombre}
                   </div>
                   <div className="text-xs text-slate-500">
-                    {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"} · asistió {a.presentes} de {a.diasSuyos}
-                    {a.retardos > 0 && ` · ${a.retardos} retardo(s)`}
-                    {a.justificadas > 0 && <span className="text-sky-600"> · {a.justificadas} justificada(s)</span>}
+                    {a.semestre ? `${a.semestre}° ` : ""}{a.grupo || "—"}
+                    {modo === "retardos"
+                      ? <> · llegó tarde {a.retardos} de {a.presentes} vez(ces) que asistió
+                          {a.presentes > 0 && ` (${a.pctRetardo}%)`}</>
+                      : <> · asistió {a.presentes} de {a.diasSuyos}
+                          {a.retardos > 0 && ` · ${a.retardos} retardo(s)`}
+                          {a.justificadas > 0 && <span className="text-sky-600"> · {a.justificadas} justificada(s)</span>}</>}
                   </div>
                 </button>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className={`text-xs font-bold px-2.5 py-1 rounded-full border ${COLORES_SEM[a.sem].chip}`}>
-                    {a.faltas} falta(s)
+                    {modo === "retardos" ? `${a.retardos} retardo(s)` : `${a.faltas} falta(s)`}
                   </span>
                   {a.sem !== "verde" && (
                     <button className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
@@ -1821,7 +1878,7 @@ function PanelSeguimiento({ alumnos }) {
       </Card>
       {sinCredencial.length > 0 && <SinCredencial lista={sinCredencial} />}
 
-      {detalleAlumno && (
+      {detalleAlumno && modo === "faltas" && (
         <FaltasDelAlumno
           alumno={detalleAlumno}
           desde={desde}
@@ -1829,6 +1886,139 @@ function PanelSeguimiento({ alumnos }) {
           onCerrar={() => setDetalleAlumno(null)}
         />
       )}
+      {detalleAlumno && modo === "retardos" && (
+        <RetardosDelAlumno
+          alumno={detalleAlumno}
+          desde={desde}
+          hasta={hasta}
+          onCerrar={() => setDetalleAlumno(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ================================================================
+   QUÉ DÍAS LLEGÓ TARDE UN ALUMNO
+   ----------------------------------------------------------------
+   Lista sus retardos con la hora exacta de llegada, y cuántos días
+   llegó a tiempo, para ver si es algo ocasional o ya un hábito.
+   ================================================================ */
+
+const DIAS_SEMANA = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+
+function RetardosDelAlumno({ alumno, desde, hasta, onCerrar }) {
+  const [registros, setRegistros] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      setCargando(true); setErr("");
+      const { data, error } = await supabase.from("asistencias")
+        .select("fecha, hora, estado")
+        .eq("alumno_id", alumno.id)
+        .gte("fecha", desde).lte("fecha", hasta)
+        .order("fecha", { ascending: false });
+      if (!vivo) return;
+      if (error) { setErr(error.message); setCargando(false); return; }
+      setRegistros(data || []);
+      setCargando(false);
+    })();
+    return () => { vivo = false; };
+  }, [alumno.id, desde, hasta]);
+
+  const retardos = registros.filter(r => r.estado === "Retardo");
+  const aTiempo = registros.length - retardos.length;
+
+  /* ¿En qué día de la semana se concentran? A veces el patrón dice
+     más que el total: siempre los lunes, por ejemplo. */
+  const porDia = useMemo(() => {
+    const c = new Map();
+    retardos.forEach(r => {
+      const [a, m, d] = String(r.fecha).slice(0, 10).split("-").map(Number);
+      const dia = DIAS_SEMANA[new Date(a, m - 1, d).getDay()];
+      c.set(dia, (c.get(dia) || 0) + 1);
+    });
+    return [...c.entries()].sort((x, y) => y[1] - x[1]);
+  }, [retardos]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 p-4 overflow-y-auto" onClick={onCerrar}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md my-8" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-2 px-5 py-4 border-b border-slate-200">
+          <div className="min-w-0">
+            <h3 className="font-bold text-base break-words" style={{ fontFamily: "'Archivo', sans-serif" }}>
+              {alumno.nombre}
+            </h3>
+            <p className="text-xs text-slate-500">
+              {alumno.semestre ? `${alumno.semestre}° ` : ""}{alumno.grupo || "—"} · del {desde} al {hasta}
+            </p>
+          </div>
+          <button onClick={onCerrar} className="p-1 rounded-lg hover:bg-slate-100 shrink-0"><X size={18} /></button>
+        </div>
+
+        <div className="p-5 space-y-3 max-h-[70vh] overflow-y-auto">
+          {err && (
+            <p className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2.5">
+              No se pudo consultar: {err}
+            </p>
+          )}
+
+          {cargando ? (
+            <p className="text-sm text-slate-400 py-6 text-center flex items-center justify-center gap-2">
+              <Loader2 size={15} className="animate-spin" />Consultando…
+            </p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-2 text-center">
+                <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-2">
+                  <div className="text-lg font-bold text-emerald-700">{aTiempo}</div>
+                  <div className="text-[10px] uppercase font-semibold text-emerald-700">A tiempo</div>
+                </div>
+                <div className="bg-amber-50 border border-amber-200 rounded-xl p-2">
+                  <div className="text-lg font-bold text-amber-700">{retardos.length}</div>
+                  <div className="text-[10px] uppercase font-semibold text-amber-700">Retardos</div>
+                </div>
+              </div>
+
+              {porDia.length > 0 && retardos.length >= 3 && (
+                <p className="text-xs text-slate-600 bg-slate-50 rounded-lg px-3 py-2">
+                  Llega tarde sobre todo los <b>{porDia[0][0]}</b>
+                  {" "}({porDia[0][1]} de {retardos.length}).
+                </p>
+              )}
+
+              {retardos.length === 0 ? (
+                <p className="text-sm text-emerald-700 py-4 text-center">
+                  No tiene retardos en este periodo.
+                </p>
+              ) : (
+                <div>
+                  <p className="text-xs font-semibold text-slate-600 mb-1.5">Días que llegó tarde</p>
+                  <div className="space-y-1">
+                    {retardos.map(r => (
+                      <div key={r.fecha}
+                        className="flex items-center gap-2 text-sm rounded-lg px-2.5 py-1.5 border bg-amber-50 border-amber-200">
+                        <span className="capitalize flex-1 min-w-0">{fmtFechaLarga(r.fecha)}</span>
+                        <span className="text-xs font-bold text-amber-700 shrink-0">
+                          {(r.hora || "").slice(0, 5)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <p className="text-[11px] text-slate-400">
+                La hora es la de su registro de entrada. Se cuenta como retardo
+                cuando llegó después de la hora límite fijada en el escáner.
+              </p>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
