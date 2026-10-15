@@ -1182,6 +1182,8 @@ export default function App() {
             <img src={LOGO} alt="CBTA 291" className="w-9 h-9 rounded-full bg-white p-0.5" />
             <span className="hidden sm:inline leading-tight text-[13px]">Mi portal<br />CBTA 291</span>
           </div>
+          {/* La Coordinación BAETAM no tiene buscador: solo usa su asistencia */}
+          {user.rol === "coord_baetam" ? <div className="flex-1" /> : (
           <div className="flex-1 max-w-md mx-auto relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={busqueda} onChange={e => setBusqueda(e.target.value)}
@@ -1193,6 +1195,7 @@ export default function App() {
               className="w-full rounded-xl bg-white/10 border border-white/15 pl-9 pr-3 py-1.5 text-sm placeholder:text-slate-400 focus:outline-none focus:bg-white/15" />
             {busqueda.trim() && <Buscador db={db} user={user} q={busqueda} irA={irA} cerrar={() => setBusqueda("")} />}
           </div>
+          )}
           <button className="relative p-2 rounded-lg hover:bg-white/10" onClick={() => { setVerNotifs(v => !v); if (!verNotifs) marcarLeidas(); }}>
             <Bell size={19} />
             {noLeidas > 0 && <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-[#E8871E] text-[10px] font-bold flex items-center justify-center">{noLeidas}</span>}
@@ -1267,7 +1270,7 @@ export default function App() {
           )}
           {pagina === "ranking_general" && esRolComunicador(user.rol) && <RankingGeneral db={db} user={user} />}
           {pagina === "logros" && <Logros db={db} user={user} />}
-          {pagina === "avisos" && (esRolComunicador(user.rol)
+          {pagina === "avisos" && user.rol !== "coord_baetam" && (esRolComunicador(user.rol)
             ? <Avisos db={db} user={user} mutar={mutar} />
             : <MisAvisos db={db} user={user} recargar={() => recargar(user.id)} />)}
           {pagina === "asistencia" && esRolControlEscolar(user.rol) && (
@@ -1286,7 +1289,7 @@ export default function App() {
             </React.Suspense>
           )}
           {pagina === "tutorias" && esRolTutorias(user.rol) && <PanelTutorias db={db} irA={irA} />}
-          {pagina === "calendario" && <PantallaCalendarios db={db} user={user} mutar={mutar} puedeEditar={esRolAcademico(user.rol)} />}
+          {pagina === "calendario" && user.rol !== "coord_baetam" && <PantallaCalendarios db={db} user={user} mutar={mutar} puedeEditar={esRolAcademico(user.rol)} />}
           {pagina === "programas" && (esRolAcademico(user.rol)
             ? <ProgramasEstudio db={db} user={user} mutar={mutar} />
             : <ProgramasDocente db={db} />)}
