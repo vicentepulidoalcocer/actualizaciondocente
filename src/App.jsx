@@ -26,6 +26,7 @@ import {
   marcarEnterado, MAX_FILE_B64, registrarAcceso, guardarEntrega, borrarEntrega,
 } from "./lib/nube";
 const Asistencia = React.lazy(() => import("./Asistencia"));
+const AsistenciaBaetam = React.lazy(() => import("./AsistenciaBaetam"));
 const AsistenciaDocente = React.lazy(() => import("./AsistenciaDocente"));
 const Finanzas = React.lazy(() => import("./Finanzas"));
 const Ausentes = React.lazy(() => import("./Ausentes"));
@@ -71,6 +72,7 @@ const NOMBRE_ROL = {
   coord_tutorias: "Coordinación de Tutorías",
   jefe_rh: "Jefe de Recursos Humanos",
   personal_administrativo: "Personal administrativo",
+  coord_baetam: "Coordinación BAETAM",
   docente: "Docente",
 };
 const esRolValidador = (r) => r === "admin" || r === "jefe_formacion";
@@ -78,6 +80,8 @@ const esRolAcademico = (r) => r === "admin" || r === "jefe_academico";
 const esRolControlEscolar = (r) => r === "admin" || r === "administrativo";
 const esRolTutorias = (r) => r === "admin" || r === "coord_tutorias";
 const esRolRH = (r) => r === "admin" || r === "jefe_rh";
+/* Asistencia BAETAM: aparte de la escolarizada, con su propio padrón */
+const esRolBaetam = (r) => r === "admin" || r === "coord_baetam";
 /* Roles que tienen un tablero de inicio. Los demás aterrizan en su
    pantalla de trabajo: si esta lista no existiera, cualquier rol
    nuevo caería en el tablero del docente por omisión. */
@@ -88,6 +92,7 @@ const paginaInicial = (r) =>
   tieneTablero(r) ? "dashboard"
   : r === "administrativo" ? "asistencia"
   : r === "coord_tutorias" ? "tutorias"
+  : r === "coord_baetam" ? "asistencia_baetam"
   : r === "personal_administrativo" || r === "jefe_rh" ? "asistencia_docente"
   : "avisos";
 /* Quiénes ven su tarjeta de tiempo del checador: el personal docente,
@@ -1102,6 +1107,7 @@ export default function App() {
       { id: "tutorias", label: "Tutorías", icono: Users },
     ]},
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
+    { id: "asistencia_baetam", label: "Asistencia BAETAM", icono: ScanLine },
     { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
     { id: "finanzas", label: "Finanzas", icono: TrendingUp },
     { id: "ranking_general", label: "Ranking general", icono: Medal },
@@ -1119,6 +1125,10 @@ export default function App() {
     { id: "metas", label: "Metas y ciclos", icono: Target },
   ] : user.rol === "coord_tutorias" ? [
     { id: "tutorias", label: "Tutorías", icono: Users },
+    { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
+    { id: "calendario", label: "Calendarios", icono: CalendarDays },
+  ] : user.rol === "coord_baetam" ? [
+    { id: "asistencia_baetam", label: "Asistencia BAETAM", icono: ScanLine },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "administrativo" ? [
@@ -1265,6 +1275,11 @@ export default function App() {
           {pagina === "asistencia" && esRolControlEscolar(user.rol) && (
             <React.Suspense fallback={<Card className="p-8 text-center text-sm text-slate-400"><Loader2 size={18} className="animate-spin inline mr-2"/>Cargando control de asistencia…</Card>}>
               <Asistencia user={user} />
+            </React.Suspense>
+          )}
+          {pagina === "asistencia_baetam" && esRolBaetam(user.rol) && (
+            <React.Suspense fallback={<Card className="p-8 text-center text-sm text-slate-400"><Loader2 size={18} className="animate-spin inline mr-2"/>Cargando asistencia BAETAM…</Card>}>
+              <AsistenciaBaetam user={user} />
             </React.Suspense>
           )}
           {pagina === "ausentes" && user.rol === "docente" && (
@@ -3250,6 +3265,33 @@ function Respaldo({ db, user }) {
         zip.file(`Indices/alumnos_justificaciones_${sello}.csv`, csvTexto(f));
       }
 
+      /* Asistencia BAETAM: tablas propias, se guardan en archivos aparte */
+      const nombreBaetam = new Map();
+      const alumB = await tablaCompleta("alumnos_baetam", "*", "nombre");
+      if (!alumB.error && alumB.data.length) {
+        alumB.data.forEach(a => nombreBaetam.set(a.id, a.nombre));
+        const f = [["ID / Matrícula", "Alumno", "Semestre", "Grupo", "Tutor", "Teléfono", "Situación"]];
+        alumB.data.forEach(a => f.push([a.id, a.nombre, a.semestre, a.grupo,
+          a.tutor || "", a.telefono || "", a.activo === false ? "Baja" : "Activo"]));
+        zip.file(`Indices/baetam_padron_${sello}.csv`, csvTexto(f));
+      }
+
+      const asisB = await tablaCompleta("asistencias_baetam", "*", "fecha");
+      if (!asisB.error && asisB.data.length) {
+        const f = [["Fecha", "ID / Matrícula", "Alumno", "Semestre", "Grupo", "Hora", "Estado"]];
+        asisB.data.forEach(r => f.push([r.fecha, r.alumno_id, r.nombre, r.semestre,
+          r.grupo, r.hora, r.estado]));
+        zip.file(`Indices/baetam_asistencias_${sello}.csv`, csvTexto(f));
+      }
+
+      const justB = await tablaCompleta("justificaciones_baetam", "*", "fecha");
+      if (!justB.error && justB.data.length) {
+        const f = [["Fecha", "ID / Matrícula", "Alumno", "Tipo", "Motivo"]];
+        justB.data.forEach(j => f.push([j.fecha, j.alumno_id,
+          nombreBaetam.get(j.alumno_id) || "", j.tipo, j.motivo || ""]));
+        zip.file(`Indices/baetam_justificaciones_${sello}.csv`, csvTexto(f));
+      }
+
       const nombrePersonal = (id) => db.users.find(u => u.id === id)?.nombre || "";
 
       const chec = await tablaCompleta("checadas", "*", "fecha");
@@ -3393,6 +3435,7 @@ de cada ciclo escolar.
           <ul className="text-sm text-slate-600 space-y-1">
             <li>• <b>Formación docente</b>: constancias, grados, formación complementaria, docentes, avisos, acuses y entregas.</li>
             <li>• <b>Control escolar</b>: padrón de alumnos, asistencias del QR y justificaciones.</li>
+            <li>• <b>Asistencia BAETAM</b>: su padrón, asistencias y justificaciones, en archivos aparte.</li>
             <li>• <b>Personal</b>: checadas del reloj, permisos y firmas semanales.</li>
             <li>• <b>Finanzas</b>: ingresos y egresos, con sus facturas.</li>
             <li>• <b>Documentos originales</b> con nombres legibles, organizados por carpetas.</li>
@@ -3526,6 +3569,8 @@ function JefesDepartamento({ db, mutar }) {
       "Revisa planes de trabajo, fichas de identificación e informes de los tutores; publica avisos."],
     ["jefe_rh", "Jefe de Recursos Humanos",
       "Carga semanalmente el reporte del checador y consulta la asistencia de todo el personal."],
+    ["coord_baetam", "Coordinación BAETAM",
+      "Asistencia BAETAM con códigos QR: su propio padrón de alumnos, historial, seguimiento y avisos. No ve la asistencia escolarizada."],
   ];
 
   const actualDe = (rol) => db.users.find(u => u.rol === rol && u.activo);
