@@ -1129,8 +1129,6 @@ export default function App() {
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "coord_baetam" ? [
     { id: "asistencia_baetam", label: "Asistencia BAETAM", icono: ScanLine },
-    { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
-    { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "administrativo" ? [
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
     { id: "finanzas", label: "Finanzas", icono: TrendingUp },
@@ -3570,7 +3568,7 @@ function JefesDepartamento({ db, mutar }) {
     ["jefe_rh", "Jefe de Recursos Humanos",
       "Carga semanalmente el reporte del checador y consulta la asistencia de todo el personal."],
     ["coord_baetam", "Coordinación BAETAM",
-      "Asistencia BAETAM con códigos QR: su propio padrón de alumnos, historial, seguimiento y avisos. No ve la asistencia escolarizada."],
+      "Asistencia BAETAM con códigos QR: su propio padrón de alumnos, historial, seguimiento y mensajes a tutores. No ve la asistencia escolarizada."],
   ];
 
   const actualDe = (rol) => db.users.find(u => u.rol === rol && u.activo);
