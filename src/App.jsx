@@ -1194,6 +1194,7 @@ export default function App() {
           <div className="flex-1 max-w-md mx-auto relative">
             <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={busqueda} onChange={e => setBusqueda(e.target.value)}
+              type="search" name="buscar-portal" autoComplete="off" autoCorrect="off" spellCheck={false}
               placeholder={
                 user.rol === "admin" ? "Buscar docente, curso, programa, asignación…" :
                 user.rol === "jefe_formacion" ? "Buscar docente, constancia, institución…" :
@@ -2911,6 +2912,10 @@ function MiCuenta({ user, soloTarjeta = false }) {
           Tu cuenta: <b>{user.email}</b>. Nadie más puede ver tu contraseña.
         </p>
       </div>
+      {/* Campo oculto con el correo: Chrome necesita un "usuario" junto a la
+          contraseña; sin él, rellenaba el buscador de arriba con el correo. */}
+      <input type="text" name="username" autoComplete="username" value={user.email || ""}
+        readOnly hidden aria-hidden="true" tabIndex={-1} />
       <Campo label="Contraseña actual">
         <input className={inputCls} type="password" autoComplete="current-password"
           value={passActual} onChange={e => setPassActual(e.target.value)} />
