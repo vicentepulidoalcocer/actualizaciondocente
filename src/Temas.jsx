@@ -57,12 +57,12 @@ export const TEMAS = [
     lluvia: null,
   },
   {
-    id: "muertos", nombre: "Día de Muertos",
-    desde: "10-28", hasta: "11-02",
-    fondo: "linear-gradient(90deg,#3b0764,#581c87 60%,#9a3412)",
-    franja: "linear-gradient(90deg,#f97316,#facc15,#ec4899,#a855f7,#f97316)",
-    adorno: "🌼", mensaje: "Día de Muertos · Honramos la memoria de quienes nos acompañaron.",
-    lluvia: ["🌼", "🧡", "🌼"],
+    id: "halloween", nombre: "Halloween",
+    desde: "10-28", hasta: "10-31",
+    fondo: "linear-gradient(90deg,#0c0a09,#1c1917 55%,#c2410c)",
+    franja: "repeating-linear-gradient(90deg,#f97316 0 18px,#0c0a09 18px 26px)",
+    adorno: "🎃", mensaje: "¡Feliz Halloween! Que tengan una semana llena de dulces y sin sustos.",
+    lluvia: ["🎃", "🦇", "👻", "🦇"],
   },
   {
     id: "navidad", nombre: "Navidad y Año Nuevo",
