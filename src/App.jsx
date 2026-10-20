@@ -20,6 +20,7 @@ import {
    ================================================================ */
 
 import { supabase, configurada } from "./lib/supabase";
+import { temaActivo, variablesTema, FranjaTema, AdornoTema, MensajeTema, LluviaTema, ConfigTemas } from "./Temas";
 import {
   cargarTodo, sincronizar, guardarArchivo, leerArchivo, eliminarArchivo,
   extraerConIA, crearDocente, restablecerPassword, cambiarEmailDocente,
@@ -920,7 +921,8 @@ function GrupoMenu({ item, pagina, irA }) {
         <div className="ml-3 pl-3 border-l border-slate-200 mt-1 space-y-1">
           {item.hijos.map(h => (
             <button key={h.id} onClick={() => irA(h.id)}
-              className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[13px] font-medium transition ${pagina === h.id ? "bg-[#1a2340] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+              className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[13px] font-medium transition ${pagina === h.id ? "bg-[#1a2340] text-white" : "text-slate-600 hover:bg-slate-100"}`}
+              style={pagina === h.id ? { background: "var(--color-tema, #1a2340)" } : undefined}>
               <h.icono size={15} />
               <span className="flex-1 text-left">{h.label}</span>
               {h.badge > 0 && <span className="min-w-[18px] h-4.5 px-1 rounded-full bg-[#E8871E] text-white text-[10px] font-bold flex items-center justify-center">{h.badge}</span>}
@@ -1167,20 +1169,25 @@ export default function App() {
 
   const marcarLeidas = () => mutar(d => { d.notifs.forEach(n => { if (n.userId === user.id) n.leida = true; }); });
 
+  /* Tema conmemorativo del día (o el que fije la administración) */
+  const tema = temaActivo(db.config);
+
   return (
-    <div className="min-h-screen bg-[#f2f4f8]" style={{fontFamily:"'Inter', sans-serif"}}>
+    <div className="min-h-screen bg-[#f2f4f8]" style={{fontFamily:"'Inter', sans-serif", ...variablesTema(tema)}}>
+      <LluviaTema tema={tema} />
       {cargando && (
         <div className="fixed top-2 right-3 z-[60] text-[11px] text-slate-500 bg-white/90 border border-slate-200 rounded-full px-2.5 py-1 flex items-center gap-1.5 shadow-sm">
           <Loader2 size={11} className="animate-spin" /> Actualizando…
         </div>
       )}
       {/* Barra superior */}
-      <header className="sticky top-0 z-40 bg-[#1a2340] text-white">
+      <header className="sticky top-0 z-40 bg-[#1a2340] text-white" style={{ background: "var(--fondo-tema, #1a2340)" }}>
         <div className="flex items-center gap-3 px-4 py-2.5">
           <button className="lg:hidden p-1.5 rounded-lg hover:bg-white/10" onClick={() => setMenuAbierto(v => !v)}><Menu size={20} /></button>
           <div className="flex items-center gap-2 font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>
             <img src={LOGO} alt="CBTA 291" className="w-9 h-9 rounded-full bg-white p-0.5" />
             <span className="hidden sm:inline leading-tight text-[13px]">Mi portal<br />CBTA 291</span>
+            <AdornoTema tema={tema} />
           </div>
           {/* La Coordinación BAETAM no tiene buscador: solo usa su asistencia */}
           {user.rol === "coord_baetam" ? <div className="flex-1" /> : (
@@ -1206,6 +1213,7 @@ export default function App() {
           </div>
           <button className="p-2 rounded-lg hover:bg-white/10" title="Cerrar sesión" onClick={() => supabase.auth.signOut()}><LogOut size={18} /></button>
         </div>
+        <FranjaTema tema={tema} />
         {verNotifs && (
           <div className="absolute right-4 top-14 w-80 max-h-96 overflow-y-auto bg-white text-slate-800 rounded-2xl shadow-xl border border-slate-200 z-50">
             <div className="px-4 py-2.5 font-bold text-sm border-b border-slate-100">Notificaciones</div>
@@ -1228,7 +1236,8 @@ export default function App() {
               <GrupoMenu key={item.id} item={item} pagina={pagina} irA={irA} />
             ) : (
               <button key={item.id} onClick={() => irA(item.id)}
-                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium transition ${pagina === item.id ? "bg-[#1a2340] text-white" : "text-slate-600 hover:bg-slate-100"}`}>
+                className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm font-medium transition ${pagina === item.id ? "bg-[#1a2340] text-white" : "text-slate-600 hover:bg-slate-100"}`}
+                style={pagina === item.id ? { background: "var(--color-tema, #1a2340)" } : undefined}>
                 <item.icono size={17} />
                 <span className="flex-1 text-left">{item.label}</span>
                 {item.badge > 0 && <span className="min-w-[20px] h-5 px-1 rounded-full bg-[#E8871E] text-white text-[11px] font-bold flex items-center justify-center">{item.badge}</span>}
@@ -1243,6 +1252,7 @@ export default function App() {
             teléfono, y el encabezado —que sí mide el ancho de la
             ventana— aparece cortado. */}
         <main className="flex-1 min-w-0 p-4 lg:p-6 max-w-7xl mx-auto w-full">
+          <MensajeTema tema={tema} />
           {pagina === "dashboard" && tieneTablero(user.rol) && (user.rol === "jefe_academico"
             ? <DashboardAcademico db={db} irA={irA} />
             : user.rol === "admin"
@@ -8181,6 +8191,8 @@ function Administracion({ db, user, mutar, esAdmin = true, modo = "todo" }) {
           </label>
         </Card>
       )}
+
+      {verSistema && esAdmin && <ConfigTemas config={cfg} mutar={mutar} />}
 
       {verSistema && esAdmin && <EspacioAlmacenamiento />}
 
