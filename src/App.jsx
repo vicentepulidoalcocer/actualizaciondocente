@@ -1465,6 +1465,7 @@ function DashboardGeneral({ db, irA }) {
   const tabs = [
     ["formacion", "Formación Docente", Award],
     ["academico", "Académico y Competencias", FileCheck],
+    ["docente", "Por docente", Users],
   ];
   return (
     <div className="space-y-4">
@@ -1478,6 +1479,7 @@ function DashboardGeneral({ db, irA }) {
       </div>
       {area === "formacion" && <DashboardAdmin db={db} irA={irA} />}
       {area === "academico" && <DashboardAcademico db={db} irA={irA} compacto />}
+      {area === "docente" && <PorDocente db={db} irA={irA} />}
     </div>
   );
 }
@@ -4914,6 +4916,465 @@ function AvanceDetallado({ db, filas, ciclo, periodo, irA }) {
         asignación. La captura de seguimiento se pide una vez por semestre a todos.
       </p>
     </Card>
+  );
+}
+
+/* ================================================================
+   POR DOCENTE (tablero de la administración general)
+   ----------------------------------------------------------------
+   Una tarjeta por docente con todo su avance de un vistazo:
+   capacitación, entregas de su asignación (planeaciones, planes de
+   trabajo, informes, fichas de identificación), captura de
+   seguimiento, expediente, avisos sin confirmar y permisos.
+   Al tocar la tarjeta se abre el detalle completo.
+
+   Solo LEE información; no modifica nada.
+   ================================================================ */
+
+// Rango de fechas de un ciclo escolar "2026-2027" → agosto a julio
+const rangoCiclo = (ciclo) => {
+  const ini = Number(String(ciclo || "").slice(0, 4));
+  if (!ini) return null;
+  return { desde: `${ini}-08-01`, hasta: `${ini + 1}-07-31` };
+};
+
+const iniciales = (nombre = "") =>
+  nombre.split(" ").filter(Boolean).map(p => p[0]).slice(0, 2).join("").toUpperCase();
+
+/* Todo lo que se sabe de un docente para un ciclo y semestre */
+function resumenDocente(db, d, ciclo, periodo) {
+  const h = horasValidadas(db, d.id, ciclo);
+  const hPend = horasPendientes(db, d.id, ciclo);
+  const meta = metaDe(db, d.id);
+  const pctHoras = meta ? Math.round(100 * h / meta) : 0;
+  const asig = asignacionDe(db, d.id, ciclo, periodo);
+  let av = null, tipos = [], actividades = [], captura = null;
+  if (asig) {
+    av = avanceDe(db, asig);
+    const encargos = encargosDe(db, asig);
+    tipos = TIPOS_SEGUIMIENTO.map(t => {
+      let req = 0, ent = 0;
+      encargos.forEach(e => {
+        const n = e.requisitos[t];
+        if (!n) return;
+        req += n;
+        ent += Math.min(entregasDe(db, d.id, ciclo, e.clave, t, periodo).length, n);
+      });
+      return { tipo: t, nombre: PLURAL_TIPO_ENTREGA[t], req, ent, pct: req ? Math.round(100 * ent / req) : 0 };
+    }).filter(x => x.req > 0);
+    actividades = encargos.map(e => {
+      const partes = TIPOS_SEGUIMIENTO.map(t => {
+        const n = e.requisitos[t];
+        if (!n) return null;
+        const lista = entregasDe(db, d.id, ciclo, e.clave, t, periodo);
+        return { tipo: t, nombre: NOMBRE_TIPO_ENTREGA[t], req: n, ent: Math.min(lista.length, n), lista };
+      }).filter(Boolean);
+      return { ...e, partes };
+    }).filter(a => a.partes.length > 0);
+    captura = capturaDe(db, d.id, ciclo, periodo);
+  }
+  const exp = completitudExpediente(db, d.id);
+  const avisos = avisosPendientes(db, d);
+  const sem = semaforoDe(db, pctHoras);
+  return { d, h, hPend, meta, pctHoras, sem, asig, av, tipos, actividades, captura, exp, avisos };
+}
+
+function PorDocente({ db, irA }) {
+  const [ciclo, setCiclo] = useState(db.config.cicloActual);
+  const [periodo, setPeriodo] = useState(periodoDeFecha());
+  const [q, setQ] = useState("");
+  const [orden, setOrden] = useState("nombre");
+  const [abierto, setAbierto] = useState(null);
+  const [permisos, setPermisos] = useState(null);   // null = cargando
+
+  /* Permisos del personal en el ciclo. Viven en su propia tabla (no en
+     el "db"), así que se consultan aquí. Si la tabla no existe o no
+     hay acceso, simplemente no se muestran. */
+  useEffect(() => {
+    const r = rangoCiclo(ciclo);
+    if (!r) { setPermisos([]); return; }
+    let vivo = true;
+    setPermisos(null);
+    supabase.from("permisos_personal").select("*")
+      .gte("fecha", r.desde).lte("fecha", r.hasta).order("fecha", { ascending: false })
+      .then(({ data, error }) => { if (vivo) setPermisos(error ? [] : (data || [])); });
+    return () => { vivo = false; };
+  }, [ciclo]);
+
+  const docentes = db.users.filter(u => u.rol === "docente" && u.activo);
+  const resumenes = useMemo(
+    () => docentes.map(d => resumenDocente(db, d, ciclo, periodo)),
+    [db, ciclo, periodo]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const permisosDe = (id) => (permisos || []).filter(p => p.usuario_id === id);
+
+  const visibles = resumenes
+    .filter(r => {
+      const t = normTexto(q);
+      return !t || normTexto(r.d.nombre).includes(t) || normTexto(r.d.area || "").includes(t);
+    })
+    .sort((a, b) => {
+      if (orden === "entregas") return (a.av ? a.av.pct : 101) - (b.av ? b.av.pct : 101);
+      if (orden === "horas") return a.pctHoras - b.pctHoras;
+      return a.d.nombre.localeCompare(b.d.nombre);
+    });
+
+  const actual = abierto ? resumenes.find(r => r.d.id === abierto) : null;
+
+  return (
+    <div className="space-y-4">
+      <Card className="p-4">
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="block">
+            <span className="block text-xs font-semibold text-slate-600">Ciclo</span>
+            <select className={inputCls + " !w-36"} value={ciclo} onChange={e => setCiclo(e.target.value)}>
+              {ciclosDisponibles(db).map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="block text-xs font-semibold text-slate-600">Semestre (entregas)</span>
+            <select className={inputCls + " !w-44"} value={periodo} onChange={e => setPeriodo(e.target.value)}>
+              {PERIODOS.map(([id, txt]) => <option key={id} value={id}>{txt}</option>)}
+            </select>
+          </label>
+          <label className="block">
+            <span className="block text-xs font-semibold text-slate-600">Ordenar por</span>
+            <select className={inputCls + " !w-48"} value={orden} onChange={e => setOrden(e.target.value)}>
+              <option value="nombre">Nombre</option>
+              <option value="entregas">Menor avance de entregas</option>
+              <option value="horas">Menor avance de capacitación</option>
+            </select>
+          </label>
+          <div className="relative flex-1 min-w-[180px]">
+            <Search size={14} className="absolute left-3 top-[calc(50%+2px)] -translate-y-1/2 text-slate-400" />
+            <input className={inputCls + " !pl-9"} placeholder="Buscar docente o área…"
+              value={q} onChange={e => setQ(e.target.value)} />
+          </div>
+        </div>
+      </Card>
+
+      {visibles.length === 0 ? (
+        <Card className="p-8 text-center text-sm text-slate-400">
+          {q ? "Ningún docente coincide con la búsqueda." : "No hay docentes activos."}
+        </Card>
+      ) : (
+        <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
+          {visibles.map(r => (
+            <TarjetaDocente key={r.d.id} r={r} permisos={permisos === null ? null : permisosDe(r.d.id)}
+              onAbrir={() => setAbierto(r.d.id)} />
+          ))}
+        </div>
+      )}
+
+      {actual && (
+        <DetalleDocente db={db} r={actual} ciclo={ciclo} periodo={periodo}
+          permisos={permisos === null ? null : permisosDe(actual.d.id)}
+          irA={irA} onClose={() => setAbierto(null)} />
+      )}
+    </div>
+  );
+}
+
+/* Píldora de avance: "Planeaciones 3/8" con el color según el avance */
+const Pildora = ({ pct, children }) => (
+  <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-lg border"
+    style={{ borderColor: colorAvance(pct) + "55", background: colorAvance(pct) + "12", color: colorAvance(pct) }}>
+    {children}
+  </span>
+);
+
+function TarjetaDocente({ r, permisos, onAbrir }) {
+  const colorHoras = SEM_COLORS[r.sem];
+  return (
+    <button onClick={onAbrir}
+      className="w-full flex flex-col justify-start text-left bg-white rounded-2xl border border-slate-200 shadow-sm p-4 hover:border-[#1a2340]/40 hover:shadow transition min-w-0">
+      <div className="w-full flex items-center gap-3 min-w-0">
+        <span className="w-10 h-10 rounded-xl bg-[#1a2340] text-white flex items-center justify-center text-sm font-bold shrink-0">
+          {iniciales(r.d.nombre)}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-bold leading-tight break-words">{r.d.nombre}</span>
+          <span className="block text-xs text-slate-400 truncate">{r.d.area || "Sin área"}</span>
+        </span>
+        <ChevronRight size={16} className="text-slate-300 shrink-0" />
+      </div>
+
+      {/* Capacitación */}
+      <div className="w-full mt-3">
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="font-semibold text-slate-600">Capacitación</span>
+          <span className="font-bold" style={{ color: colorHoras }}>{r.h}/{r.meta} h</span>
+        </div>
+        <div className="h-2 rounded-full bg-slate-200 overflow-hidden mt-1">
+          <div className="h-full rounded-full" style={{ width: Math.min(r.pctHoras, 100) + "%", background: colorHoras }} />
+        </div>
+        {r.hPend > 0 && <div className="text-[11px] text-amber-600 mt-0.5">{r.hPend} h por validar</div>}
+      </div>
+
+      {/* Entregas */}
+      <div className="w-full mt-3">
+        <div className="flex items-baseline justify-between text-xs">
+          <span className="font-semibold text-slate-600">Entregas del semestre</span>
+          {r.av
+            ? <span className="font-bold" style={{ color: colorAvance(r.av.pct) }}>{r.av.pct}%</span>
+            : <span className="text-slate-400">Sin asignación</span>}
+        </div>
+        {r.av && (
+          <>
+            <div className="mt-1"><BarraAvance pct={r.av.pct} /></div>
+            <div className="flex flex-wrap gap-1 mt-1.5">
+              {r.tipos.map(t => <Pildora key={t.tipo} pct={t.pct}>{t.nombre} {t.ent}/{t.req}</Pildora>)}
+              <Pildora pct={r.captura ? 100 : 0}>
+                {r.captura ? <CheckCircle2 size={10} /> : <AlertTriangle size={10} />} Captura
+              </Pildora>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Indicadores */}
+      <div className="w-full mt-auto pt-3"><div className="grid grid-cols-3 gap-1.5 pt-3 border-t border-slate-100 text-center">
+        <div>
+          <div className="text-sm font-bold" style={{ color: colorAvance(r.exp.pct) }}>{r.exp.pct}%</div>
+          <div className="text-[10px] text-slate-400 leading-tight">Expediente</div>
+        </div>
+        <div>
+          <div className={`text-sm font-bold ${r.avisos.length ? "text-rose-600" : "text-emerald-600"}`}>{r.avisos.length}</div>
+          <div className="text-[10px] text-slate-400 leading-tight">Avisos sin confirmar</div>
+        </div>
+        <div>
+          <div className="text-sm font-bold text-slate-700">{permisos === null ? "…" : permisos.length}</div>
+          <div className="text-[10px] text-slate-400 leading-tight">Permisos del ciclo</div>
+        </div>
+      </div></div>
+    </button>
+  );
+}
+
+/* Resumen del checador del docente en el ciclo */
+function ChecadorDocente({ docenteId, ciclo }) {
+  const [res, setRes] = useState(undefined);   // undefined = cargando, null = sin datos/acceso
+  useEffect(() => {
+    const r = rangoCiclo(ciclo);
+    if (!r) { setRes(null); return; }
+    let vivo = true;
+    setRes(undefined);
+    supabase.from("checadas").select("fecha, entrada, salida, segundos, nota")
+      .eq("usuario_id", docenteId).gte("fecha", r.desde).lte("fecha", r.hasta)
+      .order("fecha", { ascending: false }).limit(1000)
+      .then(({ data, error }) => {
+        if (!vivo) return;
+        if (error || !data || !data.length) { setRes(null); return; }
+        const asistio = data.filter(c => c.entrada || c.salida);
+        setRes({
+          dias: data.length,
+          asistio: asistio.length,
+          faltas: data.filter(c => !c.entrada && !c.salida).length,
+          unaChecada: data.filter(c => c.nota === "Missed Punch" || (!!c.entrada !== !!c.salida)).length,
+          tardias: data.filter(c => c.nota === "Late In").length,
+          horas: Math.round(data.reduce((s, c) => s + (Number(c.segundos) || 0), 0) / 360) / 10,
+          ultima: data[0]?.fecha,
+        });
+      });
+    return () => { vivo = false; };
+  }, [docenteId, ciclo]);
+
+  if (res === undefined) return <p className="text-sm text-slate-400"><Loader2 size={14} className="animate-spin inline mr-1" />Consultando el checador…</p>;
+  if (res === null) return <p className="text-sm text-slate-400">Sin registros del checador en este ciclo (o la persona aún no está vinculada a su número de reloj).</p>;
+  return (
+    <div>
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+        {[
+          ["Días con registro", res.asistio, "text-slate-800"],
+          ["Días sin checar", res.faltas, res.faltas ? "text-rose-600" : "text-emerald-600"],
+          ["Falta una checada", res.unaChecada, res.unaChecada ? "text-amber-600" : "text-emerald-600"],
+          ["Entradas tardías", res.tardias, res.tardias ? "text-amber-600" : "text-emerald-600"],
+          ["Horas trabajadas", res.horas, "text-slate-800"],
+        ].map(([t, v, c]) => (
+          <div key={t} className="bg-slate-50 rounded-xl p-2.5 text-center">
+            <div className={`text-lg font-bold ${c}`}>{v}</div>
+            <div className="text-[11px] text-slate-500 leading-tight">{t}</div>
+          </div>
+        ))}
+      </div>
+      <p className="text-[11px] text-slate-400 mt-1.5">
+        Según las semanas cargadas del checador; último día cargado: {fmtFecha(res.ultima)}.
+        Los permisos se registran aparte, más abajo.
+      </p>
+    </div>
+  );
+}
+
+const Seccion2 = ({ titulo, icono: Ic, children, extra }) => (
+  <section className="border border-slate-200 rounded-2xl p-4">
+    <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+      <h4 className="font-bold text-sm flex items-center gap-2"><Ic size={15} className="text-slate-500" />{titulo}</h4>
+      {extra}
+    </div>
+    {children}
+  </section>
+);
+
+function DetalleDocente({ db, r, ciclo, periodo, permisos, irA, onClose }) {
+  const d = r.d;
+  const certs = db.certs.filter(c => c.docenteId === d.id && (ciclo === "historico" || c.ciclo === ciclo));
+  const colorHoras = SEM_COLORS[r.sem];
+  const ir = (p, ctx) => { onClose(); irA && irA(p, ctx); };
+
+  return (
+    <Modal titulo={d.nombre} onClose={onClose} ancho="max-w-4xl">
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-3 text-sm text-slate-500">
+          <span>{d.area || "Sin área"}</span>
+          {d.asignaturas && <span>· {d.asignaturas}</span>}
+          <span>· {d.email}</span>
+          <span className="ml-auto text-xs bg-slate-100 rounded-lg px-2 py-1">
+            Ciclo {ciclo} · {nombrePeriodo(periodo)}
+          </span>
+        </div>
+
+        {/* Números principales */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div className="bg-slate-50 rounded-xl p-3 text-center">
+            <div className="text-xl font-bold" style={{ color: colorHoras }}>{r.h}/{r.meta}</div>
+            <div className="text-[11px] text-slate-500">Horas de capacitación</div>
+          </div>
+          <div className="bg-slate-50 rounded-xl p-3 text-center">
+            <div className="text-xl font-bold" style={{ color: r.av ? colorAvance(r.av.pct) : "#94a3b8" }}>{r.av ? r.av.pct + "%" : "—"}</div>
+            <div className="text-[11px] text-slate-500">Entregas del semestre</div>
+          </div>
+          <div className="bg-slate-50 rounded-xl p-3 text-center">
+            <div className="text-xl font-bold" style={{ color: colorAvance(r.exp.pct) }}>{r.exp.pct}%</div>
+            <div className="text-[11px] text-slate-500">Expediente</div>
+          </div>
+          <div className="bg-slate-50 rounded-xl p-3 text-center">
+            <div className={`text-xl font-bold ${r.avisos.length ? "text-rose-600" : "text-emerald-600"}`}>{r.avisos.length}</div>
+            <div className="text-[11px] text-slate-500">Avisos sin confirmar</div>
+          </div>
+        </div>
+
+        {/* Entregas */}
+        <Seccion2 titulo="Entregas de su asignación" icono={FolderOpen}
+          extra={r.asig && <span className="text-xs text-slate-400">{r.av.entregadas} de {r.av.requeridas} entregadas</span>}>
+          {!r.asig ? (
+            <p className="text-sm text-slate-400">No tiene asignación registrada para {nombrePeriodo(periodo)} de {ciclo}.</p>
+          ) : (
+            <div className="space-y-2">
+              {r.actividades.map(a => (
+                <div key={a.clave} className="bg-slate-50 rounded-xl p-3">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1.5">
+                    <span className="text-xs font-bold break-words">
+                      {a.actividad}
+                      <span className="ml-1.5 font-normal text-slate-400">· {NOMBRE_TIPO_ENCARGO[a.tipo] || a.tipo}</span>
+                    </span>
+                    {a.grupos.length > 0 && <span className="text-[11px] text-slate-400">{a.grupos.join(", ")}</span>}
+                  </div>
+                  <div className="space-y-1">
+                    {a.partes.map(p => {
+                      const pct = Math.round(100 * p.ent / p.req);
+                      return (
+                        <div key={p.tipo} className="flex flex-wrap items-center gap-2">
+                          <span className="text-[11px] text-slate-600 flex-1 min-w-[120px]">{tipoEntrega(p.tipo, p.req)}</span>
+                          <span className="flex items-center gap-0.5">
+                            {p.lista.map(e => <VerEntregaBtn key={e.id} entrega={e} />)}
+                          </span>
+                          <BarraAvance pct={pct} ancho="w-16 sm:w-24" />
+                          <span className="text-[11px] font-semibold w-10 text-right" style={{ color: colorAvance(pct) }}>{p.ent}/{p.req}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+              <div className="flex items-center gap-2 text-xs font-semibold"
+                style={{ color: r.captura ? "#059669" : "#e11d48" }}>
+                {r.captura ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
+                Captura de seguimiento institucional: {r.captura ? "entregada" : "pendiente"}
+                {r.captura && <VerEntregaBtn entrega={r.captura} />}
+              </div>
+              {r.av.indeterminado && (
+                <p className="text-[11px] text-amber-700">Alguna asignatura no tiene programa de estudio vinculado; sus planeaciones aún no se cuentan.</p>
+              )}
+              <p className="text-[11px] text-slate-400">El ícono del ojo abre cada documento entregado.</p>
+            </div>
+          )}
+        </Seccion2>
+
+        {/* Capacitación */}
+        <Seccion2 titulo="Capacitación docente" icono={Award}
+          extra={<span className="text-xs text-slate-400">{r.hPend > 0 ? `${r.hPend} h por validar` : ""}</span>}>
+          <div className="flex items-baseline justify-between">
+            <span className="text-xl font-bold">{r.h} <span className="text-sm font-medium text-slate-500">/ {r.meta} horas validadas</span></span>
+            <span className="font-bold" style={{ color: colorHoras }}>{r.pctHoras}%</span>
+          </div>
+          <div className="h-2.5 rounded-full bg-slate-200 overflow-hidden mt-1">
+            <div className="h-full rounded-full" style={{ width: Math.min(r.pctHoras, 100) + "%", background: colorHoras }} />
+          </div>
+          <p className="text-xs text-slate-500 mt-1">
+            {r.h >= r.meta ? "Alcanzó su meta de capacitación del ciclo." : `Le faltan ${r.meta - r.h} horas para su meta.`}
+          </p>
+          <div className="mt-3"><TablaCursos certs={certs} db={db} /></div>
+        </Seccion2>
+
+        {/* Asistencia y permisos */}
+        <Seccion2 titulo="Asistencia del checador" icono={Clock}>
+          <ChecadorDocente docenteId={d.id} ciclo={ciclo} />
+        </Seccion2>
+
+        <Seccion2 titulo="Permisos" icono={FileText}
+          extra={permisos && <span className="text-xs text-slate-400">{permisos.length} en el ciclo</span>}>
+          {permisos === null ? (
+            <p className="text-sm text-slate-400"><Loader2 size={14} className="animate-spin inline mr-1" />Cargando…</p>
+          ) : permisos.length === 0 ? (
+            <p className="text-sm text-slate-400">Sin permisos registrados en este ciclo.</p>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {permisos.map(p => (
+                <div key={p.id} className="py-2 flex flex-wrap gap-x-3 gap-y-0.5 text-sm">
+                  <span className="font-semibold w-28 shrink-0">{fmtFecha(p.fecha)}</span>
+                  <span className="flex-1 min-w-[160px] break-words">{p.motivo || "Sin motivo"}
+                    {p.observaciones && <span className="block text-xs text-slate-400">{p.observaciones}</span>}
+                  </span>
+                  {p.archivo_guardado && <span className="text-xs text-slate-400 flex items-center gap-1"><Paperclip size={12} />Con documento</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </Seccion2>
+
+        {/* Avisos y expediente */}
+        <div className="grid md:grid-cols-2 gap-4">
+          <Seccion2 titulo="Avisos sin confirmar" icono={Megaphone}>
+            {r.avisos.length === 0
+              ? <p className="text-sm text-emerald-600 flex items-center gap-1.5"><CheckCircle2 size={14} />Ha confirmado todos los avisos.</p>
+              : <ul className="space-y-1">{r.avisos.map(a => (
+                  <li key={a.id} className="text-sm flex items-start gap-1.5">
+                    <AlertTriangle size={13} className={`mt-0.5 shrink-0 ${avisoVencido(a) ? "text-rose-600" : "text-amber-500"}`} />
+                    <span className="min-w-0 break-words">{a.titulo}
+                      {a.fechaLimite && <span className={`ml-1 text-xs ${avisoVencido(a) ? "text-rose-600" : "text-slate-400"}`}>· límite {fmtFecha(a.fechaLimite)}</span>}
+                    </span>
+                  </li>))}</ul>}
+          </Seccion2>
+          <Seccion2 titulo="Expediente académico" icono={GraduationCap}>
+            <ul className="space-y-1">
+              {r.exp.partes.map(p => (
+                <li key={p.nombre} className="text-sm flex items-center gap-1.5">
+                  {p.ok ? <CheckCircle2 size={14} className="text-emerald-600" />
+                        : <XCircle size={14} className={p.cuenta ? "text-rose-500" : "text-slate-300"} />}
+                  <span className={p.cuenta ? "" : "text-slate-500"}>{p.nombre}</span>
+                  {!p.cuenta && <span className="text-[10px] text-slate-400">(opcional)</span>}
+                </li>
+              ))}
+            </ul>
+          </Seccion2>
+        </div>
+
+        <div className="flex flex-wrap gap-2 pt-1">
+          <button className={btnPrim} onClick={() => ir("docentes", d.id)}><User size={14} />Abrir expediente completo</button>
+          <button className={btnSec} onClick={() => ir("asignaciones")}><FolderOpen size={14} />Ir a Asignaciones</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
