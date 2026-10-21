@@ -86,7 +86,6 @@ export default function Asistencia({ user }) {
   const [horaLimite, setHoraLimite] = useState(
     () => localStorage.getItem("asistencia_hora_limite") || "08:00");
   const [pendientes, setPendientes] = useState(leerCola().length);
-  const [variosDias, setVariosDias] = useState(false);
 
   const fecha = hoyISO();
 
@@ -207,11 +206,7 @@ export default function Asistencia({ user }) {
           <h2 className="text-xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>Control de asistencia</h2>
           <p className="text-sm text-slate-500">{fmtFechaLarga(fecha)}</p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button className={btnSec + " !px-3 !py-1.5"} onClick={() => setVariosDias(true)}
-            title="Justificantes de varios días o entregados por adelantado">
-            <CalendarDays size={13} />Justificar varios días
-          </button>
+        <div className="flex items-center gap-2">
           {pendientes > 0 && (
             <button className={btnSec + " !px-3 !py-1.5"} onClick={sincronizarCola} title="Enviar registros guardados sin conexión">
               <RefreshCw size={13} />{pendientes} por enviar
@@ -249,11 +244,6 @@ export default function Asistencia({ user }) {
       {!cargando && tab === "seguimiento" && <PanelSeguimiento alumnos={alumnos} />}
       {!cargando && tab === "estadisticas" && <PanelEstadisticas alumnos={alumnos} />}
       {!cargando && tab === "padron" && <PanelPadron alumnos={alumnos} recargar={cargar} />}
-
-      {variosDias && (
-        <JustificarVariosDias alumnos={alumnos} user={user}
-          onClose={() => setVariosDias(false)} onListo={cargar} />
-      )}
     </div>
   );
 }
@@ -816,6 +806,7 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
           alumno={justificando}
           existente={justPorAlumno.get(justificando.id) || null}
           fecha={fecha}
+          user={user}
           onClose={() => setJustificando(null)}
           onGuardar={async (datos) => { await guardarJustificacion(datos); setJustificando(null); }}
           onQuitar={async () => { await quitarJustificacion(justificando.id); setJustificando(null); }}
@@ -1087,24 +1078,23 @@ async function guardarConJustificante({ alumno_id, tipo, motivo, archivo, quitar
 }
 
 /* ================================================================
-   JUSTIFICAR VARIOS DÍAS (también a futuro)
+   JUSTIFICAR VARIOS DÍAS
    ----------------------------------------------------------------
-   Para justificantes que abarcan varios días ("del lunes al
-   miércoles") o que llegan antes de la falta. Se registra una
-   justificación por cada día, exactamente igual que si se hubiera
-   justificado día por día: así el panel del día, el historial y el
-   seguimiento la reconocen sin cambiar nada más.
+   Desde el mismo botón "Justificar", el justificante puede abarcar
+   varios días a partir del día que se está viendo ("hasta el
+   viernes"), incluidos días futuros. Se registra una justificación
+   por cada día, igual que si se justificara día por día, así que el
+   panel del día, el historial y el seguimiento la reconocen solos.
 
-   - Los días en que el alumno YA tiene asistencia registrada se
-     omiten: no tiene sentido justificar un día en que vino.
-   - Si un día ya tenía justificación, se actualiza con los datos
-     nuevos (y conserva su documento si no se elige otro).
-   - El documento se guarda en cada día, para que se pueda abrir
-     desde cualquiera de ellos.
+   - Los días en que el alumno YA tiene asistencia se omiten.
+   - Si un día ya tenía justificación, se actualiza (y conserva su
+     documento si no se elige otro).
+   - El documento se guarda en cada día, para abrirlo desde cualquiera.
    ================================================================ */
 const MAX_DIAS_RANGO = 31;
 
-/* Lista de fechas ISO entre dos fechas, opcionalmente sin fines de semana */
+/* Fechas ISO entre dos fechas (ambas incluidas), opcionalmente sin
+   sábados ni domingos */
 const fechasEntre = (desde, hasta, soloHabiles) => {
   if (!desde || !hasta || hasta < desde) return [];
   const [a1, m1, d1] = desde.split("-").map(Number);
@@ -1126,292 +1116,33 @@ const fmtCorta = (iso) => {
   return new Date(a, m - 1, d).toLocaleDateString("es-MX", { weekday: "short", day: "numeric", month: "short" });
 };
 
-function JustificarVariosDias({ alumnos, user, onClose, onListo }) {
-  const [vista, setVista] = useState("nueva");      // "nueva" | "proximas"
-  const [q, setQ] = useState("");
-  const [alumno, setAlumno] = useState(null);
-  const [desde, setDesde] = useState(hoyISO());
-  const [hasta, setHasta] = useState(hoyISO());
+/* Justifica los días adicionales (los que van después del día que se
+   está viendo). Devuelve cuáles se guardaron y cuáles se omitieron. */
+async function justificarDiasExtra({ alumno_id, tipo, motivo, archivo }, fechas, user, avisar) {
+  if (!fechas.length) return { guardados: [], omitidos: [] };
+  const [as, ju] = await Promise.all([
+    supabase.from("asistencias").select("fecha").eq("alumno_id", alumno_id).in("fecha", fechas),
+    supabase.from("justificaciones").select("*").eq("alumno_id", alumno_id).in("fecha", fechas),
+  ]);
+  if (as.error) throw new Error(as.error.message);
+  if (ju.error) throw new Error(ju.error.message);
+  const asistio = new Set((as.data || []).map(x => x.fecha));
+  const previas = new Map((ju.data || []).map(j => [j.fecha, j]));
+  const aGuardar = fechas.filter(f => !asistio.has(f));
+  for (let i = 0; i < aGuardar.length; i++) {
+    const f = aGuardar[i];
+    avisar?.(`Guardando día ${i + 2} de ${aGuardar.length + 1}…`);
+    const previa = previas.get(f);
+    await guardarConJustificante({ alumno_id, tipo, motivo, archivo, quitarDoc: false },
+      f, user, new Map(previa ? [[alumno_id, previa]] : []));
+  }
+  return { guardados: aGuardar, omitidos: fechas.filter(f => asistio.has(f)) };
+}
+
+function ModalJustificar({ alumno, existente, fecha, user, onClose, onGuardar, onQuitar }) {
+  const [hasta, setHasta] = useState(fecha);          // igual a "fecha" = solo ese día
   const [soloHabiles, setSoloHabiles] = useState(true);
-  const [tipo, setTipo] = useState("medica");
-  const [motivo, setMotivo] = useState("");
-  const [archivo, setArchivo] = useState(null);
-  const [guardando, setGuardando] = useState(false);
   const [progreso, setProgreso] = useState("");
-  const [err, setErr] = useState("");
-  const [resultado, setResultado] = useState(null);
-
-  const activos = alumnos.filter(a => a.activo !== false);
-  const coincidencias = q.trim().length < 2 ? [] : activos.filter(a => {
-    const t = normaliza(q);
-    return normaliza(a.nombre).includes(t) || String(a.id).includes(soloDigitos(q) || "@@");
-  }).slice(0, 8);
-
-  const dias = fechasEntre(desde, hasta, soloHabiles);
-  const demasiados = dias.length > MAX_DIAS_RANGO;
-
-  const guardar = async () => {
-    if (!alumno) { setErr("Elige al alumno."); return; }
-    if (!dias.length) { setErr("Revisa las fechas: no hay días en ese rango."); return; }
-    if (demasiados) { setErr(`El rango es de más de ${MAX_DIAS_RANGO} días. Divídelo en partes.`); return; }
-    setGuardando(true); setErr(""); setProgreso("Revisando los días…");
-    try {
-      // Días en que ya asistió (se omiten) y justificaciones que ya existían
-      const [as, ju] = await Promise.all([
-        supabase.from("asistencias").select("fecha").eq("alumno_id", alumno.id).in("fecha", dias),
-        supabase.from("justificaciones").select("*").eq("alumno_id", alumno.id).in("fecha", dias),
-      ]);
-      if (as.error) throw new Error(as.error.message);
-      if (ju.error) throw new Error(ju.error.message);
-      const asistio = new Set((as.data || []).map(r => r.fecha));
-      const previas = new Map((ju.data || []).map(j => [j.fecha, j]));
-      const aGuardar = dias.filter(f => !asistio.has(f));
-
-      let hechos = 0;
-      for (const f of aGuardar) {
-        setProgreso(`Guardando ${hechos + 1} de ${aGuardar.length}…`);
-        const previa = previas.get(f);
-        await guardarConJustificante(
-          { alumno_id: alumno.id, tipo, motivo: motivo.trim(), archivo, quitarDoc: false },
-          f, user, new Map(previa ? [[alumno.id, previa]] : []));
-        hechos++;
-      }
-      setResultado({ guardados: aGuardar, omitidos: dias.filter(f => asistio.has(f)) });
-      await onListo?.();
-    } catch (e) {
-      setErr("Se detuvo antes de terminar: " + e.message + " Los días que alcanzaron a guardarse quedaron registrados; puedes volver a intentarlo.");
-    }
-    setGuardando(false); setProgreso("");
-  };
-
-  const reiniciar = () => {
-    setResultado(null); setAlumno(null); setQ(""); setMotivo(""); setArchivo(null);
-    setDesde(hoyISO()); setHasta(hoyISO());
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 p-4 overflow-y-auto" onClick={guardando ? undefined : onClose}>
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg my-8 min-w-0" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
-          <h3 className="font-bold text-base" style={{ fontFamily: "'Archivo', sans-serif" }}>Justificar varios días</h3>
-          <button onClick={onClose} disabled={guardando} className="p-1 rounded-lg hover:bg-slate-100"><X size={18} /></button>
-        </div>
-
-        <div className="px-5 pt-4">
-          <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
-            {[["nueva", "Nueva justificación"], ["proximas", "Ya registradas a futuro"]].map(([id, txt]) => (
-              <button key={id} onClick={() => setVista(id)} disabled={guardando}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition ${vista === id ? "bg-white shadow-sm text-[#1a2340]" : "text-slate-500"}`}>
-                {txt}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {vista === "proximas" && <JustificacionesFuturas alumnos={alumnos} onCambio={onListo} />}
-
-        {vista === "nueva" && resultado && (
-          <div className="p-5 space-y-3">
-            <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl p-3 flex items-start gap-2">
-              <CheckCircle2 size={16} className="mt-0.5 shrink-0" />
-              <span>
-                <b>{alumno?.nombre}</b>: {resultado.guardados.length} día(s) justificado(s)
-                {resultado.guardados.length > 0 && <>: {resultado.guardados.map(fmtCorta).join(", ")}</>}.
-              </span>
-            </p>
-            {resultado.omitidos.length > 0 && (
-              <p className="text-xs text-slate-500">
-                Se omitieron {resultado.omitidos.length} día(s) en que el alumno sí tiene asistencia: {resultado.omitidos.map(fmtCorta).join(", ")}.
-              </p>
-            )}
-            <div className="flex justify-end gap-2">
-              <button className={btnSec} onClick={reiniciar}>Justificar a otro alumno</button>
-              <button className={btnPrim} onClick={onClose}>Listo</button>
-            </div>
-          </div>
-        )}
-
-        {vista === "nueva" && !resultado && (
-          <div className="p-5 space-y-3">
-            {/* Alumno */}
-            {alumno ? (
-              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
-                <span className="flex-1 min-w-0">
-                  <span className="block text-sm font-semibold break-words">{alumno.nombre}</span>
-                  <span className="block text-xs text-slate-400">{alumno.semestre}° {alumno.grupo} · {alumno.id}</span>
-                </span>
-                <button className="text-xs font-semibold text-indigo-600 hover:underline shrink-0" disabled={guardando}
-                  onClick={() => { setAlumno(null); setQ(""); }}>Cambiar</button>
-              </div>
-            ) : (
-              <div>
-                <span className="text-xs font-semibold text-slate-600">Alumno</span>
-                <div className="relative">
-                  <Search size={14} className="absolute left-3 top-[calc(50%+2px)] -translate-y-1/2 text-slate-400" />
-                  <input className={inputCls + " !pl-9"} placeholder="Escribe nombre o matrícula…" autoFocus
-                    value={q} onChange={e => setQ(e.target.value)} />
-                </div>
-                {coincidencias.length > 0 && (
-                  <div className="mt-1 border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-56 overflow-y-auto">
-                    {coincidencias.map(a => (
-                      <button key={a.id} className="w-full text-left px-3 py-2 hover:bg-slate-50" onClick={() => setAlumno(a)}>
-                        <span className="block text-sm break-words">{a.nombre}</span>
-                        <span className="block text-[11px] text-slate-400">{a.semestre}° {a.grupo} · {a.id}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {q.trim().length >= 2 && coincidencias.length === 0 && (
-                  <p className="text-xs text-slate-400 mt-1">Ningún alumno coincide.</p>
-                )}
-              </div>
-            )}
-
-            {/* Fechas */}
-            <div className="grid grid-cols-2 gap-2">
-              <label className="block min-w-0">
-                <span className="text-xs font-semibold text-slate-600">Desde</span>
-                <input type="date" className={inputCls} value={desde} disabled={guardando}
-                  onChange={e => { setDesde(e.target.value); if (!hasta || e.target.value > hasta) setHasta(e.target.value); }} />
-              </label>
-              <label className="block min-w-0">
-                <span className="text-xs font-semibold text-slate-600">Hasta</span>
-                <input type="date" className={inputCls} value={hasta} min={desde} disabled={guardando}
-                  onChange={e => setHasta(e.target.value)} />
-              </label>
-            </div>
-            <label className="flex items-center gap-2 text-sm text-slate-600">
-              <input type="checkbox" checked={soloHabiles} onChange={e => setSoloHabiles(e.target.checked)} disabled={guardando} />
-              Solo de lunes a viernes
-            </label>
-            {dias.length > 0 && (
-              <p className={`text-xs rounded-lg px-2.5 py-1.5 border ${demasiados ? "text-rose-700 bg-rose-50 border-rose-200" : "text-slate-600 bg-slate-50 border-slate-200"}`}>
-                {demasiados
-                  ? `Son ${dias.length} días; el máximo es ${MAX_DIAS_RANGO}. Divide el periodo.`
-                  : <><b>{dias.length} día(s):</b> {dias.map(fmtCorta).join(", ")}</>}
-              </p>
-            )}
-
-            {/* Datos de la justificación */}
-            <label className="block">
-              <span className="text-xs font-semibold text-slate-600">Tipo de justificación</span>
-              <select className={inputCls} value={tipo} onChange={e => setTipo(e.target.value)} disabled={guardando}>
-                <option value="medica">Médica</option>
-                <option value="personal">Personal</option>
-                <option value="otra">Otra</option>
-              </select>
-            </label>
-            <label className="block">
-              <span className="text-xs font-semibold text-slate-600">Motivo breve (opcional)</span>
-              <textarea className={inputCls + " resize-none"} rows={2} maxLength={200} disabled={guardando}
-                placeholder="Ej. Incapacidad médica por 3 días"
-                value={motivo} onChange={e => setMotivo(e.target.value)} />
-            </label>
-            <div className="border border-slate-200 rounded-xl p-3 space-y-2">
-              <span className="text-xs font-semibold text-slate-600">Justificante (opcional)</span>
-              {!archivo ? (
-                <input type="file" className="text-sm w-full" disabled={guardando}
-                  accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/*"
-                  onChange={e => setArchivo(e.target.files[0] || null)} />
-              ) : (
-                <div className="flex items-center gap-2 text-xs bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5">
-                  <Paperclip size={12} className="text-emerald-600 shrink-0" />
-                  <span className="flex-1 truncate">{archivo.name}</span>
-                  {!guardando && <button type="button" className="text-rose-500 hover:text-rose-700 shrink-0"
-                    onClick={() => setArchivo(null)}><X size={13} /></button>}
-                </div>
-              )}
-              <p className="text-[11px] text-slate-400">Foto o PDF de la receta, el oficio o la constancia. Hasta ~7.5 MB. Queda disponible en cada uno de los días.</p>
-            </div>
-
-            <p className="text-[11px] text-slate-400">
-              Puedes elegir días pasados o futuros. Si el alumno ya registró asistencia en alguno, ese día se omite.
-              Cuando llegue cada día, el alumno aparecerá como justificado en el panel del día.
-            </p>
-
-            {err && <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{err}</p>}
-            <div className="flex items-center justify-end gap-2 pt-1">
-              {progreso && <span className="text-xs text-slate-500 mr-auto flex items-center gap-1.5"><Loader2 size={13} className="animate-spin" />{progreso}</span>}
-              <button className={btnSec} onClick={onClose} disabled={guardando}>Cancelar</button>
-              <button className={btnPrim} onClick={guardar} disabled={guardando || !alumno || !dias.length || demasiados}>
-                {guardando ? "Guardando…" : `Justificar ${dias.length || ""} día(s)`}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* Justificaciones con fecha posterior a hoy, agrupadas por alumno.
-   Sirve para revisar lo que se registró por adelantado y quitarlo si
-   el alumno al final sí asistió o hubo un error. */
-function JustificacionesFuturas({ alumnos, onCambio }) {
-  const [filas, setFilas] = useState(null);
-  const [err, setErr] = useState("");
-  const [quitando, setQuitando] = useState(null);
-  const nombre = useMemo(() => new Map(alumnos.map(a => [a.id, a])), [alumnos]);
-
-  const cargar = useCallback(async () => {
-    setErr("");
-    const { data, error } = await supabase.from("justificaciones").select("*")
-      .gt("fecha", hoyISO()).order("fecha");
-    if (error) { setErr(error.message); setFilas([]); return; }
-    setFilas(data || []);
-  }, []);
-  useEffect(() => { cargar(); }, [cargar]);
-
-  const quitar = async (j) => {
-    const al = nombre.get(j.alumno_id);
-    if (!window.confirm(`¿Quitar la justificación de ${al?.nombre || j.alumno_id} del ${fmtCorta(j.fecha)}?`)) return;
-    setQuitando(j.alumno_id + j.fecha);
-    const { error } = await supabase.from("justificaciones").delete().eq("alumno_id", j.alumno_id).eq("fecha", j.fecha);
-    if (error) { setErr(error.message); setQuitando(null); return; }
-    await eliminarArchivo(claveJustificante(j.alumno_id, j.fecha));
-    setQuitando(null);
-    await cargar();
-    await onCambio?.();
-  };
-
-  if (filas === null) return <p className="p-5 text-sm text-slate-400"><Loader2 size={14} className="animate-spin inline mr-1" />Cargando…</p>;
-
-  const porAlumno = new Map();
-  filas.forEach(j => { const l = porAlumno.get(j.alumno_id) || []; l.push(j); porAlumno.set(j.alumno_id, l); });
-
-  return (
-    <div className="p-5 space-y-2">
-      {err && <p className="text-sm text-rose-600">{err}</p>}
-      {porAlumno.size === 0 ? (
-        <p className="text-sm text-slate-400 py-6 text-center">No hay justificaciones registradas para días futuros.</p>
-      ) : [...porAlumno.entries()].map(([id, lista]) => {
-        const al = nombre.get(id);
-        return (
-          <div key={id} className="border border-slate-200 rounded-xl p-3">
-            <div className="text-sm font-semibold break-words">{al?.nombre || id}</div>
-            <div className="text-[11px] text-slate-400 mb-2">
-              {al ? `${al.semestre}° ${al.grupo} · ` : ""}{TIPOS_JUSTIFICACION[lista[0].tipo] || lista[0].tipo}
-              {lista[0].motivo ? ` · ${lista[0].motivo}` : ""}
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {lista.map(j => (
-                <span key={j.fecha} className="inline-flex items-center gap-1 text-xs bg-sky-50 border border-sky-200 text-sky-800 rounded-lg pl-2 pr-1 py-0.5">
-                  {fmtCorta(j.fecha)}
-                  {j.archivo_guardado && <button className="text-sky-600 hover:text-sky-800" title="Ver justificante"
-                    onClick={() => abrirJustificante(j.alumno_id, j.fecha)}><Paperclip size={11} /></button>}
-                  <button className="text-rose-500 hover:text-rose-700 disabled:opacity-40" title="Quitar este día"
-                    disabled={quitando === j.alumno_id + j.fecha} onClick={() => quitar(j)}><X size={12} /></button>
-                </span>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function ModalJustificar({ alumno, existente, fecha, onClose, onGuardar, onQuitar }) {
   const [tipo, setTipo] = useState(existente?.tipo || "medica");
   const [motivo, setMotivo] = useState(existente?.motivo || "");
   const [archivo, setArchivo] = useState(null);     // el que se acaba de elegir
@@ -1420,13 +1151,27 @@ function ModalJustificar({ alumno, existente, fecha, onClose, onGuardar, onQuita
   const [quitando, setQuitando] = useState(false);
   const [err, setErr] = useState("");
 
+  /* Días adicionales después del día que se está viendo */
+  const variosDias = hasta > fecha;
+  const extras = variosDias ? fechasEntre(fecha, hasta, soloHabiles).filter(f => f !== fecha) : [];
+  const demasiados = extras.length + 1 > MAX_DIAS_RANGO;
+
   const guardar = async () => {
+    if (demasiados) { setErr(`Son más de ${MAX_DIAS_RANGO} días. Divide el periodo.`); return; }
     setGuardando(true); setErr("");
     try {
-      await onGuardar({ alumno_id: alumno.id, tipo, motivo: motivo.trim(),
-        archivo, quitarDoc });
+      const datos = { alumno_id: alumno.id, tipo, motivo: motivo.trim(), archivo, quitarDoc };
+      /* Primero los días adicionales; al final el día que se está
+         viendo, que es el que recarga la pantalla y cierra la ventana. */
+      if (extras.length) await justificarDiasExtra(datos, extras, user, setProgreso);
+      setProgreso("");
+      await onGuardar(datos);
     }
-    catch (e) { setErr(e.message); setGuardando(false); }
+    catch (e) {
+      setProgreso("");
+      setErr(e.message + (extras.length ? " Los días que alcanzaron a guardarse quedaron registrados." : ""));
+      setGuardando(false);
+    }
   };
 
   const quitar = async () => {
@@ -1447,6 +1192,43 @@ function ModalJustificar({ alumno, existente, fecha, onClose, onGuardar, onQuita
         </div>
         <div className="p-5 space-y-3">
           <p className="text-sm text-slate-600">{alumno.nombre}</p>
+
+          {/* Días que abarca: por omisión, solo el día de la lista */}
+          <div className="border border-slate-200 rounded-xl p-3 space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block min-w-0">
+                <span className="text-xs font-semibold text-slate-600">Desde</span>
+                <input type="date" className={inputCls + " bg-slate-50"} value={fecha} disabled />
+              </label>
+              <label className="block min-w-0">
+                <span className="text-xs font-semibold text-slate-600">Hasta</span>
+                <input type="date" className={inputCls} value={hasta} min={fecha} disabled={guardando}
+                  onChange={e => setHasta(e.target.value && e.target.value >= fecha ? e.target.value : fecha)} />
+              </label>
+            </div>
+            {variosDias ? (
+              <>
+                <label className="flex items-center gap-2 text-xs text-slate-600">
+                  <input type="checkbox" checked={soloHabiles} disabled={guardando}
+                    onChange={e => setSoloHabiles(e.target.checked)} />
+                  Solo de lunes a viernes
+                </label>
+                <p className={`text-xs rounded-lg px-2.5 py-1.5 border ${demasiados ? "text-rose-700 bg-rose-50 border-rose-200" : "text-sky-800 bg-sky-50 border-sky-200"}`}>
+                  {demasiados
+                    ? `Son ${extras.length + 1} días; el máximo es ${MAX_DIAS_RANGO}.`
+                    : <><b>{extras.length + 1} días:</b> {[fecha, ...extras].map(fmtCorta).join(", ")}</>}
+                </p>
+                <p className="text-[11px] text-slate-400">
+                  Si el alumno registra asistencia en alguno de los días siguientes, ese día no se justifica.
+                </p>
+              </>
+            ) : (
+              <p className="text-[11px] text-slate-400">
+                Solo este día. Si el justificante abarca más, elige hasta qué fecha (puede ser futura).
+              </p>
+            )}
+          </div>
+
           <label className="block">
             <span className="text-xs font-semibold text-slate-600">Tipo de justificación</span>
             <select className={inputCls} value={tipo} onChange={e => setTipo(e.target.value)}>
@@ -1523,10 +1305,11 @@ function ModalJustificar({ alumno, existente, fecha, onClose, onGuardar, onQuita
                   {quitando ? "Quitando…" : "Quitar justificación"}
                 </button>
               : <span />}
-            <div className="flex gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {progreso && <span className="text-xs text-slate-500 flex items-center gap-1.5"><Loader2 size={13} className="animate-spin" />{progreso}</span>}
               <button className={btnSec} onClick={onClose} disabled={guardando || quitando}>Cancelar</button>
-              <button className={btnPrim} onClick={guardar} disabled={guardando || quitando}>
-                {guardando ? "Guardando…" : "Guardar"}
+              <button className={btnPrim} onClick={guardar} disabled={guardando || quitando || demasiados}>
+                {guardando ? "Guardando…" : variosDias ? `Guardar ${extras.length + 1} días` : "Guardar"}
               </button>
             </div>
           </div>
@@ -1855,6 +1638,7 @@ function PanelHistorial({ alumnos, user }) {
           alumno={justificando}
           existente={justPorAlumnoDia.get(justificando.id) || null}
           fecha={detalle}
+          user={user}
           onClose={() => setJustificando(null)}
           onGuardar={async (datos) => { await guardarJustificacionDia(datos); setJustificando(null); }}
           onQuitar={async () => { await quitarJustificacionDia(justificando.id); setJustificando(null); }}
