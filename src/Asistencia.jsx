@@ -100,6 +100,11 @@ export default function Asistencia({ user }) {
       ]);
       if (al.error) throw new Error(al.error.message);
       if (as.error) throw new Error(as.error.message);
+      if (USA_HORARIO) {
+        const ho = await supabase.from("horario_semestres").select("*");
+        HORARIO = new Map((ho.error ? [] : (ho.data || []))
+          .map(h => [String(h.semestre), { dias: (h.dias || []).map(Number), hora_limite: h.hora_limite || "" }]));
+      }
       setAlumnos(al.data || []);
       setRegistrosHoy(as.data || []);
       /* Si la tabla de justificaciones aún no existe, se trabaja sin
@@ -146,14 +151,17 @@ export default function Asistencia({ user }) {
         msg: `Ya registrado hoy a las ${(yaEsta.hora || "").slice(0, 5)}: ${yaEsta.nombre}` };
     }
 
-    const ahora = new Date();
-    const hora = ahora.toTimeString().slice(0, 8);
-    const [lh, lm] = horaLimite.split(":").map(Number);
-    const tarde = ahora.getHours() * 60 + ahora.getMinutes() > lh * 60 + lm;
-    const estado = tarde ? "Retardo" : "Asistencia";
-
     // Los datos vigentes salen del padrón
     const enPadron = alumnos.find(a => a.id === id);
+
+    const ahora = new Date();
+    const hora = ahora.toTimeString().slice(0, 8);
+    /* Con horario por semestre, cada semestre puede tener su propia
+       hora límite; si no la tiene, se usa la general. */
+    const limite = (USA_HORARIO && enPadron && HORARIO.get(String(enPadron.semestre || ""))?.hora_limite) || horaLimite;
+    const [lh, lm] = limite.split(":").map(Number);
+    const tarde = ahora.getHours() * 60 + ahora.getMinutes() > lh * 60 + lm;
+    const estado = tarde ? "Retardo" : "Asistencia";
     if (!enPadron) {
       return { ok: false, tipo: "desconocido",
         msg: `El ID ${id} no está en el padrón. Verifica la credencial o actualiza la lista de alumnos.` };
@@ -496,8 +504,32 @@ const mensajeAusencia = (al, fecha) => {
    Sin marca, el día es normal y cuenta para todos. */
 const claveGrupo = (sem, letra) => `${sem || ""}|${letra || ""}`;
 
-const tuvoClase = (excepcion, sem, letra) =>
-  !excepcion || (excepcion.grupos || []).includes(claveGrupo(sem, letra));
+/* ---------------- días de clase por semestre ----------------
+   Solo para BAETAM, donde cada semestre tiene clase un día distinto
+   (por ejemplo, 1° los miércoles y 3° los sábados). En la asistencia
+   escolarizada este interruptor está apagado y todo funciona como
+   siempre: todos los semestres tienen clase todos los días de lista.
+
+   El horario se guarda en la base y se carga junto con el padrón.
+   Un semestre sin horario configurado cuenta todos los días. */
+const USA_HORARIO = false;
+let HORARIO = new Map();   // semestre → { dias: [0..6], hora_limite: "15:00" }
+
+const diaSemanaDe = (fecha) => {
+  const [a, m, d] = String(fecha).slice(0, 10).split("-").map(Number);
+  return new Date(a, m - 1, d).getDay();
+};
+/* ¿Al semestre le toca clase en esa fecha según su horario? */
+const tocaPorHorario = (fecha, sem) => {
+  if (!USA_HORARIO || !fecha) return true;
+  const h = HORARIO.get(String(sem || ""));
+  if (!h || !(h.dias || []).length) return true;
+  return h.dias.includes(diaSemanaDe(fecha));
+};
+
+const tuvoClase = (excepcion, sem, letra, fecha) =>
+  (!excepcion || (excepcion.grupos || []).includes(claveGrupo(sem, letra)))
+  && tocaPorHorario(fecha, sem);
 
 /* ---------------- documento del justificante ----------------
    La foto o el PDF se guarda con una clave formada por el alumno y
@@ -553,14 +585,14 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
   const delGrupo = (lista) => lista
     .filter(x => grupo === "todos" || (x.grupo || "") === grupo)
     .filter(x => semestre === "todos" || String(x.semestre || "") === semestre);
-  const padron = delGrupo(alumnos.filter(a => a.activo !== false));
+  const padron = delGrupo(alumnos.filter(a => a.activo !== false && tocaPorHorario(fecha, a.semestre)));
   const presentes = delGrupo(registros);
   const idsPresentes = new Set(presentes.map(r => r.alumno_id));
   /* Si el día está marcado como especial, los grupos que no tuvieron
      clase quedan fuera: no son ausentes, simplemente no les tocaba. */
   const ausentes = padron
     .filter(a => !idsPresentes.has(a.id))
-    .filter(a => tuvoClase(diaEspecial, a.semestre, a.grupo));
+    .filter(a => tuvoClase(diaEspecial, a.semestre, a.grupo, fecha));
   const pct = padron.length ? Math.round(100 * presentes.length / padron.length) : 0;
 
   // Justificación vigente de cada ausente, por su ID
@@ -584,7 +616,7 @@ function PanelDia({ alumnos, registros, fecha, justificaciones = [], user, recar
 
   /* Un mismo grupo "A" existe en varios semestres, así que se agrupa
      por la combinación semestre + grupo. */
-  const combos = [...new Set(alumnos.filter(a => a.activo !== false)
+  const combos = [...new Set(alumnos.filter(a => a.activo !== false && tocaPorHorario(fecha, a.semestre))
     .map(a => `${a.semestre || "?"}|${a.grupo || "?"}`))]
     .sort((x, y) => x.localeCompare(y, "es", { numeric: true }));
 
@@ -1710,7 +1742,7 @@ function PanelHistorial({ alumnos, user }) {
   const idsPresentesDia = new Set(filasDia.map(r => r.alumno_id));
   const ausentesDia = alumnos
     .filter(a => a.activo !== false && !idsPresentesDia.has(a.id))
-    .filter(a => tuvoClase(excepDia, a.semestre, a.grupo))
+    .filter(a => tuvoClase(excepDia, a.semestre, a.grupo, detalle))
     .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"));
 
   const abrirDia = async (fecha) => {
@@ -1734,10 +1766,13 @@ function PanelHistorial({ alumnos, user }) {
     await cargarDia(detalle);
   };
 
-  const totalPadron = alumnos.filter(a => a.activo !== false).length;
-  const dias = porDia.map(d => ({
-    ...d, pct: totalPadron ? Math.round(100 * d.presentes / totalPadron) : 0,
-  }));
+  /* Con horario por semestre, cada día se compara solo contra los
+     semestres a los que les tocaba clase ese día. */
+  const totalPadronDe = (fecha) => alumnos.filter(a => a.activo !== false && tocaPorHorario(fecha, a.semestre)).length;
+  const dias = porDia.map(d => {
+    const totalPadron = totalPadronDe(d.fecha);
+    return { ...d, pct: totalPadron ? Math.round(100 * d.presentes / totalPadron) : 0 };
+  });
 
   /* Borra todos los registros de un día. Se pide confirmación escrita
      porque no hay forma de recuperarlos después. */
@@ -2517,7 +2552,7 @@ function FaltasDelAlumno({ alumno, desde, hasta, onCerrar }) {
         const dia = String(f.fecha).slice(0, 10);
         const exc = excepciones.get(dia);
         // Si ese día su grupo no tuvo clase, no es falta
-        if (!tuvoClase(exc, alumno.semestre, alumno.grupo)) return;
+        if (!tuvoClase(exc, alumno.semestre, alumno.grupo, dia)) return;
         if (asistio.has(dia)) return;
         sinVenir.push({ fecha: dia, just: justificada.get(dia) || null });
       });
@@ -2760,7 +2795,7 @@ function PanelEstadisticas({ alumnos }) {
       const retardos = Number(d.retardos) || 0;
       const inscritos = alumnos.filter(a => a.activo !== false
         && (a.semestre || "") === sem && (a.grupo || "") === letra).length;
-      const dias = diasNormales;
+      const dias = USA_HORARIO && d.dias != null ? Number(d.dias) || 0 : diasNormales;
       const esperados = inscritos * dias;
       return {
         clave: g, nombre: `${sem}° ${letra}`, inscritos, dias, registros, retardos,
@@ -2923,6 +2958,94 @@ function PanelEstadisticas({ alumnos }) {
         </>
       )}
     </div>
+  );
+}
+
+/* Días de clase y hora límite de cada semestre (solo BAETAM) */
+const NOMBRES_DIA = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+
+function HorarioSemestres({ alumnos, recargar }) {
+  const semestres = [...new Set(alumnos.filter(a => a.activo !== false).map(a => String(a.semestre || "")))]
+    .filter(Boolean).sort((x, y) => Number(x) - Number(y));
+  const [edicion, setEdicion] = useState(() => {
+    const o = {};
+    semestres.forEach(s => {
+      const h = HORARIO.get(s);
+      o[s] = { dias: h ? [...h.dias] : [], hora_limite: h?.hora_limite || "" };
+    });
+    return o;
+  });
+  const [guardando, setGuardando] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  const alternar = (s, d) => setEdicion(e => {
+    const actual = e[s]?.dias || [];
+    const dias = actual.includes(d) ? actual.filter(x => x !== d) : [...actual, d].sort();
+    return { ...e, [s]: { ...(e[s] || {}), dias } };
+  });
+
+  const guardar = async () => {
+    setGuardando(true); setErr(""); setMsg("");
+    const filas = semestres.map(s => ({ semestre: s, dias: edicion[s]?.dias || [],
+      hora_limite: edicion[s]?.hora_limite || "" }));
+    const { error } = await supabase.from("horario_semestres").upsert(filas, { onConflict: "semestre" });
+    setGuardando(false);
+    if (error) { setErr("No se pudo guardar: " + error.message + " ¿Ya se ejecutó horario_baetam.sql en Supabase?"); return; }
+    setMsg("Horario guardado.");
+    await recargar();
+  };
+
+  return (
+    <Card className="p-4 space-y-3">
+      <div>
+        <h3 className="font-bold text-sm">Días de clase por semestre</h3>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Marca qué día tiene clase cada semestre. Solo se esperará a sus alumnos esos días: en el
+          panel del día, el historial, el seguimiento y las estadísticas. Un semestre sin días
+          marcados cuenta todos los días en que se pase lista.
+        </p>
+      </div>
+      {semestres.length === 0 ? (
+        <p className="text-sm text-slate-400">Primero carga el padrón de alumnos.</p>
+      ) : (
+        <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl">
+          {semestres.map(s => (
+            <div key={s} className="flex flex-wrap items-center gap-2 px-3 py-2.5">
+              <span className="text-sm font-semibold w-24 shrink-0">{s}° semestre</span>
+              <div className="flex flex-wrap gap-1">
+                {NOMBRES_DIA.map((n, d) => {
+                  const on = (edicion[s]?.dias || []).includes(d);
+                  return (
+                    <button key={d} type="button" onClick={() => alternar(s, d)}
+                      className={`w-11 py-1 rounded-lg text-xs font-semibold border transition ${on
+                        ? "bg-[#1a2340] text-white border-[#1a2340]" : "bg-white text-slate-500 border-slate-300 hover:bg-slate-50"}`}>
+                      {n}
+                    </button>
+                  );
+                })}
+              </div>
+              <label className="text-xs text-slate-500 flex items-center gap-1.5 ml-auto">
+                Hora límite
+                <input type="time" className={inputCls + " !mt-0 !w-auto !py-1"}
+                  value={edicion[s]?.hora_limite || ""}
+                  onChange={e => setEdicion(x => ({ ...x, [s]: { ...(x[s] || { dias: [] }), hora_limite: e.target.value } }))} />
+              </label>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="text-[11px] text-slate-400">
+        La hora límite marca el retardo de ese semestre. Si la dejas vacía, se usa la hora límite general de arriba.
+      </p>
+      {err && <p className="text-sm text-rose-600">{err}</p>}
+      {msg && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2">{msg}</p>}
+      <div className="flex justify-end">
+        <button className={btnPrim} onClick={guardar} disabled={guardando || !semestres.length}>
+          {guardando ? "Guardando…" : "Guardar horario"}
+        </button>
+      </div>
+    </Card>
   );
 }
 
@@ -3093,6 +3216,7 @@ function PanelPadron({ alumnos, recargar }) {
 
   return (
     <div className="space-y-4">
+      {USA_HORARIO && <HorarioSemestres alumnos={alumnos} recargar={recargar} />}
       <Card className="p-4 space-y-3">
         <div>
           <h3 className="font-bold text-sm">Padrón de alumnos</h3>
