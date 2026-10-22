@@ -3283,6 +3283,14 @@ function Respaldo({ db, user }) {
         zip.file(`Indices/alumnos_justificaciones_${sello}.csv`, csvTexto(f));
       }
 
+      const pases = await tablaCompleta("pases_salida", "*", "fecha");
+      if (!pases.error && pases.data.length) {
+        const f = [["Fecha", "Hora", "ID / Matrícula", "Alumno", "Motivo", "Detalle", "Lo recoge"]];
+        pases.data.forEach(p => f.push([p.fecha, p.hora, p.alumno_id,
+          nombreAlumno.get(p.alumno_id) || "", p.tipo, p.motivo || "", p.recoge || ""]));
+        zip.file(`Indices/alumnos_pases_salida_${sello}.csv`, csvTexto(f));
+      }
+
       /* Asistencia BAETAM: tablas propias, se guardan en archivos aparte */
       const nombreBaetam = new Map();
       const alumB = await tablaCompleta("alumnos_baetam", "*", "nombre");
@@ -3308,6 +3316,14 @@ function Respaldo({ db, user }) {
         justB.data.forEach(j => f.push([j.fecha, j.alumno_id,
           nombreBaetam.get(j.alumno_id) || "", j.tipo, j.motivo || ""]));
         zip.file(`Indices/baetam_justificaciones_${sello}.csv`, csvTexto(f));
+      }
+
+      const pasesB = await tablaCompleta("pases_salida_baetam", "*", "fecha");
+      if (!pasesB.error && pasesB.data.length) {
+        const f = [["Fecha", "Hora", "ID / Matrícula", "Alumno", "Motivo", "Detalle", "Lo recoge"]];
+        pasesB.data.forEach(p => f.push([p.fecha, p.hora, p.alumno_id,
+          nombreBaetam.get(p.alumno_id) || "", p.tipo, p.motivo || "", p.recoge || ""]));
+        zip.file(`Indices/baetam_pases_salida_${sello}.csv`, csvTexto(f));
       }
 
       const nombrePersonal = (id) => db.users.find(u => u.id === id)?.nombre || "";
@@ -3452,7 +3468,7 @@ de cada ciclo escolar.
           <h3 className="font-bold text-sm mb-2">Qué incluye el respaldo</h3>
           <ul className="text-sm text-slate-600 space-y-1">
             <li>• <b>Formación docente</b>: constancias, grados, formación complementaria, docentes, avisos, acuses y entregas.</li>
-            <li>• <b>Control escolar</b>: padrón de alumnos, asistencias del QR y justificaciones.</li>
+            <li>• <b>Control escolar</b>: padrón de alumnos, asistencias del QR, justificaciones y pases de salida.</li>
             <li>• <b>Asistencia BAETAM</b>: su padrón, asistencias y justificaciones, en archivos aparte.</li>
             <li>• <b>Personal</b>: checadas del reloj, permisos y firmas semanales.</li>
             <li>• <b>Finanzas</b>: ingresos y egresos, con sus facturas.</li>

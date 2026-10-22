@@ -193,6 +193,7 @@ export default function Asistencia({ user }) {
   const tabs = [
     ["escaneo", "Escanear", Camera],
     ["dashboard", "Panel del día", TrendingUp],
+    ["pases", "Pase de salida", UserMinus],
     ["historial", "Historial", CalendarDays],
     ["seguimiento", "Seguimiento", AlertTriangle],
     ["estadisticas", "Estadísticas", TrendingUp],
@@ -240,6 +241,7 @@ export default function Asistencia({ user }) {
           justificaciones={justificaciones} user={user} recargar={cargar}
           diaEspecial={diaEspecial} />
       )}
+      {!cargando && tab === "pases" && <PanelPaseSalida alumnos={alumnos} user={user} />}
       {!cargando && tab === "historial" && <PanelHistorial alumnos={alumnos} user={user} />}
       {!cargando && tab === "seguimiento" && <PanelSeguimiento alumnos={alumnos} />}
       {!cargando && tab === "estadisticas" && <PanelEstadisticas alumnos={alumnos} />}
@@ -1316,6 +1318,337 @@ function ModalJustificar({ alumno, existente, fecha, user, onClose, onGuardar, o
         </div>
       </div>
     </div>
+  );
+}
+
+/* ================================================================
+   PASE DE SALIDA
+   ----------------------------------------------------------------
+   Alumnos que SÍ asistieron pero se retiraron antes por un motivo
+   médico o personal. Se registra aparte: la asistencia del día no
+   cambia (sigue contando como presente en todas las cifras) y no es
+   una justificación. Sirve para tener constancia de quién salió, a
+   qué hora, por qué y quién lo recogió, y para detectar alumnos que
+   salen con frecuencia.
+   ================================================================ */
+const TIPOS_PASE = { medica: "Médico", personal: "Personal", otra: "Otro" };
+const horaAhora = () => new Date().toTimeString().slice(0, 5);
+
+const mensajePase = (al, p) =>
+  `Buen día. Le informamos que ${al.nombre} se retiró del plantel hoy ${fmtFechaLarga(p.fecha)} a las ${p.hora} con pase de salida`
+  + `${p.motivo ? ` (${p.motivo})` : ""}${p.recoge ? `, acompañado(a) por ${p.recoge}` : ""}. CBTA No. 291.`;
+
+function PanelPaseSalida({ alumnos, user }) {
+  const [fecha, setFecha] = useState(hoyISO());
+  const [presentes, setPresentes] = useState([]);   // asistencias del día
+  const [pases, setPases] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [err, setErr] = useState("");
+  const [faltaSQL, setFaltaSQL] = useState(false);
+
+  // Formulario
+  const [q, setQ] = useState("");
+  const [alumno, setAlumno] = useState(null);
+  const [hora, setHora] = useState(horaAhora());
+  const [tipo, setTipo] = useState("personal");
+  const [motivo, setMotivo] = useState("");
+  const [recoge, setRecoge] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  const porId = useMemo(() => new Map(alumnos.map(a => [a.id, a])), [alumnos]);
+
+  const cargar = useCallback(async () => {
+    setCargando(true); setErr("");
+    const [as, ps] = await Promise.all([
+      supabase.from("asistencias").select("alumno_id, nombre, semestre, grupo, hora, estado").eq("fecha", fecha).order("nombre"),
+      supabase.from("pases_salida").select("*").eq("fecha", fecha).order("hora"),
+    ]);
+    if (as.error) setErr(as.error.message);
+    setPresentes(as.data || []);
+    if (ps.error) { setFaltaSQL(true); setPases([]); }
+    else { setFaltaSQL(false); setPases(ps.data || []); }
+    setCargando(false);
+  }, [fecha]);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  const conPase = new Set(pases.map(p => p.alumno_id));
+  const coincidencias = q.trim().length < 2 ? [] : presentes.filter(r => {
+    const t = normaliza(q);
+    return normaliza(r.nombre || porId.get(r.alumno_id)?.nombre).includes(t)
+      || String(r.alumno_id).includes(soloDigitos(q) || "@@");
+  }).slice(0, 8);
+
+  const elegir = (r) => {
+    const al = porId.get(r.alumno_id) || { id: r.alumno_id, nombre: r.nombre, semestre: r.semestre, grupo: r.grupo };
+    setAlumno({ ...al, entrada: r.hora });
+    setQ(""); setMsg("");
+    if (fecha === hoyISO()) setHora(horaAhora());
+  };
+
+  const guardar = async () => {
+    if (!alumno) return;
+    setGuardando(true); setErr(""); setMsg("");
+    const fila = { alumno_id: alumno.id, fecha, hora: hora || horaAhora(), tipo,
+      motivo: motivo.trim(), recoge: recoge.trim(), registrado_por: user?.id };
+    const { error } = await supabase.from("pases_salida").insert(fila);
+    setGuardando(false);
+    if (error) { setErr("No se pudo guardar: " + error.message); return; }
+    setMsg(`Pase de salida registrado para ${alumno.nombre}.`);
+    setAlumno(null); setMotivo(""); setRecoge(""); setTipo("personal");
+    await cargar();
+  };
+
+  const quitar = async (p) => {
+    const al = porId.get(p.alumno_id);
+    if (!window.confirm(`¿Eliminar el pase de salida de ${al?.nombre || p.alumno_id}?`)) return;
+    const { error } = await supabase.from("pases_salida").delete().eq("id", p.id);
+    if (error) { setErr(error.message); return; }
+    await cargar();
+  };
+
+  const avisar = (p) => {
+    const al = porId.get(p.alumno_id);
+    const numero = numeroWhats(al?.telefono);
+    if (!al || !numero) return;
+    window.open(`https://wa.me/${numero}?text=${encodeURIComponent(mensajePase(al, p))}`, "_blank");
+  };
+
+  if (faltaSQL) return (
+    <Card className="p-6 text-sm text-amber-800 bg-amber-50 border-amber-200">
+      <b>Falta preparar la base de datos.</b>
+      <span className="block text-xs mt-1">¿Ya se ejecutó pase_salida.sql en Supabase?</span>
+    </Card>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="grid lg:grid-cols-2 gap-4">
+        {/* Registrar */}
+        <Card className="p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-bold text-sm">Registrar pase de salida</h3>
+            <label className="text-xs text-slate-500 flex items-center gap-1.5">
+              Día
+              <input type="date" className={inputCls + " !mt-0 !w-auto !py-1"} value={fecha} max={hoyISO()}
+                onChange={e => { setFecha(e.target.value || hoyISO()); setAlumno(null); setMsg(""); }} />
+            </label>
+          </div>
+
+          {alumno ? (
+            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+              <span className="flex-1 min-w-0">
+                <span className="block text-sm font-semibold break-words">{alumno.nombre}</span>
+                <span className="block text-xs text-slate-400">
+                  {alumno.semestre}° {alumno.grupo} · Entrada {String(alumno.entrada || "").slice(0, 5)}
+                </span>
+              </span>
+              <button className="text-xs font-semibold text-indigo-600 hover:underline shrink-0"
+                onClick={() => setAlumno(null)}>Cambiar</button>
+            </div>
+          ) : (
+            <div>
+              <div className="relative">
+                <Search size={14} className="absolute left-3 top-[calc(50%+2px)] -translate-y-1/2 text-slate-400" />
+                <input className={inputCls + " !pl-9"} placeholder="Busca entre los alumnos que asistieron…"
+                  value={q} onChange={e => setQ(e.target.value)} disabled={cargando} />
+              </div>
+              {coincidencias.length > 0 && (
+                <div className="mt-1 border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-56 overflow-y-auto">
+                  {coincidencias.map(r => (
+                    <button key={r.alumno_id} className="w-full text-left px-3 py-2 hover:bg-slate-50" onClick={() => elegir(r)}>
+                      <span className="block text-sm break-words">{r.nombre || porId.get(r.alumno_id)?.nombre}</span>
+                      <span className="block text-[11px] text-slate-400">
+                        {r.semestre}° {r.grupo} · Entrada {String(r.hora || "").slice(0, 5)}
+                        {conPase.has(r.alumno_id) && <span className="text-amber-600"> · ya tiene pase este día</span>}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {q.trim().length >= 2 && coincidencias.length === 0 && !cargando && (
+                <p className="text-xs text-slate-400 mt-1">
+                  Ningún alumno con asistencia ese día coincide. El pase solo se da a quien registró asistencia.
+                </p>
+              )}
+              {!cargando && presentes.length === 0 && (
+                <p className="text-xs text-slate-400 mt-1">Ese día no hay asistencias registradas.</p>
+              )}
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-2">
+            <label className="block min-w-0">
+              <span className="text-xs font-semibold text-slate-600">Hora de salida</span>
+              <input type="time" className={inputCls} value={hora} onChange={e => setHora(e.target.value)} />
+            </label>
+            <label className="block min-w-0">
+              <span className="text-xs font-semibold text-slate-600">Motivo</span>
+              <select className={inputCls} value={tipo} onChange={e => setTipo(e.target.value)}>
+                <option value="medica">Médico</option>
+                <option value="personal">Personal</option>
+                <option value="otra">Otro</option>
+              </select>
+            </label>
+          </div>
+          <label className="block">
+            <span className="text-xs font-semibold text-slate-600">Detalle (opcional)</span>
+            <input className={inputCls} maxLength={200} placeholder="Ej. Dolor de cabeza, cita en el IMSS…"
+              value={motivo} onChange={e => setMotivo(e.target.value)} />
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold text-slate-600">Quién lo recoge o autoriza (opcional)</span>
+            <input className={inputCls} maxLength={120} placeholder="Ej. Su mamá, Sra. María Pech"
+              value={recoge} onChange={e => setRecoge(e.target.value)} />
+          </label>
+
+          {err && <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{err}</p>}
+          {msg && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2">{msg}</p>}
+          <div className="flex justify-end">
+            <button className={btnPrim} onClick={guardar} disabled={!alumno || guardando}>
+              {guardando ? "Guardando…" : "Registrar salida"}
+            </button>
+          </div>
+          <p className="text-[11px] text-slate-400">
+            La asistencia del alumno no cambia: sigue contando como presente. El pase no es una justificación.
+          </p>
+        </Card>
+
+        {/* Pases del día */}
+        <Card className="p-4">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <h3 className="font-bold text-sm">Salidas del {fecha === hoyISO() ? "día de hoy" : fmtFechaLarga(fecha)}</h3>
+            <span className="text-xs text-slate-400">{pases.length}</span>
+          </div>
+          {cargando ? (
+            <p className="text-sm text-slate-400 py-6 text-center"><Loader2 size={14} className="animate-spin inline mr-1" />Cargando…</p>
+          ) : pases.length === 0 ? (
+            <p className="text-sm text-slate-400 py-6 text-center">Sin pases de salida este día.</p>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {pases.map(p => {
+                const al = porId.get(p.alumno_id);
+                const tel = numeroWhats(al?.telefono);
+                return (
+                  <div key={p.id} className="py-2.5 flex flex-wrap items-start gap-2">
+                    <span className="text-sm font-bold w-12 shrink-0">{p.hora}</span>
+                    <span className="flex-1 min-w-[160px]">
+                      <span className="block text-sm font-semibold break-words">{al?.nombre || p.alumno_id}</span>
+                      <span className="block text-xs text-slate-500">
+                        {al ? `${al.semestre}° ${al.grupo} · ` : ""}{TIPOS_PASE[p.tipo] || p.tipo}
+                        {p.motivo && ` · ${p.motivo}`}
+                      </span>
+                      {p.recoge && <span className="block text-xs text-slate-400">Lo recoge: {p.recoge}</span>}
+                    </span>
+                    <span className="flex items-center gap-1 shrink-0">
+                      {tel && (
+                        <button className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50" title="Avisar al tutor por WhatsApp"
+                          onClick={() => avisar(p)}><MessageCircle size={15} /></button>
+                      )}
+                      <button className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50" title="Eliminar"
+                        onClick={() => quitar(p)}><Trash2 size={15} /></button>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+      </div>
+
+      <ResumenPases alumnos={alumnos} porId={porId} />
+    </div>
+  );
+}
+
+/* Resumen de un periodo: cuántas salidas hubo, de qué tipo y qué
+   alumnos salen con más frecuencia. No altera ninguna estadística. */
+function ResumenPases({ alumnos, porId }) {
+  const [desde, setDesde] = useState(() => {
+    const d = new Date(); d.setDate(1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
+  });
+  const [hasta, setHasta] = useState(hoyISO());
+  const [filas, setFilas] = useState(null);
+
+  useEffect(() => {
+    let vivo = true;
+    setFilas(null);
+    supabase.from("pases_salida").select("*").gte("fecha", desde).lte("fecha", hasta)
+      .order("fecha", { ascending: false }).limit(1000)
+      .then(({ data, error }) => { if (vivo) setFilas(error ? [] : (data || [])); });
+    return () => { vivo = false; };
+  }, [desde, hasta]);
+
+  const lista = filas || [];
+  const porTipo = Object.keys(TIPOS_PASE).map(t => [t, lista.filter(p => p.tipo === t).length]);
+  const conteo = new Map();
+  lista.forEach(p => conteo.set(p.alumno_id, (conteo.get(p.alumno_id) || 0) + 1));
+  const frecuentes = [...conteo.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
+
+  const exportar = () => {
+    const f = [["Fecha", "Hora", "ID / Matrícula", "Alumno", "Semestre", "Grupo", "Motivo", "Detalle", "Lo recoge"]];
+    lista.forEach(p => {
+      const al = porId.get(p.alumno_id);
+      f.push([p.fecha, p.hora, p.alumno_id, al?.nombre || "", al?.semestre || "", al?.grupo || "",
+        TIPOS_PASE[p.tipo] || p.tipo, p.motivo || "", p.recoge || ""]);
+    });
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csv = "﻿" + f.map(r => r.map(esc).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    a.download = `pases_salida_${desde}_a_${hasta}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  return (
+    <Card className="p-4 space-y-3">
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <h3 className="font-bold text-sm">Resumen de pases de salida</h3>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="text-xs text-slate-500">Desde
+            <input type="date" className={inputCls + " !py-1"} value={desde} onChange={e => setDesde(e.target.value)} />
+          </label>
+          <label className="text-xs text-slate-500">Hasta
+            <input type="date" className={inputCls + " !py-1"} value={hasta} onChange={e => setHasta(e.target.value)} />
+          </label>
+          <button className={btnSec + " !px-3 !py-1.5"} onClick={exportar} disabled={!lista.length}>
+            <Download size={13} />Exportar a Excel
+          </button>
+        </div>
+      </div>
+      {filas === null ? (
+        <p className="text-sm text-slate-400"><Loader2 size={14} className="animate-spin inline mr-1" />Cargando…</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <Stat icono={UserMinus} label="Pases en el periodo" valor={lista.length} />
+            {porTipo.map(([t, n]) => <Stat key={t} icono={Clock} label={TIPOS_PASE[t]} valor={n} />)}
+          </div>
+          <div>
+            <div className="text-xs font-semibold text-slate-600 mb-1">Alumnos con más salidas</div>
+            {frecuentes.length === 0 ? (
+              <p className="text-sm text-slate-400">Sin pases de salida en este periodo.</p>
+            ) : (
+              <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl">
+                {frecuentes.map(([id, n]) => {
+                  const al = porId.get(id);
+                  return (
+                    <div key={id} className="flex items-center gap-2 px-3 py-2 text-sm">
+                      <span className="flex-1 min-w-0 break-words">{al?.nombre || id}
+                        {al && <span className="text-xs text-slate-400"> · {al.semestre}° {al.grupo}</span>}
+                      </span>
+                      <span className={`font-bold ${n >= 3 ? "text-amber-600" : "text-slate-700"}`}>{n}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </Card>
   );
 }
 
