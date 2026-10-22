@@ -7,7 +7,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Users, AlertTriangle, CheckCircle2, Clock, Loader2, RefreshCw, Download, CalendarDays,
-  ClipboardCheck,
+  ClipboardCheck, LogOut,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
@@ -201,6 +201,7 @@ export default function Ausentes({ db, user }) {
   const [alumnos, setAlumnos] = useState(null);
   const [registros, setRegistros] = useState([]);
   const [justificaciones, setJustificaciones] = useState([]);
+  const [pases, setPases] = useState([]);   // pases de salida del día
   const [diaEspecial, setDiaEspecial] = useState(null);
   const [cargando, setCargando] = useState(false);
   const [err, setErr] = useState("");
@@ -261,11 +262,12 @@ export default function Ausentes({ db, user }) {
     if (!misGrupos.length) return;
     setCargando(true); setErr("");
     try {
-      const [al, as, ju, dc] = await Promise.all([
+      const [al, as, ju, dc, ps] = await Promise.all([
         supabase.from("alumnos_basico").select("*"),
         supabase.from("asistencias_basico").select("*").eq("fecha", fecha),
         supabase.from("justificaciones_basico").select("*").eq("fecha", fecha),
         supabase.from("dias_clase").select("*").eq("fecha", fecha).maybeSingle(),
+        supabase.from("pases_salida_basico").select("*").eq("fecha", fecha),
       ]);
       if (al.error) throw new Error(al.error.message);
       if (as.error) throw new Error(as.error.message);
@@ -275,6 +277,8 @@ export default function Ausentes({ db, user }) {
          mostrando los ausentes con normalidad. */
       setJustificaciones(ju.error ? [] : (ju.data || []));
       setDiaEspecial(dc.error ? null : (dc.data || null));
+      // Igual: si la vista de pases aún no existe, simplemente no se muestran
+      setPases(ps.error ? [] : (ps.data || []));
     } catch (e) { setErr(e.message); }
     setCargando(false);
   }, [fecha, misGrupos.length]);
@@ -297,10 +301,17 @@ export default function Ausentes({ db, user }) {
       const conRetardo = registros.filter(r => String(r.semestre || "") === g.sem
         && (r.grupo || "") === g.letra && r.estado === "Retardo")
         .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"));
-      return { ...g, total: delGrupo.length, ausentes, justificados: justificadosGrupo, conRetardo,
+      /* Asistieron pero se retiraron antes con pase de salida. Si
+         salió más de una vez, se muestra la última hora. */
+      const salida = new Map();
+      pases.forEach(p => { if (!salida.has(p.alumno_id) || p.hora > salida.get(p.alumno_id)) salida.set(p.alumno_id, p.hora); });
+      const conPase = delGrupo.filter(a => presentes.has(a.id) && salida.has(a.id))
+        .map(a => ({ ...a, hora: salida.get(a.id) }))
+        .sort((a, b) => (a.hora || "").localeCompare(b.hora || ""));
+      return { ...g, total: delGrupo.length, ausentes, justificados: justificadosGrupo, conRetardo, conPase,
         presentes: delGrupo.length - faltantes.length };
     });
-  }, [alumnos, registros, justificaciones, misGrupos]);
+  }, [alumnos, registros, justificaciones, pases, misGrupos]);
 
   const totalAusentes = porGrupo.reduce((n, g) => n + g.ausentes.length, 0);
   const totalJustificados = porGrupo.reduce((n, g) => n + g.justificados.length, 0);
@@ -323,6 +334,8 @@ export default function Ausentes({ db, user }) {
         `Justificado (${TIPOS_JUSTIFICACION[a.tipo] || a.tipo || "sin tipo"})`]));
       g.conRetardo.forEach(r => filas.push([fecha, g.sem, g.letra, r.alumno_id, r.nombre,
         `Retardo (${(r.hora || "").slice(0, 5)})`]));
+      g.conPase.forEach(a => filas.push([fecha, g.sem, g.letra, a.id, a.nombre,
+        `Pase de salida (${a.hora})`]));
     });
     const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const csv = "\uFEFF" + filas.map(f => f.map(esc).join(",")).join("\n");
@@ -484,6 +497,21 @@ export default function Ausentes({ db, user }) {
                     </div>
                   )}
                 </>
+              )}
+
+              {g.conPase.length > 0 && (
+                <div className="mt-3 pt-2 border-t border-slate-100">
+                  <p className="text-[11px] font-semibold text-violet-700 mb-1.5 flex items-center gap-1">
+                    <LogOut size={12} />Pase de salida ({g.conPase.length})
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {g.conPase.map(a => (
+                      <span key={a.id} className="text-xs px-2.5 py-1 rounded-full bg-violet-50 border border-violet-200 text-violet-800">
+                        {a.nombre} <span className="text-violet-600">· salió {a.hora}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
               )}
 
               {g.conRetardo.length > 0 && (
