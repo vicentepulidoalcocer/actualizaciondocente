@@ -1291,7 +1291,7 @@ export default function App() {
           )}
           {pagina === "asistencia_baetam" && esRolBaetam(user.rol) && (
             <React.Suspense fallback={<Card className="p-8 text-center text-sm text-slate-400"><Loader2 size={18} className="animate-spin inline mr-2"/>Cargando asistencia BAETAM…</Card>}>
-              <AsistenciaBaetam user={user} />
+              <AsistenciaBaetam user={user} usuarios={db.users} />
             </React.Suspense>
           )}
           {pagina === "ausentes" && user.rol === "docente" && (

@@ -75,7 +75,7 @@ const escribirCola = (c) => {
 /* ================================================================
    PANTALLA PRINCIPAL
    ================================================================ */
-export default function AsistenciaBaetam({ user }) {
+export default function AsistenciaBaetam({ user, usuarios = [] }) {
   const [tab, setTab] = useState("escaneo");
   const [alumnos, setAlumnos] = useState([]);
   const [registrosHoy, setRegistrosHoy] = useState([]);
@@ -253,7 +253,7 @@ export default function AsistenciaBaetam({ user }) {
       {!cargando && tab === "historial" && <PanelHistorial alumnos={alumnos} user={user} />}
       {!cargando && tab === "seguimiento" && <PanelSeguimiento alumnos={alumnos} />}
       {!cargando && tab === "estadisticas" && <PanelEstadisticas alumnos={alumnos} />}
-      {!cargando && tab === "padron" && <PanelPadron alumnos={alumnos} recargar={cargar} />}
+      {!cargando && tab === "padron" && <PanelPadron alumnos={alumnos} recargar={cargar} user={user} usuarios={usuarios} />}
     </div>
   );
 }
@@ -513,6 +513,9 @@ const claveGrupo = (sem, letra) => `${sem || ""}|${letra || ""}`;
    El horario se guarda en la base y se carga junto con el padrón.
    Un semestre sin horario configurado cuenta todos los días. */
 const USA_HORARIO = true;
+/* Solo en BAETAM: la administración elige qué docentes ven a los
+   alumnos de cada semestre en su pantalla de "Alumnos ausentes". */
+const ES_BAETAM = true;
 let HORARIO = new Map();   // semestre → { dias: [0..6], hora_limite: "15:00" }
 
 const diaSemanaDe = (fecha) => {
@@ -1328,7 +1331,8 @@ function ModalJustificar({ alumno, existente, fecha, user, onClose, onGuardar, o
 
           <p className="text-[11px] text-slate-400">
             El motivo y el justificante solo los ven la coordinación BAETAM y
-            la administración general.
+            la administración general. A los docentes asignados únicamente les
+            aparece que el alumno está justificado y el tipo.
           </p>
           {err && <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{err}</p>}
           <div className="flex items-center justify-between pt-2">
@@ -3048,7 +3052,118 @@ function HorarioSemestres({ alumnos, recargar }) {
   );
 }
 
-function PanelPadron({ alumnos, recargar }) {
+/* Qué docentes dan clase en cada semestre (solo BAETAM y solo la
+   administración general). Esos docentes ven a los alumnos de ese
+   semestre en su pantalla de "Alumnos ausentes". */
+function DocentesPorSemestre({ alumnos, usuarios }) {
+  const semestres = [...new Set(alumnos.filter(a => a.activo !== false).map(a => String(a.semestre || "")))]
+    .filter(Boolean).sort((x, y) => Number(x) - Number(y));
+  const docentes = usuarios.filter(u => u.rol === "docente" && u.activo !== false)
+    .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || "", "es"));
+  const [original, setOriginal] = useState(null);   // Set "docente|semestre"
+  const [sel, setSel] = useState(new Set());
+  const [abierto, setAbierto] = useState(null);     // semestre en edición
+  const [guardando, setGuardando] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  const cargar = useCallback(async () => {
+    const { data, error } = await supabase.from("docentes_semestre_baetam").select("docente_id, semestre");
+    if (error) { setErr("¿Ya se ejecutó docentes_baetam.sql en Supabase? " + error.message); setOriginal(new Set()); return; }
+    const c = new Set((data || []).map(x => `${x.docente_id}|${x.semestre}`));
+    setOriginal(c); setSel(new Set(c));
+  }, []);
+  useEffect(() => { cargar(); }, [cargar]);
+
+  const alternar = (id, s) => setSel(prev => {
+    const n = new Set(prev); const k = `${id}|${s}`;
+    n.has(k) ? n.delete(k) : n.add(k); return n;
+  });
+
+  const cambios = original ? [...sel].filter(k => !original.has(k)).length + [...original].filter(k => !sel.has(k)).length : 0;
+
+  const guardar = async () => {
+    setGuardando(true); setErr(""); setMsg("");
+    const nuevos = [...sel].filter(k => !original.has(k)).map(k => { const [docente_id, semestre] = k.split("|"); return { docente_id, semestre }; });
+    const quitar = [...original].filter(k => !sel.has(k));
+    try {
+      if (nuevos.length) {
+        const { error } = await supabase.from("docentes_semestre_baetam").insert(nuevos);
+        if (error) throw new Error(error.message);
+      }
+      for (const k of quitar) {
+        const [docente_id, semestre] = k.split("|");
+        const { error } = await supabase.from("docentes_semestre_baetam").delete().eq("docente_id", docente_id).eq("semestre", semestre);
+        if (error) throw new Error(error.message);
+      }
+      setMsg("Docentes guardados. Lo verán la próxima vez que abran “Alumnos ausentes”.");
+      await cargar();
+    } catch (e) { setErr("No se pudo guardar: " + e.message); }
+    setGuardando(false);
+  };
+
+  return (
+    <Card className="p-4 space-y-3">
+      <div>
+        <h3 className="font-bold text-sm">Docentes por semestre</h3>
+        <p className="text-xs text-slate-500 mt-0.5">
+          Los docentes que elijas verán a los alumnos BAETAM de ese semestre en su pantalla de
+          “Alumnos ausentes”, junto a sus grupos escolarizados: ausentes, justificados, retardos,
+          pases de salida y faltas acumuladas. No ven teléfonos, tutores ni motivos. Solo la
+          administración general puede cambiar esta lista.
+        </p>
+      </div>
+      {original === null ? (
+        <p className="text-sm text-slate-400"><Loader2 size={14} className="animate-spin inline mr-1" />Cargando…</p>
+      ) : semestres.length === 0 ? (
+        <p className="text-sm text-slate-400">Primero carga el padrón de alumnos.</p>
+      ) : (
+        <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl">
+          {semestres.map(s => {
+            const elegidos = docentes.filter(d => sel.has(`${d.id}|${s}`));
+            return (
+              <div key={s} className="px-3 py-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold w-24 shrink-0">{s}° semestre</span>
+                  <span className="flex-1 min-w-[160px] text-xs text-slate-600">
+                    {elegidos.length ? elegidos.map(d => d.nombre).join(", ") : <span className="text-slate-400">Sin docentes asignados</span>}
+                  </span>
+                  <button className="text-xs font-semibold text-indigo-600 hover:underline shrink-0"
+                    onClick={() => setAbierto(abierto === s ? null : s)}>
+                    {abierto === s ? "Listo" : "Elegir docentes"}
+                  </button>
+                </div>
+                {abierto === s && (
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {docentes.map(d => {
+                      const on = sel.has(`${d.id}|${s}`);
+                      return (
+                        <button key={d.id} type="button" onClick={() => alternar(d.id, s)}
+                          className={`text-xs px-2.5 py-1 rounded-full border transition ${on
+                            ? "bg-[#1a2340] text-white border-[#1a2340]" : "bg-white text-slate-600 border-slate-300 hover:bg-slate-50"}`}>
+                          {on && <CheckCircle2 size={11} className="inline mr-1 -mt-0.5" />}{d.nombre}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {err && <p className="text-sm text-rose-600">{err}</p>}
+      {msg && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-2">{msg}</p>}
+      <div className="flex justify-end">
+        <button className={btnPrim} onClick={guardar} disabled={guardando || !cambios}>
+          {guardando ? "Guardando…" : cambios ? `Guardar cambios (${cambios})` : "Sin cambios"}
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+function PanelPadron({ alumnos, recargar, user, usuarios = [] }) {
   const [q, setQ] = useState("");
   const [grupo, setGrupo] = useState("todos");
   const [subiendo, setSubiendo] = useState(false);
@@ -3216,6 +3331,7 @@ function PanelPadron({ alumnos, recargar }) {
   return (
     <div className="space-y-4">
       {USA_HORARIO && <HorarioSemestres alumnos={alumnos} recargar={recargar} />}
+      {ES_BAETAM && user?.rol === "admin" && <DocentesPorSemestre alumnos={alumnos} usuarios={usuarios} />}
       <Card className="p-4 space-y-3">
         <div>
           <h3 className="font-bold text-sm">Padrón de alumnos</h3>

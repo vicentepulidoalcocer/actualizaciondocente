@@ -10,6 +10,7 @@ import {
   ClipboardCheck, LogOut,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
+import AusentesBaetam from "./AusentesBaetam";
 
 const btnSec = "inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-slate-300 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition disabled:opacity-50";
 const inputCls = "mt-1 w-full px-3 py-2 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#1a2340]/20";
@@ -363,6 +364,8 @@ export default function Ausentes({ db, user }) {
             onChange={e => setFecha(e.target.value)} />
         </div>
         <Card className="p-8 text-center text-sm text-slate-400">{motivo}</Card>
+        {/* BAETAM: solo aparece si la administración asignó al docente */}
+        <AusentesBaetam user={user} />
       </div>
     );
   }
@@ -548,6 +551,9 @@ export default function Ausentes({ db, user }) {
           )}
         </>
       )}
+
+      {/* BAETAM: solo aparece si la administración asignó al docente */}
+      <AusentesBaetam user={user} />
     </div>
   );
 }
