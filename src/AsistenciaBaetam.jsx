@@ -1330,9 +1330,9 @@ function ModalJustificar({ alumno, existente, fecha, user, onClose, onGuardar, o
           </div>
 
           <p className="text-[11px] text-slate-400">
-            El motivo y el justificante solo los ven la coordinación BAETAM y
-            la administración general. A los docentes asignados únicamente les
-            aparece que el alumno está justificado y el tipo.
+            El motivo y el justificante solo los ven la coordinación BAETAM y la
+            administración general. A los docentes asignados únicamente les aparece
+            que el alumno está justificado y el tipo.
           </p>
           {err && <p className="text-sm text-rose-600 flex items-start gap-1.5"><AlertTriangle size={14} className="mt-0.5 shrink-0" />{err}</p>}
           <div className="flex items-center justify-between pt-2">
@@ -1688,6 +1688,227 @@ function ResumenPases({ alumnos, porId }) {
 }
 
 /* ================================================================
+   EXPEDIENTE DEL ALUMNO (desde el Historial)
+   ----------------------------------------------------------------
+   Busca a un alumno y muestra todo su registro en un periodo, día
+   por día: asistencias y retardos con su hora, faltas, faltas
+   justificadas (con tipo, motivo y cuándo se registró la
+   justificación) y pases de salida (hora y quién lo recogió).
+
+   Una falta se cuenta igual que en el seguimiento: un día en que se
+   pasó lista, su grupo tuvo clase y el alumno no registró asistencia.
+   ================================================================ */
+const fmtHora = (h) => String(h || "").slice(0, 5);
+const fmtFechaHora = (ts) => {
+  if (!ts) return "";
+  const d = new Date(ts);
+  return isNaN(d) ? "" : d.toLocaleString("es-MX", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+};
+
+function BuscarAlumnoHistorial({ alumnos, onElegir }) {
+  const [q, setQ] = useState("");
+  const t = normaliza(q);
+  const lista = t.length < 2 ? [] : alumnos.filter(a =>
+    normaliza(a.nombre).includes(t) || String(a.id).includes(soloDigitos(q) || "@@")).slice(0, 8);
+  return (
+    <Card className="p-3">
+      <div className="text-xs font-semibold text-slate-600 mb-1">Registro completo de un alumno</div>
+      <div className="relative">
+        <Search size={14} className="absolute left-3 top-[calc(50%+2px)] -translate-y-1/2 text-slate-400" />
+        <input className={inputCls + " !pl-9"} placeholder="Busca por nombre o matrícula…"
+          value={q} onChange={e => setQ(e.target.value)} />
+      </div>
+      {lista.length > 0 && (
+        <div className="mt-1 border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-64 overflow-y-auto">
+          {lista.map(a => (
+            <button key={a.id} className="w-full text-left px-3 py-2 hover:bg-slate-50"
+              onClick={() => { onElegir(a); setQ(""); }}>
+              <span className="block text-sm break-words">{a.nombre}
+                {a.activo === false && <span className="ml-1.5 text-[11px] text-rose-500">(baja)</span>}</span>
+              <span className="block text-[11px] text-slate-400">{a.semestre}° {a.grupo} · {a.id}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {t.length >= 2 && lista.length === 0 && <p className="text-xs text-slate-400 mt-1">Ningún alumno coincide.</p>}
+    </Card>
+  );
+}
+
+function ExpedienteAlumno({ alumno, onCerrar }) {
+  const [desde, setDesde] = useState(inicioSemestre());
+  const [hasta, setHasta] = useState(hoyISO());
+  const [dias, setDias] = useState(null);
+  const [err, setErr] = useState("");
+  const [filtro, setFiltro] = useState("todo");
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      setDias(null); setErr("");
+      const [fe, dc, as, ju, ps] = await Promise.all([
+        supabase.rpc("fechas_con_lista_baetam", { desde, hasta }),
+        supabase.from("dias_clase_baetam").select("fecha, grupos, motivo").gte("fecha", desde).lte("fecha", hasta),
+        supabase.from("asistencias_baetam").select("fecha, hora, estado, manual")
+          .eq("alumno_id", alumno.id).gte("fecha", desde).lte("fecha", hasta),
+        supabase.from("justificaciones_baetam").select("*")
+          .eq("alumno_id", alumno.id).gte("fecha", desde).lte("fecha", hasta),
+        supabase.from("pases_salida_baetam").select("*")
+          .eq("alumno_id", alumno.id).gte("fecha", desde).lte("fecha", hasta),
+      ]);
+      if (!vivo) return;
+      if (as.error) { setErr(as.error.message); setDias([]); return; }
+      const dia = (f) => String(f).slice(0, 10);
+      const exc = new Map((dc.error ? [] : dc.data || []).map(d => [dia(d.fecha), d]));
+      const asis = new Map((as.data || []).map(r => [dia(r.fecha), r]));
+      const just = new Map((ju.error ? [] : ju.data || []).map(j => [dia(j.fecha), j]));
+      const pases = new Map();
+      (ps.error ? [] : ps.data || []).forEach(p => { const k = dia(p.fecha); pases.set(k, [...(pases.get(k) || []), p]); });
+
+      const fechas = new Set([...(fe.error ? [] : (fe.data || []).map(x => dia(x.fecha))), ...asis.keys(), ...just.keys(), ...pases.keys()]);
+      const filas = [];
+      [...fechas].sort().reverse().forEach(f => {
+        const a = asis.get(f), j = just.get(f), p = pases.get(f) || [];
+        const tocaba = tuvoClase(exc.get(f), alumno.semestre, alumno.grupo, f);
+        let tipo;
+        if (a) tipo = a.estado === "Retardo" ? "retardo" : "asistencia";
+        else if (j) tipo = "justificada";
+        else if (tocaba && f <= hoyISO()) tipo = "falta";
+        else return;            // sin clase para su grupo y sin registros
+        filas.push({ fecha: f, tipo, a, j, p });
+      });
+      setDias(filas);
+    })();
+    return () => { vivo = false; };
+  }, [alumno.id, alumno.semestre, alumno.grupo, desde, hasta]);
+
+  const cuenta = (t) => (dias || []).filter(d => d.tipo === t).length;
+  const nPases = (dias || []).reduce((n, d) => n + d.p.length, 0);
+  const visibles = (dias || []).filter(d => filtro === "todo" || d.tipo === filtro || (filtro === "pase" && d.p.length));
+
+  const exportar = () => {
+    const f = [["Fecha", "Día", "Situación", "Hora de entrada", "Registro", "Justificación", "Motivo", "Justificación registrada", "Pase de salida", "Lo recogió"]];
+    (dias || []).forEach(d => f.push([d.fecha, DIAS_SEMANA[diaSemanaDe(d.fecha)],
+      { asistencia: "Asistencia", retardo: "Retardo", justificada: "Falta justificada", falta: "Falta" }[d.tipo],
+      d.a ? fmtHora(d.a.hora) : "", d.a ? (d.a.manual ? "Manual" : "QR") : "",
+      d.j ? (TIPOS_JUSTIFICACION[d.j.tipo] || d.j.tipo) : "", d.j?.motivo || "", d.j ? fmtFechaHora(d.j.creado) : "",
+      d.p.map(p => p.hora).join(" / "), d.p.map(p => p.recoge || "").filter(Boolean).join(" / ")]));
+    const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csv = "﻿" + f.map(r => r.map(esc).join(",")).join("\n");
+    const el = document.createElement("a");
+    el.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    el.download = `baetam_registro_${alumno.id}_${desde}_a_${hasta}.csv`;
+    el.click();
+    URL.revokeObjectURL(el.href);
+  };
+
+  const ESTILO = {
+    asistencia: ["Asistencia", "bg-emerald-50 text-emerald-700 border-emerald-200"],
+    retardo: ["Retardo", "bg-amber-50 text-amber-700 border-amber-200"],
+    justificada: ["Falta justificada", "bg-sky-50 text-sky-700 border-sky-200"],
+    falta: ["Falta", "bg-rose-50 text-rose-700 border-rose-200"],
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-slate-900/50 p-4 overflow-y-auto" onClick={onCerrar}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl my-8 min-w-0" onClick={e => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-slate-200">
+          <div className="min-w-0">
+            <h3 className="font-bold text-base break-words" style={{ fontFamily: "'Archivo', sans-serif" }}>{alumno.nombre}</h3>
+            <p className="text-xs text-slate-500">{alumno.semestre}° {alumno.grupo} · {alumno.id}
+              {alumno.tutor ? ` · Tutor: ${alumno.tutor}` : ""}</p>
+          </div>
+          <button onClick={onCerrar} className="p-1 rounded-lg hover:bg-slate-100 shrink-0"><X size={18} /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="text-xs text-slate-500">Desde
+              <input type="date" className={inputCls} value={desde} onChange={e => setDesde(e.target.value || inicioSemestre())} />
+            </label>
+            <label className="text-xs text-slate-500">Hasta
+              <input type="date" className={inputCls} value={hasta} max={hoyISO()} onChange={e => setHasta(e.target.value || hoyISO())} />
+            </label>
+            <button className={btnSec + " !px-3 !py-2 ml-auto"} onClick={exportar} disabled={!dias?.length}>
+              <Download size={13} />Exportar a Excel
+            </button>
+          </div>
+
+          {dias === null ? (
+            <p className="text-sm text-slate-400 py-8 text-center"><Loader2 size={15} className="animate-spin inline mr-2" />Consultando…</p>
+          ) : err ? (
+            <p className="text-sm text-rose-600">{err}</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                {[["todo", "Días", dias.length, "text-slate-800"], ["asistencia", "Asistencias", cuenta("asistencia"), "text-emerald-600"],
+                  ["retardo", "Retardos", cuenta("retardo"), "text-amber-600"], ["falta", "Faltas", cuenta("falta"), "text-rose-600"],
+                  ["justificada", "Justificadas", cuenta("justificada"), "text-sky-600"]].map(([id, t, n, c]) => (
+                  <button key={id} onClick={() => setFiltro(id)}
+                    className={`rounded-xl border p-2 text-center transition ${filtro === id ? "border-[#1a2340] ring-2 ring-[#1a2340]/15" : "border-slate-200 hover:bg-slate-50"}`}>
+                    <div className={`text-lg font-bold ${c}`}>{n}</div>
+                    <div className="text-[11px] text-slate-500">{t}</div>
+                  </button>
+                ))}
+              </div>
+              {nPases > 0 && (
+                <button onClick={() => setFiltro("pase")}
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-lg border ${filtro === "pase" ? "bg-violet-600 text-white border-violet-600" : "bg-violet-50 text-violet-700 border-violet-200"}`}>
+                  {nPases} pase(s) de salida
+                </button>
+              )}
+
+              {visibles.length === 0 ? (
+                <p className="text-sm text-slate-400 py-6 text-center">Sin registros en este periodo.</p>
+              ) : (
+                <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl max-h-[28rem] overflow-y-auto">
+                  {visibles.map(d => (
+                    <div key={d.fecha} className="px-3 py-2.5 flex flex-wrap items-start gap-x-3 gap-y-1">
+                      <div className="w-36 shrink-0">
+                        <div className="text-sm font-semibold capitalize">{DIAS_SEMANA[diaSemanaDe(d.fecha)]}</div>
+                        <div className="text-xs text-slate-500">{fmtFechaLarga(d.fecha).replace(/^[^,]+, /, "")}</div>
+                      </div>
+                      <div className="flex-1 min-w-[200px] space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className={`text-xs font-semibold px-2 py-0.5 rounded-lg border ${ESTILO[d.tipo][1]}`}>{ESTILO[d.tipo][0]}</span>
+                          {d.a && <span className="text-sm text-slate-700">Entrada {fmtHora(d.a.hora)}
+                            <span className="text-[11px] text-slate-400"> · {d.a.manual ? "registro manual" : "QR"}</span></span>}
+                        </div>
+                        {d.j && (
+                          <div className="text-xs text-slate-600">
+                            <ClipboardCheck size={12} className="inline mr-1 text-sky-600" />
+                            Justificación {TIPOS_JUSTIFICACION[d.j.tipo] || d.j.tipo}{d.j.motivo ? `: ${d.j.motivo}` : ""}
+                            {d.j.creado && <span className="text-slate-400"> · registrada el {fmtFechaHora(d.j.creado)}</span>}
+                            {d.j.archivo_guardado && (
+                              <button className="ml-1.5 text-indigo-600 font-semibold hover:underline"
+                                onClick={() => abrirJustificante(alumno.id, d.fecha)}>
+                                <Paperclip size={11} className="inline" /> ver justificante
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        {d.p.map(p => (
+                          <div key={p.id} className="text-xs text-violet-700">
+                            <UserMinus size={12} className="inline mr-1" />
+                            Pase de salida a las {p.hora}{p.motivo ? ` · ${p.motivo}` : ""}{p.recoge ? ` · lo recogió ${p.recoge}` : ""}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-[11px] text-slate-400">
+                Se cuentan como falta los días en que se pasó lista, su grupo tuvo clase y no registró asistencia.
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================================================================
    HISTORIAL: consulta de días anteriores
    ================================================================ */
 function PanelHistorial({ alumnos, user }) {
@@ -1709,6 +1930,7 @@ function PanelHistorial({ alumnos, user }) {
   const [cargandoDia, setCargandoDia] = useState(false);
   const [borrando, setBorrando] = useState(null);
   const [exportando, setExportando] = useState(false);
+  const [expediente, setExpediente] = useState(null);   // alumno cuyo registro se consulta
 
   /* El resumen lo calcula la base y devuelve una fila por día. Traer
      los registros completos aquí fallaría: con 371 alumnos, tres días
@@ -1823,6 +2045,8 @@ function PanelHistorial({ alumnos, user }) {
 
   return (
     <div className="space-y-4">
+      <BuscarAlumnoHistorial alumnos={alumnos} onElegir={setExpediente} />
+      {expediente && <ExpedienteAlumno alumno={expediente} onCerrar={() => setExpediente(null)} />}
       <Card className="p-3 flex flex-wrap gap-2 items-end">
         <label className="text-xs text-slate-500">Desde
           <input type="date" className={inputCls} value={desde} onChange={e => setDesde(e.target.value)} />
