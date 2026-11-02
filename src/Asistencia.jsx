@@ -12,7 +12,7 @@ import {
   Camera, CameraOff, Users, Clock, CheckCircle2, AlertTriangle, Download,
   Upload, Search, Loader2, TrendingUp, MessageCircle, CalendarDays, X, RefreshCw,
   Trash2, UserMinus, UserCheck, ClipboardCheck, Pencil, ChevronLeft, ChevronRight,
-  Paperclip,
+  Paperclip, Bell, FileText,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell,
@@ -198,6 +198,15 @@ export default function Asistencia({ user, usuarios = [] }) {
     return { ok: true, estado, msg: `${estado === "Retardo" ? "Retardo" : "Registrado"}: ${fila.nombre}` };
   }, [registrosHoy, alumnos, horaLimite, user.id]);
 
+  /* Avisos al tutor pendientes (para el número junto a Seguimiento).
+     Si la tabla aún no existe, simplemente no aparece nada. */
+  const [avisosPend, setAvisosPend] = useState(0);
+  useEffect(() => {
+    supabase.from("avisos_tutor").select("id", { count: "exact", head: true })
+      .eq("estado", "pendiente").eq("periodo", inicioSemestre())
+      .then(({ count, error }) => { if (!error) setAvisosPend(count || 0); });
+  }, []);
+
   const tabs = [
     ["escaneo", "Escanear", Camera],
     ["dashboard", "Panel del día", TrendingUp],
@@ -234,6 +243,10 @@ export default function Asistencia({ user, usuarios = [] }) {
           <button key={id} onClick={() => setTab(id)}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold whitespace-nowrap transition ${tab === id ? "bg-white text-[#1a2340] shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
             <Ico size={14} />{txt}
+            {id === "seguimiento" && avisosPend > 0 && (
+              <span className="text-[10px] font-bold bg-rose-600 text-white rounded-full px-1.5 py-0.5 leading-none"
+                title="Avisos al tutor pendientes">{avisosPend}</span>
+            )}
           </button>
         ))}
       </div>
@@ -251,7 +264,7 @@ export default function Asistencia({ user, usuarios = [] }) {
       )}
       {!cargando && tab === "pases" && <PanelPaseSalida alumnos={alumnos} user={user} />}
       {!cargando && tab === "historial" && <PanelHistorial alumnos={alumnos} user={user} />}
-      {!cargando && tab === "seguimiento" && <PanelSeguimiento alumnos={alumnos} />}
+      {!cargando && tab === "seguimiento" && <PanelSeguimiento alumnos={alumnos} user={user} onPendientes={setAvisosPend} />}
       {!cargando && tab === "estadisticas" && <PanelEstadisticas alumnos={alumnos} />}
       {!cargando && tab === "padron" && <PanelPadron alumnos={alumnos} recargar={cargar} user={user} usuarios={usuarios} />}
     </div>
@@ -1688,7 +1701,7 @@ function ResumenPases({ alumnos, porId }) {
 }
 
 /* ================================================================
-   EXPEDIENTE DEL ALUMNO (desde el Historial)
+   EXPEDIENTE DEL ALUMNO (desde el Historial y desde Seguimiento)
    ----------------------------------------------------------------
    Busca a un alumno y muestra todo su registro en un periodo, día
    por día: asistencias y retardos con su hora, faltas, faltas
@@ -1704,6 +1717,235 @@ const fmtFechaHora = (ts) => {
   const d = new Date(ts);
   return isNaN(d) ? "" : d.toLocaleString("es-MX", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 };
+const ETIQUETA_DIA = { asistencia: "Asistencia", retardo: "Retardo", justificada: "Falta justificada", falta: "Falta" };
+
+/* Junta asistencias, justificaciones y pases de un alumno en una
+   lista por día, de la fecha más reciente a la más antigua. */
+async function cargarExpediente(alumno, desde, hasta) {
+  const [fe, dc, as, ju, ps] = await Promise.all([
+    supabase.rpc("fechas_con_lista", { desde, hasta }),
+    supabase.from("dias_clase").select("fecha, grupos, motivo").gte("fecha", desde).lte("fecha", hasta),
+    supabase.from("asistencias").select("fecha, hora, estado, manual")
+      .eq("alumno_id", alumno.id).gte("fecha", desde).lte("fecha", hasta),
+    supabase.from("justificaciones").select("*")
+      .eq("alumno_id", alumno.id).gte("fecha", desde).lte("fecha", hasta),
+    supabase.from("pases_salida").select("*")
+      .eq("alumno_id", alumno.id).gte("fecha", desde).lte("fecha", hasta),
+  ]);
+  if (as.error) return { filas: [], error: as.error.message };
+  const dia = (f) => String(f).slice(0, 10);
+  const exc = new Map((dc.error ? [] : dc.data || []).map(d => [dia(d.fecha), d]));
+  const asis = new Map((as.data || []).map(r => [dia(r.fecha), r]));
+  const just = new Map((ju.error ? [] : ju.data || []).map(j => [dia(j.fecha), j]));
+  const pases = new Map();
+  (ps.error ? [] : ps.data || []).forEach(p => { const k = dia(p.fecha); pases.set(k, [...(pases.get(k) || []), p]); });
+
+  const fechas = new Set([...(fe.error ? [] : (fe.data || []).map(x => dia(x.fecha))), ...asis.keys(), ...just.keys(), ...pases.keys()]);
+  const filas = [];
+  [...fechas].sort().reverse().forEach(f => {
+    const a = asis.get(f), j = just.get(f), p = pases.get(f) || [];
+    const tocaba = tuvoClase(exc.get(f), alumno.semestre, alumno.grupo, f);
+    let tipo;
+    if (a) tipo = a.estado === "Retardo" ? "retardo" : "asistencia";
+    else if (j) tipo = "justificada";
+    else if (tocaba && f <= hoyISO()) tipo = "falta";
+    else return;            // sin clase para su grupo y sin registros
+    filas.push({ fecha: f, tipo, a, j, p });
+  });
+  return { filas, error: "" };
+}
+
+/* ---------- Reporte en PDF para padres o tutores ----------------
+   El generador de PDF se descarga solo la primera vez que alguien
+   lo usa (no hace más pesado el portal para los demás). En el
+   celular se abre el menú de compartir para mandarlo por WhatsApp;
+   en la computadora se descarga. */
+const CDN_JSPDF = "https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm";
+const CDN_AUTOTABLE = "https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.mjs";
+let promesaLibPDF = null;
+const funcionDe = (m, nombre) =>
+  [m?.[nombre], m?.default?.[nombre], m?.default, m?.default?.default].find(f => typeof f === "function");
+const cargarLibPDF = () => {
+  if (!promesaLibPDF) {
+    promesaLibPDF = Promise.all([import(/* @vite-ignore */ CDN_JSPDF), import(/* @vite-ignore */ CDN_AUTOTABLE)])
+      .then(([a, b]) => {
+        const lib = { jsPDF: funcionDe(a, "jsPDF"), autoTable: funcionDe(b, "autoTable") };
+        if (!lib.jsPDF || !lib.autoTable) throw new Error("No se reconoció el generador de PDF.");
+        return lib;
+      })
+      .catch(e => { promesaLibPDF = null; throw e; });
+  }
+  return promesaLibPDF;
+};
+let promesaLogo = null;
+const cargarLogo = () => {
+  if (!promesaLogo) {
+    promesaLogo = fetch(import.meta.env.BASE_URL + "logo.png")
+      .then(r => r.ok ? r.blob() : Promise.reject(new Error("sin logo")))
+      .then(b => new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = no; fr.readAsDataURL(b); }))
+      .then(d => new Promise(ok => { const i = new Image(); i.onload = () => ok({ d, w: i.naturalWidth, h: i.naturalHeight }); i.onerror = () => ok(null); i.src = d; }))
+      .catch(() => null);
+  }
+  return promesaLogo;
+};
+const MESES_CORTOS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const MESES_LARGOS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+  "septiembre", "octubre", "noviembre", "diciembre"];
+// "mar 13 oct 2026"
+const fmtDiaCorto = (f) => {
+  const [a, m, d] = f.split("-").map(Number);
+  return `${DIAS_SEMANA[new Date(a, m - 1, d).getDay()].slice(0, 3)} ${d} ${MESES_CORTOS[m - 1]} ${a}`;
+};
+// "13 de octubre de 2026"
+const fmtFechaTexto = (f) => {
+  const [a, m, d] = f.split("-").map(Number);
+  return `${d} de ${MESES_LARGOS[m - 1]} de ${a}`;
+};
+
+async function generarReportePDF({ alumno, desde, hasta, filas }) {
+  const [{ jsPDF, autoTable }, logo] = await Promise.all([cargarLibPDF(), cargarLogo()]);
+  const VERDE = [31, 122, 63], AMARILLO = [232, 185, 49], TXT = [24, 33, 27], GRIS = [74, 90, 79];
+  const COLOR_TIPO = { asistencia: [4, 120, 87], retardo: [180, 83, 9], justificada: [3, 105, 161], falta: [190, 18, 60] };
+  const doc = new jsPDF({ unit: "pt", format: "letter" });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight(), M = 42;
+
+  const encabezado = () => {
+    if (logo) { const h = 62, w = h * logo.w / logo.h; doc.addImage(logo.d, "PNG", M, 26, w, h); }
+    doc.setTextColor(...GRIS); doc.setFont("helvetica", "bold"); doc.setFontSize(7.5);
+    doc.text("SEMS - DGETAYCM", W - M, 36, { align: "right" });
+    doc.setTextColor(...VERDE); doc.setFontSize(11);
+    doc.text("Centro de Bachillerato Tecnológico", W - M, 51, { align: "right" });
+    doc.text("Agropecuario No. 291", W - M, 64, { align: "right" });
+    doc.setTextColor(...TXT); doc.setFontSize(9);
+    doc.text("“Ignacio Ramírez Calzada”", W - M, 76, { align: "right" });
+    doc.setTextColor(...GRIS); doc.setFont("helvetica", "normal"); doc.setFontSize(8);
+    doc.text("C.C.T. 23DTA0291Z", W - M, 87, { align: "right" });
+    doc.setDrawColor(...VERDE); doc.setLineWidth(2.4); doc.line(M, 97, W - M, 97);
+  };
+  const pie = (n, total) => {
+    doc.setDrawColor(...VERDE); doc.setLineWidth(0.8); doc.line(M, H - 50, W - M, H - 50);
+    doc.setTextColor(61, 74, 65); doc.setFont("helvetica", "normal"); doc.setFontSize(7.5);
+    doc.text("Carretera Federal 184, Km 121, Dziuché, Quintana Roo, C.P. 77801", W / 2, H - 39, { align: "center" });
+    const ancho = W - 2 * M;
+    doc.setFillColor(...VERDE); doc.rect(M, H - 32, ancho * 0.857, 6, "F");
+    doc.setFillColor(...AMARILLO); doc.rect(M + ancho * 0.857, H - 32, ancho * 0.143, 6, "F");
+    doc.setTextColor(140, 150, 143); doc.setFontSize(7);
+    doc.text(`Generado desde Mi portal CBTA 291 · Página ${n} de ${total}`, W / 2, H - 16, { align: "center" });
+  };
+
+  encabezado();
+  const hoy = new Date();
+  doc.setTextColor(...GRIS); doc.setFont("helvetica", "normal"); doc.setFontSize(9);
+  doc.text(`Dziuché, Q. Roo, a ${hoy.getDate()} de ${MESES_LARGOS[hoy.getMonth()]} de ${hoy.getFullYear()}`,
+    W - M, 120, { align: "right" });
+  doc.setTextColor(...TXT); doc.setFont("helvetica", "bold"); doc.setFontSize(16);
+  doc.text("Reporte de asistencia del alumno", M, 140);
+  if (ES_BAETAM) {
+    doc.setTextColor(...VERDE); doc.setFontSize(9.5);
+    doc.text("Bachillerato BAETAM", M, 154);
+  }
+
+  // Datos del alumno
+  const tel = soloDigitos(alumno.telefono);
+  autoTable(doc, {
+    startY: ES_BAETAM ? 164 : 152,
+    theme: "plain",
+    margin: { left: M, right: M },
+    styles: { font: "helvetica", fontSize: 9, textColor: TXT, cellPadding: { top: 3, bottom: 3, left: 0, right: 6 } },
+    columnStyles: { 0: { fontStyle: "bold", textColor: GRIS, cellWidth: 92 }, 2: { fontStyle: "bold", textColor: GRIS, cellWidth: 70 } },
+    body: [
+      ["Alumno(a):", alumno.nombre || "", "Matrícula:", String(alumno.id)],
+      ["Semestre y grupo:", `${alumno.semestre ? alumno.semestre + "° " : ""}${alumno.grupo || ""}`, "Periodo:", `${fmtFechaTexto(desde)} al ${fmtFechaTexto(hasta)}`],
+      ["Madre, padre o tutor:", alumno.tutor || "—", "Teléfono:", tel || "—"],
+    ],
+  });
+
+  // Resumen en cifras
+  const cuenta = (t) => filas.filter(f => f.tipo === t).length;
+  const nPases = filas.reduce((n, f) => n + f.p.length, 0);
+  const asistio = cuenta("asistencia") + cuenta("retardo");
+  const conClase = filas.length;
+  const cajas = [["Días con clase", conClase, TXT], ["Asistencias", cuenta("asistencia"), COLOR_TIPO.asistencia],
+    ["Retardos", cuenta("retardo"), COLOR_TIPO.retardo], ["Faltas", cuenta("falta"), COLOR_TIPO.falta],
+    ["Justificadas", cuenta("justificada"), COLOR_TIPO.justificada], ["Pases de salida", nPases, [109, 40, 217]]];
+  let y = doc.lastAutoTable.finalY + 12;
+  const gap = 6, wc = (W - 2 * M - gap * (cajas.length - 1)) / cajas.length;
+  cajas.forEach(([t, n, c], i) => {
+    const x = M + i * (wc + gap);
+    doc.setDrawColor(220, 226, 222); doc.setFillColor(247, 249, 248); doc.setLineWidth(0.6);
+    doc.roundedRect(x, y, wc, 44, 4, 4, "FD");
+    doc.setTextColor(...c); doc.setFont("helvetica", "bold"); doc.setFontSize(16);
+    doc.text(String(n), x + wc / 2, y + 22, { align: "center" });
+    doc.setTextColor(...GRIS); doc.setFont("helvetica", "normal"); doc.setFontSize(7.5);
+    doc.text(t, x + wc / 2, y + 35, { align: "center" });
+  });
+  y += 60;
+  doc.setTextColor(...TXT); doc.setFontSize(9.5); doc.setFont("helvetica", "normal");
+  const pct = conClase ? Math.round(100 * asistio / conClase) : 0;
+  doc.text(conClase
+    ? `Asistió ${asistio} de los ${conClase} día(s) en que su grupo tuvo clase en el periodo (${pct}% de asistencia).`
+    : "No hay días con clase registrados en este periodo.", M, y);
+
+  // Detalle día por día, en orden cronológico
+  const cuerpo = [...filas].reverse().map(f => {
+    const obs = [];
+    if (f.a?.manual) obs.push("Registro manual (sin credencial)");
+    if (f.j) obs.push(`Justificación ${(TIPOS_JUSTIFICACION[f.j.tipo] || f.j.tipo || "").toLowerCase()}`
+      + (f.j.motivo ? `: ${f.j.motivo}` : "") + (f.j.creado ? ` (registrada el ${fmtFechaHora(f.j.creado)})` : ""));
+    f.p.forEach(p => obs.push(`Pase de salida a las ${p.hora}` + (p.motivo ? ` · ${p.motivo}` : "") + (p.recoge ? ` · lo recogió ${p.recoge}` : "")));
+    return [fmtDiaCorto(f.fecha), ETIQUETA_DIA[f.tipo], f.a ? fmtHora(f.a.hora) : "—", obs.join("\n")];
+  });
+  autoTable(doc, {
+    startY: y + 12,
+    margin: { left: M, right: M, top: 112, bottom: 64 },
+    head: [["Fecha", "Situación", "Entrada", "Observaciones"]],
+    body: cuerpo.length ? cuerpo : [["—", "Sin registros", "—", ""]],
+    styles: { font: "helvetica", fontSize: 8.5, textColor: TXT, cellPadding: 4, lineColor: [226, 232, 228], lineWidth: 0.5, valign: "middle" },
+    headStyles: { fillColor: VERDE, textColor: [255, 255, 255], fontStyle: "bold" },
+    alternateRowStyles: { fillColor: [248, 250, 249] },
+    columnStyles: { 0: { cellWidth: 88 }, 1: { cellWidth: 92, fontStyle: "bold" }, 2: { cellWidth: 50, halign: "center" } },
+    didParseCell: (d) => {
+      if (d.section !== "body" || d.column.index !== 1) return;
+      const tipo = Object.keys(ETIQUETA_DIA).find(k => ETIQUETA_DIA[k] === d.cell.raw);
+      if (tipo) d.cell.styles.textColor = COLOR_TIPO[tipo];
+    },
+    didDrawPage: (d) => { if (d.pageNumber > 1) encabezado(); },
+  });
+
+  // Nota y firma
+  y = doc.lastAutoTable.finalY + 14;
+  if (y > H - 170) { doc.addPage(); encabezado(); y = 130; }
+  doc.setTextColor(...GRIS); doc.setFont("helvetica", "italic"); doc.setFontSize(7.5);
+  doc.text("Se cuenta como falta cada día en que su grupo tuvo clase y no se registró su asistencia. "
+    + "Los días justificados no se consideran faltas.", M, y, { maxWidth: W - 2 * M });
+  y += 62;
+  doc.setTextColor(...TXT); doc.setFont("helvetica", "bold"); doc.setFontSize(9.5);
+  doc.text("A T E N T A M E N T E", W / 2, y, { align: "center" });
+  doc.setDrawColor(...TXT); doc.setLineWidth(0.6); doc.line(W / 2 - 110, y + 34, W / 2 + 110, y + 34);
+  doc.text(ES_BAETAM ? "Coordinación BAETAM" : "Control Escolar", W / 2, y + 47, { align: "center" });
+
+  const total = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= total; i++) { doc.setPage(i); pie(i, total); }
+
+  const nombre = `Reporte_asistencia_${String(alumno.id).replace(/[^\w-]/g, "")}${ES_BAETAM ? "_BAETAM" : ""}.pdf`;
+  const archivo = new File([doc.output("blob")], nombre, { type: "application/pdf" });
+  const movil = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+  if (movil && navigator.canShare?.({ files: [archivo] })) {
+    try {
+      await navigator.share({ files: [archivo], title: "Reporte de asistencia", text: `Reporte de asistencia de ${alumno.nombre}` });
+      return "compartido";
+    } catch (e) {
+      if (e?.name === "AbortError") return "cancelado";   // cerró el menú
+      // si el celular no dejó compartir, se descarga
+    }
+  }
+  const el = document.createElement("a");
+  el.href = URL.createObjectURL(archivo);
+  el.download = nombre;
+  el.click();
+  setTimeout(() => URL.revokeObjectURL(el.href), 4000);
+  return "descargado";
+}
 
 function BuscarAlumnoHistorial({ alumnos, onElegir }) {
   const [q, setQ] = useState("");
@@ -1735,52 +1977,37 @@ function BuscarAlumnoHistorial({ alumnos, onElegir }) {
   );
 }
 
-function ExpedienteAlumno({ alumno, onCerrar }) {
-  const [desde, setDesde] = useState(inicioSemestre());
-  const [hasta, setHasta] = useState(hoyISO());
+function ExpedienteAlumno({ alumno, onCerrar, desdeInicial, hastaInicial }) {
+  const [desde, setDesde] = useState(desdeInicial || inicioSemestre());
+  const [hasta, setHasta] = useState(hastaInicial || hoyISO());
   const [dias, setDias] = useState(null);
   const [err, setErr] = useState("");
   const [filtro, setFiltro] = useState("todo");
+  const [pdf, setPdf] = useState("");          // "", "generando", o un mensaje
 
   useEffect(() => {
     let vivo = true;
-    (async () => {
-      setDias(null); setErr("");
-      const [fe, dc, as, ju, ps] = await Promise.all([
-        supabase.rpc("fechas_con_lista", { desde, hasta }),
-        supabase.from("dias_clase").select("fecha, grupos, motivo").gte("fecha", desde).lte("fecha", hasta),
-        supabase.from("asistencias").select("fecha, hora, estado, manual")
-          .eq("alumno_id", alumno.id).gte("fecha", desde).lte("fecha", hasta),
-        supabase.from("justificaciones").select("*")
-          .eq("alumno_id", alumno.id).gte("fecha", desde).lte("fecha", hasta),
-        supabase.from("pases_salida").select("*")
-          .eq("alumno_id", alumno.id).gte("fecha", desde).lte("fecha", hasta),
-      ]);
+    setDias(null); setErr("");
+    cargarExpediente(alumno, desde, hasta).then(({ filas, error }) => {
       if (!vivo) return;
-      if (as.error) { setErr(as.error.message); setDias([]); return; }
-      const dia = (f) => String(f).slice(0, 10);
-      const exc = new Map((dc.error ? [] : dc.data || []).map(d => [dia(d.fecha), d]));
-      const asis = new Map((as.data || []).map(r => [dia(r.fecha), r]));
-      const just = new Map((ju.error ? [] : ju.data || []).map(j => [dia(j.fecha), j]));
-      const pases = new Map();
-      (ps.error ? [] : ps.data || []).forEach(p => { const k = dia(p.fecha); pases.set(k, [...(pases.get(k) || []), p]); });
-
-      const fechas = new Set([...(fe.error ? [] : (fe.data || []).map(x => dia(x.fecha))), ...asis.keys(), ...just.keys(), ...pases.keys()]);
-      const filas = [];
-      [...fechas].sort().reverse().forEach(f => {
-        const a = asis.get(f), j = just.get(f), p = pases.get(f) || [];
-        const tocaba = tuvoClase(exc.get(f), alumno.semestre, alumno.grupo, f);
-        let tipo;
-        if (a) tipo = a.estado === "Retardo" ? "retardo" : "asistencia";
-        else if (j) tipo = "justificada";
-        else if (tocaba && f <= hoyISO()) tipo = "falta";
-        else return;            // sin clase para su grupo y sin registros
-        filas.push({ fecha: f, tipo, a, j, p });
-      });
-      setDias(filas);
-    })();
+      setErr(error); setDias(filas);
+    });
     return () => { vivo = false; };
   }, [alumno.id, alumno.semestre, alumno.grupo, desde, hasta]);
+
+  // Se prepara el generador de PDF en segundo plano, para que el
+  // botón responda al instante (y el celular deje compartir).
+  useEffect(() => { cargarLibPDF().catch(() => {}); cargarLogo(); }, []);
+
+  const hacerPDF = async () => {
+    setPdf("generando");
+    try {
+      const r = await generarReportePDF({ alumno, desde, hasta, filas: dias || [] });
+      setPdf(r === "descargado" ? "Reporte descargado." : r === "compartido" ? "Reporte compartido." : "");
+    } catch (e) {
+      setPdf("No se pudo generar el PDF. Revisa tu conexión a internet e inténtalo de nuevo.");
+    }
+  };
 
   const cuenta = (t) => (dias || []).filter(d => d.tipo === t).length;
   const nPases = (dias || []).reduce((n, d) => n + d.p.length, 0);
@@ -1788,8 +2015,7 @@ function ExpedienteAlumno({ alumno, onCerrar }) {
 
   const exportar = () => {
     const f = [["Fecha", "Día", "Situación", "Hora de entrada", "Registro", "Justificación", "Motivo", "Justificación registrada", "Pase de salida", "Lo recogió"]];
-    (dias || []).forEach(d => f.push([d.fecha, DIAS_SEMANA[diaSemanaDe(d.fecha)],
-      { asistencia: "Asistencia", retardo: "Retardo", justificada: "Falta justificada", falta: "Falta" }[d.tipo],
+    (dias || []).forEach(d => f.push([d.fecha, DIAS_SEMANA[diaSemanaDe(d.fecha)], ETIQUETA_DIA[d.tipo],
       d.a ? fmtHora(d.a.hora) : "", d.a ? (d.a.manual ? "Manual" : "QR") : "",
       d.j ? (TIPOS_JUSTIFICACION[d.j.tipo] || d.j.tipo) : "", d.j?.motivo || "", d.j ? fmtFechaHora(d.j.creado) : "",
       d.p.map(p => p.hora).join(" / "), d.p.map(p => p.recoge || "").filter(Boolean).join(" / ")]));
@@ -1828,10 +2054,17 @@ function ExpedienteAlumno({ alumno, onCerrar }) {
             <label className="text-xs text-slate-500">Hasta
               <input type="date" className={inputCls} value={hasta} max={hoyISO()} onChange={e => setHasta(e.target.value || hoyISO())} />
             </label>
-            <button className={btnSec + " !px-3 !py-2 ml-auto"} onClick={exportar} disabled={!dias?.length}>
-              <Download size={13} />Exportar a Excel
-            </button>
+            <div className="flex flex-wrap gap-2 ml-auto">
+              <button className={btnSec + " !px-3 !py-2"} onClick={exportar} disabled={!dias?.length}>
+                <Download size={13} />Excel
+              </button>
+              <button className={btnPrim + " !px-3 !py-2"} onClick={hacerPDF} disabled={dias === null || pdf === "generando"}
+                title="Reporte con membrete para la madre, padre o tutor">
+                {pdf === "generando" ? <Loader2 size={13} className="animate-spin" /> : <FileText size={13} />}Reporte PDF
+              </button>
+            </div>
           </div>
+          {pdf && pdf !== "generando" && <p className="text-xs text-slate-500 -mt-2 text-right">{pdf}</p>}
 
           {dias === null ? (
             <p className="text-sm text-slate-400 py-8 text-center"><Loader2 size={15} className="animate-spin inline mr-2" />Consultando…</p>
@@ -1905,6 +2138,187 @@ function ExpedienteAlumno({ alumno, onCerrar }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/* ================================================================
+   AVISOS AUTOMÁTICOS AL TUTOR
+   ----------------------------------------------------------------
+   Todos los días a las 5:15 pm el servidor revisa a cada alumno con
+   los límites del semáforo. Si alguno llegó al amarillo o al rojo de
+   faltas o de retardos, deja un aviso pendiente (uno por nivel en el
+   semestre) y suena la campanita de control escolar. Aquí se manda
+   el mensaje por WhatsApp en un toque y queda registrado quién lo
+   mandó y cuándo.
+
+   WhatsApp no permite mandar mensajes solos sin su servicio de pago
+   para empresas; por eso el último toque lo da una persona.
+
+   Si avisos_tutor.sql aún no se ejecuta, todo sigue funcionando como
+   antes y solo aparece una nota para activarlo.
+   ================================================================ */
+const mensajeTutor = (nombre, tipo, cantidad, nivel) => {
+  const urgente = nivel === "rojo" ? " Es importante que se comunique con el plantel a la brevedad." : "";
+  return tipo === "retardos"
+    ? `Buen día. Le informamos que ${nombre} acumula ${cantidad} retardo(s) en lo que va del semestre. ` +
+      `Le pedimos apoyarnos para que llegue a tiempo.${urgente} CBTA No. 291.`
+    : `Buen día. Le informamos que ${nombre} acumula ${cantidad} inasistencia(s) en lo que va del semestre. ` +
+      `Le pedimos comunicarse con el plantel.${urgente} CBTA No. 291.`;
+};
+
+function useAvisosTutor(user) {
+  const [avisos, setAvisos] = useState(null);
+  const [disponible, setDisponible] = useState(true);
+  const [cfg, setCfg] = useState(null);
+  const periodo = inicioSemestre();
+
+  const cargar = useCallback(async (revisar = false) => {
+    // Si el reloj del servidor no estuviera activo, abrir Seguimiento
+    // hace la misma revisión (no duplica avisos).
+    if (revisar) await supabase.rpc("generar_avisos_tutor");
+    const [av, cf] = await Promise.all([
+      supabase.from("avisos_tutor").select("*").eq("periodo", periodo).order("creado", { ascending: false }),
+      supabase.from("avisos_tutor_config").select("*").eq("id", 1).maybeSingle(),
+    ]);
+    if (av.error) { setDisponible(false); setAvisos([]); return; }
+    setDisponible(true);
+    setAvisos(av.data || []);
+    if (!cf.error && cf.data) setCfg(cf.data);
+  }, [periodo]);
+
+  useEffect(() => { cargar(true); }, [cargar]);
+
+  const atender = useCallback(async (aviso, estado) => {
+    const cambios = { estado, atendido: new Date().toISOString(), atendido_por: user?.nombre || user?.email || "" };
+    setAvisos(l => (l || []).map(a => a.id === aviso.id ? { ...a, ...cambios } : a));
+    const { error } = await supabase.from("avisos_tutor").update(cambios).eq("id", aviso.id);
+    if (error) { alert("No se pudo guardar el aviso: " + error.message); cargar(); }
+  }, [user, cargar]);
+
+  const guardarCfg = useCallback(async (cambios, revisar = false) => {
+    setCfg(c => ({ ...(c || {}), ...cambios, ajustado: true }));
+    const { error } = await supabase.from("avisos_tutor_config")
+      .upsert({ id: 1, ...cambios, ajustado: true, actualizado: new Date().toISOString() });
+    if (!error && revisar) cargar(true);
+    return error;
+  }, [cargar]);
+
+  return { avisos, disponible, cfg, cargar, atender, guardarCfg };
+}
+
+function AvisosTutor({ av, alumnos, onVerRegistro }) {
+  const [verAtendidos, setVerAtendidos] = useState(false);
+  if (!av.disponible) {
+    return (
+      <Card className="p-3 text-xs text-slate-500 flex items-start gap-2">
+        <Bell size={14} className="mt-0.5 shrink-0" />
+        <span>Para activar los <b>avisos automáticos al tutor</b>, ejecuta <b>avisos_tutor.sql</b> en Supabase.</span>
+      </Card>
+    );
+  }
+  if (av.avisos === null) return null;
+
+  const porId = new Map(alumnos.map(a => [a.id, a]));
+  const pendientes = av.avisos.filter(a => a.estado === "pendiente");
+  const atendidos = av.avisos.filter(a => a.estado !== "pendiente");
+  const activo = av.cfg ? av.cfg.activo !== false : true;
+
+  const enviar = (aviso) => {
+    const al = porId.get(aviso.alumno_id);
+    const tel = soloDigitos(al?.telefono);
+    if (!tel) { alert(`No hay teléfono registrado para el tutor de ${al?.nombre || "este alumno"}.`); return; }
+    const numero = tel.length === 10 ? "52" + tel : tel;
+    window.open(`https://wa.me/${numero}?text=${encodeURIComponent(mensajeTutor(al.nombre, aviso.tipo, aviso.cantidad, aviso.nivel))}`, "_blank");
+    av.atender(aviso, "enviado");
+  };
+
+  const chip = (a) => (
+    <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full border ${COLORES_SEM[a.nivel].chip}`}>
+      {a.cantidad} {a.tipo === "retardos" ? "retardo(s)" : "falta(s)"} · {ETIQUETA_SEM[a.tipo][a.nivel]}
+    </span>
+  );
+  const nombreDe = (a) => porId.get(a.alumno_id)?.nombre || `(${a.alumno_id})`;
+  const grupoDe = (a) => { const al = porId.get(a.alumno_id); return al ? `${al.semestre ? al.semestre + "° " : ""}${al.grupo || ""}` : ""; };
+
+  return (
+    <Card className="p-4 space-y-3">
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="flex-1 min-w-[220px]">
+          <h3 className="font-bold text-sm flex items-center gap-1.5">
+            <Bell size={15} />Avisos al tutor
+            {pendientes.length > 0 && <span className="text-[11px] font-bold bg-rose-600 text-white rounded-full px-2 py-0.5">{pendientes.length}</span>}
+          </h3>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {activo
+              ? "Se revisa solo todos los días a las 5:15 pm con los límites del semáforo. Toca WhatsApp para mandar el mensaje; queda registrado quién lo mandó y cuándo."
+              : "La revisión automática está apagada. Los límites del semáforo siguen funcionando como siempre."}
+          </p>
+        </div>
+        <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer select-none">
+          <input type="checkbox" className="w-4 h-4 accent-[#1a2340]" checked={activo}
+            onChange={e => av.guardarCfg({ activo: e.target.checked }, e.target.checked)} />
+          Revisión automática
+        </label>
+      </div>
+
+      {pendientes.length === 0 ? (
+        <p className="text-sm text-slate-400 py-2">Sin avisos pendientes.</p>
+      ) : (
+        <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl max-h-80 overflow-y-auto">
+          {pendientes.map(a => {
+            const al = porId.get(a.alumno_id);
+            return (
+              <div key={a.id} className="px-3 py-2.5 flex flex-col sm:flex-row sm:items-center gap-2">
+                <button className="flex-1 min-w-0 text-left hover:underline" onClick={() => al && onVerRegistro(al)} title="Ver su registro completo">
+                  <div className="text-sm font-medium break-words">
+                    <span className="w-2.5 h-2.5 rounded-full inline-block mr-1.5 align-middle" style={{ background: COLORES_SEM[a.nivel].punto }} />
+                    {nombreDe(a)}
+                  </div>
+                  <div className="text-xs text-slate-500">{grupoDe(a)} · detectado el {fmtFechaHora(a.creado)}</div>
+                </button>
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  {chip(a)}
+                  <button className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 disabled:opacity-40"
+                    onClick={() => enviar(a)} disabled={!soloDigitos(al?.telefono)}
+                    title={soloDigitos(al?.telefono) ? "Mandar el aviso por WhatsApp" : "Sin teléfono registrado"}>
+                    <MessageCircle size={13} />WhatsApp
+                  </button>
+                  <button className="text-xs text-slate-400 hover:text-slate-600 px-1.5 py-1.5" onClick={() => av.atender(a, "descartado")}
+                    title="No mandar este aviso">
+                    Descartar
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {atendidos.length > 0 && (
+        <div>
+          <button className="text-xs font-semibold text-slate-500 hover:underline" onClick={() => setVerAtendidos(v => !v)}>
+            {verAtendidos ? "Ocultar" : "Ver"} avisos atendidos ({atendidos.length})
+          </button>
+          {verAtendidos && (
+            <div className="mt-2 divide-y divide-slate-100 border border-slate-200 rounded-xl max-h-72 overflow-y-auto">
+              {atendidos.map(a => (
+                <div key={a.id} className="px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <div className="flex-1 min-w-[180px]">
+                    <div className="text-sm break-words">{nombreDe(a)} <span className="text-xs text-slate-400">{grupoDe(a)}</span></div>
+                    <div className="text-[11px] text-slate-500">
+                      {a.estado === "enviado" ? `Enviado por WhatsApp${a.atendido_por ? ` por ${a.atendido_por}` : ""} el ${fmtFechaHora(a.atendido)}`
+                        : a.estado === "descartado" ? `Descartado${a.atendido_por ? ` por ${a.atendido_por}` : ""} el ${fmtFechaHora(a.atendido)}`
+                        : "Pasó a rojo antes de mandarse; se avisó con el nivel rojo"}
+                    </div>
+                  </div>
+                  {chip(a)}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
   );
 }
 
@@ -2294,7 +2708,7 @@ const ETIQUETA_SEM = {
   retardos: { verde: "Puntuales",    amarillo: "Llegan tarde seguido", rojo: "Atención urgente" },
 };
 
-function PanelSeguimiento({ alumnos }) {
+function PanelSeguimiento({ alumnos, user, onPendientes }) {
   /* Faltas y retardos son problemas distintos: uno es no venir, el
      otro es venir tarde. Cada uno tiene su propio semáforo y sus
      propios límites, porque 5 faltas y 5 retardos no pesan igual. */
@@ -2318,6 +2732,33 @@ function PanelSeguimiento({ alumnos }) {
   const [filtro, setFiltro] = useState("todos");
   const [grupo, setGrupo] = useState("todos");
   const [detalleAlumno, setDetalleAlumno] = useState(null);
+
+  /* Avisos automáticos al tutor. Los límites del semáforo ahora se
+     guardan también en la base de datos, para que todos usen los
+     mismos y la revisión diaria del servidor los conozca. */
+  const av = useAvisosTutor(user);
+  const tGuardar = useRef(null);
+  useEffect(() => {
+    const c = av.cfg;
+    if (!c?.actualizado) return;
+    if (c.ajustado === false) {
+      // Primera vez: la base de datos toma los límites que ya se usaban aquí
+      av.guardarCfg({ faltas_amarillo: amarillo, faltas_rojo: rojo,
+        retardos_amarillo: amarilloR, retardos_rojo: rojoR }, true);
+      return;
+    }
+    setAmarillo(c.faltas_amarillo); setRojo(c.faltas_rojo);
+    setAmarilloR(c.retardos_amarillo); setRojoR(c.retardos_rojo);
+    try {
+      localStorage.setItem("seguimiento_amarillo", String(c.faltas_amarillo));
+      localStorage.setItem("seguimiento_rojo", String(c.faltas_rojo));
+      localStorage.setItem("seguimiento_retardos_amarillo", String(c.retardos_amarillo));
+      localStorage.setItem("seguimiento_retardos_rojo", String(c.retardos_rojo));
+    } catch { /* sin almacenamiento local: no pasa nada */ }
+  }, [av.cfg?.actualizado]);   // solo cuando llega de la base de datos
+  useEffect(() => {
+    if (av.avisos) onPendientes?.(av.avisos.filter(a => a.estado === "pendiente").length);
+  }, [av.avisos]);
 
   const desde = periodo === "semestre" ? inicioSemestre()
     : periodo === "30" ? haceDias(30) : haceDias(7);
@@ -2371,6 +2812,12 @@ function PanelSeguimiento({ alumnos }) {
       setAmarillo(a); setRojo(r);
       localStorage.setItem("seguimiento_amarillo", String(a));
       localStorage.setItem("seguimiento_rojo", String(r));
+    }
+    if (av.disponible) {
+      const cambios = modo === "retardos"
+        ? { retardos_amarillo: a, retardos_rojo: r } : { faltas_amarillo: a, faltas_rojo: r };
+      clearTimeout(tGuardar.current);
+      tGuardar.current = setTimeout(() => av.guardarCfg(cambios, true), 900);
     }
   };
 
@@ -2462,10 +2909,15 @@ function PanelSeguimiento({ alumnos }) {
       : `Buen día. Le informamos que ${al.nombre} acumula ${al.faltas} inasistencia(s) ` +
         `en lo que va del periodo. Le pedimos comunicarse con el plantel. CBTA No. 291.`;
     window.open(`https://wa.me/${numero}?text=${encodeURIComponent(msg)}`, "_blank");
+    // Si había un aviso automático pendiente para este alumno, queda atendido
+    (av.avisos || []).filter(x => x.estado === "pendiente" && x.alumno_id === al.id && x.tipo === modo)
+      .forEach(x => av.atender(x, "enviado"));
   };
 
   return (
     <div className="space-y-4">
+      <AvisosTutor av={av} alumnos={alumnos} onVerRegistro={setDetalleAlumno} />
+
       <div className="flex gap-1 bg-slate-100 p-1 rounded-xl w-fit">
         {[["faltas", "Faltas"], ["retardos", "Retardos"]].map(([id, txt]) => (
           <button key={id} onClick={() => cambiarModo(id)}
@@ -2558,7 +3010,7 @@ function PanelSeguimiento({ alumnos }) {
                   style={{ background: COLORES_SEM[a.sem].punto }} />
                 <button className="flex-1 min-w-0 text-left hover:underline"
                   onClick={() => setDetalleAlumno(a)}
-                  title={modo === "retardos" ? "Ver qué días llegó tarde" : "Ver en qué fechas faltó"}>
+                  title="Ver su registro completo">
                   <div className="text-sm font-medium break-words">
                     <span className="w-2.5 h-2.5 rounded-full inline-block mr-1.5 sm:hidden align-middle"
                       style={{ background: COLORES_SEM[a.sem].punto }} />
@@ -2592,19 +3044,10 @@ function PanelSeguimiento({ alumnos }) {
       </Card>
       {sinCredencial.length > 0 && <SinCredencial lista={sinCredencial} />}
 
-      {detalleAlumno && modo === "faltas" && (
-        <FaltasDelAlumno
+      {detalleAlumno && (
+        <ExpedienteAlumno
           alumno={detalleAlumno}
-          desde={desde}
-          hasta={hasta}
-          onCerrar={() => setDetalleAlumno(null)}
-        />
-      )}
-      {detalleAlumno && modo === "retardos" && (
-        <RetardosDelAlumno
-          alumno={detalleAlumno}
-          desde={desde}
-          hasta={hasta}
+          desdeInicial={desde}
           onCerrar={() => setDetalleAlumno(null)}
         />
       )}
