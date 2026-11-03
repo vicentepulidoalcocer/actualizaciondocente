@@ -120,6 +120,9 @@ jobs:
 
       # Prueba que el respaldo de verdad se puede restaurar: lo carga en
       # una base de datos vacía y desechable dentro del mismo GitHub.
+      # Entra como supabase_admin (el administrador completo de esa base de
+      # prueba): con el usuario postgres no se pueden restaurar los ajustes
+      # de los roles.
       - name: Comprobar que el respaldo se puede restaurar
         if: success() || env.ARCHIVOS_INCOMPLETOS == '1'
         run: |
@@ -130,5 +133,5 @@ jobs:
             --file respaldo/estructura.sql \
             --command 'SET session_replication_role = replica' \
             --file respaldo/datos.sql \
-            --dbname 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' > /dev/null
+            --dbname 'postgresql://supabase_admin:postgres@127.0.0.1:54322/postgres' > /dev/null
           echo "El respaldo se restauró completo en una base de prueba."
