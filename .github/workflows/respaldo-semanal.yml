@@ -95,7 +95,9 @@ jobs:
           URL: ${{ secrets.VITE_SUPABASE_URL }}
           LLAVE: ${{ secrets.SUPABASE_SECRET_KEY }}
         run: |
-          node scripts/respaldo-archivos.mjs respaldo-archivos
+          # Si faltan algunos archivos, se guarda igual lo copiado y se avisa al final
+          node scripts/respaldo-archivos.mjs respaldo-archivos || echo "ARCHIVOS_INCOMPLETOS=1" >> "$GITHUB_ENV"
+          [ -d respaldo-archivos ] || { echo "No se copió ningún archivo"; exit 1; }
           7z a -t7z -mhe=on -mx=1 -p"$CLAVE" "respaldo-archivos-$FECHA.7z" ./respaldo-archivos/* > /dev/null
           ls -lh "respaldo-archivos-$FECHA.7z"
 
@@ -107,9 +109,17 @@ jobs:
           retention-days: 90
           compression-level: 0
 
+      - name: Avisar si faltaron archivos
+        if: env.ARCHIVOS_INCOMPLETOS == '1'
+        run: |
+          echo "Algunos archivos no se pudieron copiar. Lo demás sí quedó guardado."
+          echo "Revisa el paso 'Copiar los archivos' o FALTANTES.txt dentro del respaldo."
+          exit 1
+
       # Prueba que el respaldo de verdad se puede restaurar: lo carga en
       # una base de datos vacía y desechable dentro del mismo GitHub.
       - name: Comprobar que el respaldo se puede restaurar
+        if: success() || env.ARCHIVOS_INCOMPLETOS == '1'
         run: |
           supabase init --workdir "$RUNNER_TEMP/prueba" > /dev/null
           supabase db start --workdir "$RUNNER_TEMP/prueba"
