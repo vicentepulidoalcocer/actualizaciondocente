@@ -742,7 +742,14 @@ function descargarCSV(nombre, filas) {
   URL.revokeObjectURL(a.href);
 }
 
+/* Convierte texto en HTML seguro. Los nombres de cursos, instituciones o
+   docentes los escribe la gente; sin esto, un texto con etiquetas podría
+   ejecutar código en la ventana del reporte con la sesión de quien lo abre. */
+const escaparHtml = (v) => String(v ?? "").replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
 function imprimirReporte(titulo, html) {
+  titulo = escaparHtml(titulo);
   const w = window.open("", "_blank");
   w.document.write(`<html><head><title>${titulo}</title><style>
     body{font-family:Georgia,serif;padding:32px;color:#1a2340}
@@ -7293,7 +7300,7 @@ function MisAvisos({ db, user, recargar }) {
                 {adjuntosDe(a).filter(adj => !esImagenAdjunta(adj)).map(adj => (
                   <AdjuntoAviso key={adj.clave} adj={adj} />
                 ))}
-                {a.enlace && (
+                {/^https?:\/\//i.test(a.enlace || "") && (
                   <a href={a.enlace} target="_blank" rel="noreferrer"
                     className="inline-flex items-center gap-1.5 text-sm text-indigo-600 font-semibold hover:underline">
                     <Link2 size={15}/>Más información
@@ -8026,7 +8033,7 @@ function Reportes({ db, dentroDeTablero = false }) {
       .filter(x => cumple ? x.pct >= 100 : x.pct < 100)
       .map(x => [x.d.nombre, x.d.area, x.h, x.m, x.pct + "%"])];
 
-  const aHtml = (filas) => `<table><tr>${filas[0].map(h => `<th>${h ?? ""}</th>`).join("")}</tr>${filas.slice(1).map(f => `<tr>${f.map(c => `<td>${c ?? ""}</td>`).join("")}</tr>`).join("")}</table>`;
+  const aHtml = (filas) => `<table><tr>${filas[0].map(h => `<th>${escaparHtml(h)}</th>`).join("")}</tr>${filas.slice(1).map(f => `<tr>${f.map(c => `<td>${escaparHtml(c)}</td>`).join("")}</tr>`).join("")}</table>`;
 
   const reportes = [
     { nombre: "Reporte general de capacitación", filas: filasGeneral },
