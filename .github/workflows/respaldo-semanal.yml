@@ -120,18 +120,25 @@ jobs:
 
       # Prueba que el respaldo de verdad se puede restaurar: lo carga en
       # una base de datos vacía y desechable dentro del mismo GitHub.
-      # Entra como supabase_admin (el administrador completo de esa base de
-      # prueba): con el usuario postgres no se pueden restaurar los ajustes
-      # de los roles.
+      # Se prueban los datos del portal (esquema public), que son los que
+      # importan. Las tablas internas de Supabase (auth, storage) cambian de
+      # una versión a otra y la base de prueba no siempre las trae iguales;
+      # esas siguen completas en datos.sql, solo no entran en esta prueba.
+      # Entra como supabase_admin, el administrador completo de esa base.
       - name: Comprobar que el respaldo se puede restaurar
         if: success() || env.ARCHIVOS_INCOMPLETOS == '1'
         run: |
+          volcar() { supabase db dump --db-url "$DB_URL" "$@" || supabase db dump --remote="$DB_URL" "$@"; }
+          volcar -f "$RUNNER_TEMP/datos_portal.sql" --data-only --use-copy --schema public
           supabase init --workdir "$RUNNER_TEMP/prueba" > /dev/null
           supabase db start --workdir "$RUNNER_TEMP/prueba"
           psql --single-transaction --variable ON_ERROR_STOP=1 \
             --file respaldo/roles.sql \
             --file respaldo/estructura.sql \
             --command 'SET session_replication_role = replica' \
-            --file respaldo/datos.sql \
+            --file "$RUNNER_TEMP/datos_portal.sql" \
             --dbname 'postgresql://supabase_admin:postgres@127.0.0.1:54322/postgres' > /dev/null
+          # Que de verdad haya datos, no solo tablas vacías
+          psql 'postgresql://supabase_admin:postgres@127.0.0.1:54322/postgres' -At -c \
+            "select 'Registros de asistencia restaurados: ' || count(*) from public.asistencias"
           echo "El respaldo se restauró completo en una base de prueba."
