@@ -6,6 +6,10 @@
 //  Baja todos los archivos de todos los buckets a una carpeta, con la misma
 //  estructura de carpetas. No necesita instalar nada (Node 20 trae fetch).
 //  Variables: URL (Project URL) y LLAVE (llave secreta sb_secret_…).
+//
+//  v2: muestra el avance, pone un tiempo límite a cada archivo, reintenta,
+//  y si alguno falla igual termina la copia de los demás y deja la lista
+//  de los que faltaron en FALTANTES.txt.
 // ============================================================================
 
 import { mkdir, writeFile } from "node:fs/promises";
@@ -14,6 +18,15 @@ import { dirname, join } from "node:path";
 const URL_BASE = String(process.env.URL || "").replace(/\/+$/, "");
 const LLAVE = process.env.LLAVE || "";
 const DESTINO = process.argv[2] || "respaldo-archivos";
+
+// Mantiene vivo el proceso mientras haya descargas pendientes. Sin esto, si
+// una conexión se queda colgada, Node puede terminar en silencio a medias.
+const latido = setInterval(() => {}, 1000);
+
+process.on("unhandledRejection", (e) => {
+  console.error("Error inesperado:", e?.stack || e);
+  process.exit(1);
+});
 
 if (!URL_BASE || !LLAVE) {
   console.error("Faltan los secretos VITE_SUPABASE_URL o SUPABASE_SECRET_KEY.");
@@ -25,19 +38,29 @@ const cabeceras = LLAVE.startsWith("eyJ")
   ? { apikey: LLAVE, Authorization: `Bearer ${LLAVE}` }
   : { apikey: LLAVE };
 
-async function pedir(ruta, opciones = {}, intentos = 3) {
-  for (let i = 1; ; i++) {
+// Pide algo a Storage con tiempo límite y hasta 4 intentos. Devuelve la
+// respuesta con el cuerpo ya leído, para que el tiempo límite cubra todo.
+async function pedir(ruta, opciones = {}, segundos = 90) {
+  let ultimo;
+  for (let i = 1; i <= 4; i++) {
+    const control = new AbortController();
+    const reloj = setTimeout(() => control.abort(), segundos * 1000);
     try {
       const r = await fetch(`${URL_BASE}/storage/v1${ruta}`, {
         ...opciones, headers: { ...cabeceras, ...(opciones.headers || {}) },
-        signal: AbortSignal.timeout(120000),
+        signal: control.signal,
       });
-      if (r.ok || i >= intentos || r.status < 500) return r;
+      const cuerpo = Buffer.from(await r.arrayBuffer());
+      clearTimeout(reloj);
+      if (r.ok || r.status < 500) return { ok: r.ok, status: r.status, cuerpo };
+      ultimo = `HTTP ${r.status}`;
     } catch (e) {
-      if (i >= intentos) throw e;
+      clearTimeout(reloj);
+      ultimo = e?.name === "AbortError" ? `sin respuesta en ${segundos} s` : String(e?.message || e);
     }
     await new Promise((ok) => setTimeout(ok, 2000 * i));
   }
+  return { ok: false, status: 0, cuerpo: Buffer.alloc(0), error: ultimo };
 }
 
 // Lista recursiva: las carpetas vienen sin "id"
@@ -48,54 +71,61 @@ async function listar(bucket, prefijo = "") {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ prefix: prefijo, limit: 1000, offset, sortBy: { column: "name", order: "asc" } }),
-    });
-    if (!r.ok) throw new Error(`No se pudo listar ${bucket}/${prefijo}: ${r.status} ${await r.text()}`);
-    const lote = await r.json();
+    }, 60);
+    if (!r.ok) throw new Error(`No se pudo listar ${bucket}/${prefijo}: ${r.status || r.error} ${r.cuerpo.toString().slice(0, 200)}`);
+    const lote = JSON.parse(r.cuerpo.toString());
     for (const x of lote) {
       const ruta = prefijo ? `${prefijo}${x.name}` : x.name;
       if (x.id === null || x.id === undefined) archivos.push(...await listar(bucket, `${ruta}/`));
-      else archivos.push({ ruta, peso: Number(x.metadata?.size) || 0 });
+      else archivos.push(ruta);
     }
     if (lote.length < 1000) break;
   }
   return archivos;
 }
 
-const r = await pedir("/bucket");
-if (!r.ok) {
-  console.error(`No se pudo leer la lista de buckets: ${r.status} ${await r.text()}`);
+const rb = await pedir("/bucket", {}, 60);
+if (!rb.ok) {
+  console.error(`No se pudo leer la lista de buckets: ${rb.status || rb.error} ${rb.cuerpo.toString().slice(0, 200)}`);
   process.exit(1);
 }
-const buckets = (await r.json()).map((b) => b.name);
+const buckets = JSON.parse(rb.cuerpo.toString()).map((b) => b.name);
 console.log(`Buckets: ${buckets.join(", ") || "(ninguno)"}`);
 
-let total = 0, bytes = 0;
+let total = 0, bytes = 0, vistos = 0;
 const fallos = [];
+const inicio = Date.now();
 for (const bucket of buckets) {
   const lista = await listar(bucket);
   console.log(`${bucket}: ${lista.length} archivo(s)`);
-  // De 6 en 6, para no saturar
+  vistos = 0;
   for (let i = 0; i < lista.length; i += 6) {
-    await Promise.all(lista.slice(i, i + 6).map(async ({ ruta }) => {
+    await Promise.all(lista.slice(i, i + 6).map(async (ruta) => {
       const camino = ruta.split("/").map(encodeURIComponent).join("/");
+      const d = await pedir(`/object/${encodeURIComponent(bucket)}/${camino}`, {}, Number(process.env.SEG || 120));
+      vistos++;
+      if (!d.ok) { fallos.push(`${bucket}/${ruta}  (${d.error || "HTTP " + d.status})`); return; }
       try {
-        const d = await pedir(`/object/${encodeURIComponent(bucket)}/${camino}`);
-        if (!d.ok) throw new Error(`${d.status}`);
-        const datos = Buffer.from(await d.arrayBuffer());
         const local = join(DESTINO, bucket, ...ruta.split("/"));
         await mkdir(dirname(local), { recursive: true });
-        await writeFile(local, datos);
-        total++; bytes += datos.length;
+        await writeFile(local, d.cuerpo);
+        total++; bytes += d.cuerpo.length;
       } catch (e) {
-        fallos.push(`${bucket}/${ruta} (${e.message})`);
+        fallos.push(`${bucket}/${ruta}  (no se pudo guardar: ${e.message})`);
       }
     }));
+    if (vistos % 60 < 6 || i + 6 >= lista.length) {
+      console.log(`  avance: ${vistos}/${lista.length} · ${(bytes / 1048576).toFixed(1)} MB · ${Math.round((Date.now() - inicio) / 1000)} s`);
+    }
   }
 }
 
 console.log(`Copiados ${total} archivo(s), ${(bytes / 1048576).toFixed(1)} MB.`);
+clearInterval(latido);
 if (fallos.length) {
-  console.error(`No se pudieron copiar ${fallos.length}:`);
-  fallos.slice(0, 50).forEach((f) => console.error("  " + f));
-  process.exit(1);
+  await mkdir(DESTINO, { recursive: true });
+  await writeFile(join(DESTINO, "FALTANTES.txt"), fallos.join("\n") + "\n");
+  console.error(`No se pudieron copiar ${fallos.length}. Lista completa en FALTANTES.txt dentro del respaldo:`);
+  fallos.slice(0, 40).forEach((f) => console.error("  " + f));
+  process.exit(2);   // el flujo guarda lo copiado y avisa al final
 }
