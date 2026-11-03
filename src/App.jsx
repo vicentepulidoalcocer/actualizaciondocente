@@ -6,7 +6,7 @@ import {
   Download, Filter, Plus, Pencil, Trash2, Eye, Medal, Star, Loader2,
   FolderOpen, User, Activity, ShieldCheck, Menu, X, Megaphone,
   Paperclip, Link2, Archive, Send, Sparkles, CalendarDays, ScanLine, RefreshCw,
-  Image as ImageIcon, HardDrive
+  Image as ImageIcon, HardDrive, History
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie,
@@ -31,6 +31,7 @@ const AsistenciaBaetam = React.lazy(() => import("./AsistenciaBaetam"));
 const AsistenciaDocente = React.lazy(() => import("./AsistenciaDocente"));
 const Finanzas = React.lazy(() => import("./Finanzas"));
 const Ausentes = React.lazy(() => import("./Ausentes"));
+const Bitacora = React.lazy(() => import("./Bitacora"));
 import {
   soportaPush, esIOS, instaladoEnInicio, permisoActual,
   activarNotificaciones, desactivarNotificaciones, estaActivo, enviarPush, registrarServicio,
@@ -1115,6 +1116,7 @@ export default function App() {
     { id: "ranking_general", label: "Ranking general", icono: Medal },
     { id: "actividad", label: "Actividad reciente", icono: Activity },
     { id: "respaldo", label: "Respaldo", icono: Download },
+    { id: "bitacora", label: "Bitácora de cambios", icono: History },
     { id: "admin", label: "Administración", icono: Settings },
   ] : user.rol === "jefe_formacion" ? [
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
@@ -1313,6 +1315,11 @@ export default function App() {
           {pagina === "perfil_inst" && esRolValidador(user.rol) && <PerfilInstitucional db={db} />}
           {pagina === "actividad" && esAdmin && <ActividadReciente db={db} />}
           {pagina === "respaldo" && esAdmin && <Respaldo db={db} user={user} />}
+          {pagina === "bitacora" && esAdmin && (
+            <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}>
+              <Bitacora />
+            </React.Suspense>
+          )}
           {pagina === "metas" && esRolValidador(user.rol) && <Administracion db={db} user={user} mutar={mutar} esAdmin={esAdmin} modo="metas" />}
           {pagina === "admin" && esRolValidador(user.rol) && <Administracion db={db} user={user} mutar={mutar} esAdmin={esAdmin} modo={esAdmin ? "sistema" : "todo"} />}
         </main>
