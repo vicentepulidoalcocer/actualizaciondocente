@@ -60,9 +60,11 @@ jobs:
             echo "CON_ARCHIVOS=1" >> "$GITHUB_ENV"
           fi
 
+      # Versión fija: con "latest" GitHub a veces rechaza la consulta por
+      # exceso de peticiones ("rate limit exceeded") y el respaldo no corre.
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 2.122.1
 
       - name: Copiar la base de datos
         run: |
