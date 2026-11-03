@@ -1,0 +1,122 @@
+# ================================================================
+# Respaldo automático del portal docente
+# ----------------------------------------------------------------
+# Cada domingo de madrugada copia TODA la base de datos de Supabase
+# (estructura, reglas de seguridad, funciones y datos) y la guarda
+# en un archivo .7z protegido con contraseña. El primer domingo de
+# cada mes también copia los archivos (constancias, justificantes,
+# PDF, etc.).
+#
+# Los respaldos quedan en GitHub → pestaña Actions → "Respaldo
+# semanal" → la ejecución → Artifacts. Se conservan 90 días.
+#
+# Si un respaldo falla, el flujo termina en rojo y GitHub avisa
+# por correo.
+#
+# Secretos que necesita (Settings → Secrets and variables → Actions):
+#   SUPABASE_DB_URL       cadena de conexión "Session pooler"
+#   RESPALDO_CLAVE        contraseña para abrir los .7z
+#   SUPABASE_SECRET_KEY   llave secreta (sb_secret_…), para los archivos
+#   VITE_SUPABASE_URL     (ya existe)
+#
+# Se guarda en: .github/workflows/respaldo-semanal.yml
+# ================================================================
+
+name: Respaldo semanal
+
+on:
+  schedule:
+    # Domingo 08:17 UTC = 3:17 am en Quintana Roo
+    - cron: "17 8 * * 0"
+  workflow_dispatch:          # para correrlo a mano desde Actions
+    inputs:
+      archivos:
+        description: "¿Incluir también los archivos (constancias, PDF)?"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  respaldo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+      CLAVE: ${{ secrets.RESPALDO_CLAVE }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Revisar secretos
+        run: |
+          falta=0
+          [ -z "$DB_URL" ] && echo "Falta el secreto SUPABASE_DB_URL" && falta=1
+          [ -z "$CLAVE" ] && echo "Falta el secreto RESPALDO_CLAVE" && falta=1
+          [ "$falta" = "1" ] && exit 1
+          echo "FECHA=$(TZ=America/Cancun date +%F)" >> "$GITHUB_ENV"
+          # Archivos: el primer domingo del mes, o si se pidió a mano
+          if [ "$(TZ=America/Cancun date +%d)" -le 7 ] || [ "${{ inputs.archivos }}" = "true" ]; then
+            echo "CON_ARCHIVOS=1" >> "$GITHUB_ENV"
+          fi
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Copiar la base de datos
+        run: |
+          mkdir -p respaldo
+          # Las versiones del programa de Supabase usan --db-url o --remote
+          volcar() { supabase db dump --db-url "$DB_URL" "$@" || supabase db dump --remote="$DB_URL" "$@"; }
+          volcar -f respaldo/roles.sql --role-only
+          volcar -f respaldo/estructura.sql
+          volcar -f respaldo/datos.sql --data-only --use-copy \
+            -x "storage.buckets_vectors" -x "storage.vector_indexes"
+          ls -lh respaldo
+          # Un respaldo vacío es un error, no un respaldo
+          [ -s respaldo/datos.sql ] || { echo "El archivo de datos salió vacío"; exit 1; }
+
+      - name: Empaquetar con contraseña
+        run: |
+          7z a -t7z -mhe=on -mx=7 -p"$CLAVE" "respaldo-datos-$FECHA.7z" ./respaldo/* > /dev/null
+          ls -lh "respaldo-datos-$FECHA.7z"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: respaldo-datos-${{ env.FECHA }}
+          path: respaldo-datos-${{ env.FECHA }}.7z
+          retention-days: 90
+          compression-level: 0
+
+      - name: Copiar los archivos
+        if: env.CON_ARCHIVOS == '1'
+        env:
+          URL: ${{ secrets.VITE_SUPABASE_URL }}
+          LLAVE: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          node scripts/respaldo-archivos.mjs respaldo-archivos
+          7z a -t7z -mhe=on -mx=1 -p"$CLAVE" "respaldo-archivos-$FECHA.7z" ./respaldo-archivos/* > /dev/null
+          ls -lh "respaldo-archivos-$FECHA.7z"
+
+      - uses: actions/upload-artifact@v4
+        if: env.CON_ARCHIVOS == '1'
+        with:
+          name: respaldo-archivos-${{ env.FECHA }}
+          path: respaldo-archivos-${{ env.FECHA }}.7z
+          retention-days: 90
+          compression-level: 0
+
+      # Prueba que el respaldo de verdad se puede restaurar: lo carga en
+      # una base de datos vacía y desechable dentro del mismo GitHub.
+      - name: Comprobar que el respaldo se puede restaurar
+        run: |
+          supabase init --workdir "$RUNNER_TEMP/prueba" > /dev/null
+          supabase db start --workdir "$RUNNER_TEMP/prueba"
+          psql --single-transaction --variable ON_ERROR_STOP=1 \
+            --file respaldo/roles.sql \
+            --file respaldo/estructura.sql \
+            --command 'SET session_replication_role = replica' \
+            --file respaldo/datos.sql \
+            --dbname 'postgresql://postgres:postgres@127.0.0.1:54322/postgres' > /dev/null
+          echo "El respaldo se restauró completo en una base de prueba."
