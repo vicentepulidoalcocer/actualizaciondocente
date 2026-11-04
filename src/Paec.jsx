@@ -16,7 +16,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Users, Camera, Trash2, Loader2, Plus, Pencil, Save, X, Copy, Check,
-  AlertTriangle, Star, ClipboardList, CheckCircle2, History, FileDown,
+  AlertTriangle, Star, ClipboardList, CheckCircle2, History, FileDown, CalendarDays,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
@@ -111,6 +111,7 @@ export default function Paec({ db, user }) {
   const [proyectos, setProyectos] = useState([]);
   const [cicloVer, setCicloVer] = useState(cicloActual);
   const [participantes, setParticipantes] = useState([]);
+  const [plan, setPlan] = useState([]);
   const [evidencias, setEvidencias] = useState([]);
   const [urls, setUrls] = useState({});
   const [cargando, setCargando] = useState(true);
@@ -129,14 +130,16 @@ export default function Paec({ db, user }) {
   }, []);
 
   const cargarDetalle = useCallback(async (p) => {
-    if (!p) { setParticipantes([]); setEvidencias([]); setUrls({}); return; }
-    const [pa, ev] = await Promise.all([
+    if (!p) { setParticipantes([]); setPlan([]); setEvidencias([]); setUrls({}); return; }
+    const [pa, pl, ev] = await Promise.all([
       supabase.from("paec_participantes").select("*").eq("proyecto_id", p.id).order("creado_en"),
+      supabase.from("paec_plan").select("*").eq("proyecto_id", p.id),
       supabase.from("paec_evidencias").select("*").eq("proyecto_id", p.id).order("fecha", { ascending: false }).order("creado_en", { ascending: false }),
     ]);
     if (pa.error) throw pa.error;
     if (ev.error) throw ev.error;
     setParticipantes(pa.data || []);
+    setPlan(pl.error ? [] : ordenarPlan(pl.data || []));
     setEvidencias(ev.data || []);
     const rutas = (ev.data || []).map((e) => e.foto);
     if (rutas.length) {
@@ -210,9 +213,11 @@ export default function Paec({ db, user }) {
             onEditar={() => setEditando(true)} onFicha={() => setVerFicha(true)} onCambio={recargar} />
           <Participantes proyecto={proyecto} participantes={participantes} user={user} db={db}
             esAdmin={esAdmin} soloLectura={soloLectura} onCambio={recargar} />
+          <PlanProyecto proyecto={proyecto} plan={plan} participantes={participantes} user={user}
+            esAdmin={esAdmin} soloLectura={soloLectura} onCambio={recargar} />
           <Evidencias proyecto={proyecto} evidencias={evidencias} urls={urls} user={user} esAdmin={esAdmin}
             soloLectura={soloLectura} sumado={participantes.some((p) => p.docente_id === user.id)} onCambio={recargar} />
-          {verFicha && <FichaSEMS proyecto={proyecto} participantes={participantes} evidencias={evidencias}
+          {verFicha && <FichaSEMS proyecto={proyecto} participantes={participantes} plan={plan} evidencias={evidencias}
             urls={urls} esAdmin={esAdmin} onCerrar={() => setVerFicha(false)} onCambio={recargar} />}
         </>
       )}
@@ -397,6 +402,8 @@ function FichaProyecto({ proyecto, esAdmin, soloLectura, participantes, evidenci
 /* ---------- Docentes que se suman con su asignatura ---------- */
 function Participantes({ proyecto, participantes, user, db, esAdmin, soloLectura, onCambio }) {
   const [asig, setAsig] = useState("");
+  const [act, setAct] = useState(actividadVacia);
+  const [abierto, setAbierto] = useState(false);
   const [trabajando, setTrabajando] = useState(false);
   const sugeridas = useMemo(() => asignaturasSugeridas(db, user), [db, user]);
   const mias = participantes.filter((p) => p.docente_id === user.id);
@@ -413,14 +420,25 @@ function Participantes({ proyecto, participantes, user, db, esAdmin, soloLectura
 
   const sumarme = async () => {
     const a = asig.trim();
-    if (a.length < 2) return;
+    if (a.length < 2) { alert("Escribe tu asignatura o módulo."); return; }
+    const falta = faltaEnActividad(act);
+    if (falta) { alert(falta); return; }
     setTrabajando(true);
-    const { error } = await supabase.from("paec_participantes").insert({
+    const { data, error } = await supabase.from("paec_participantes").insert({
       proyecto_id: proyecto.id, docente_id: user.id, docente_nombre: user.nombre || "", asignatura: a,
-    });
+    }).select().single();
+    if (error) {
+      setTrabajando(false);
+      alert(/duplicate|unique/i.test(error.message) ? "Ya estás sumado con esa asignatura o módulo." : `No se pudo: ${error.message}`);
+      return;
+    }
+    const r = await supabase.from("paec_plan").insert(filaActividad(act, {
+      proyecto_id: proyecto.id, participante_id: data.id, docente_id: user.id,
+      responsable: user.nombre || "", asignatura: a,
+    }));
     setTrabajando(false);
-    if (error) alert(/duplicate|unique/i.test(error.message) ? "Ya estás sumado con esa asignatura." : `No se pudo: ${error.message}`);
-    else { setAsig(""); onCambio(); }
+    if (r.error) alert(`Quedaste sumado, pero tu actividad no se guardó: ${r.error.message}. Captúrala en "Plan del proyecto".`);
+    setAsig(""); setAct(actividadVacia()); setAbierto(false); onCambio();
   };
   const quitar = async (p) => {
     if (!confirm(`¿Quitar "${p.asignatura}"${p.docente_id !== user.id ? ` de ${p.docente_nombre}` : ""} del proyecto?`)) return;
@@ -430,18 +448,28 @@ function Participantes({ proyecto, participantes, user, db, esAdmin, soloLectura
 
   return (
     <Card className="p-5 space-y-4">
-      <h3 className="font-bold text-slate-800 flex items-center gap-2"><Users size={18} /> Docentes y asignaturas</h3>
+      <h3 className="font-bold text-slate-800 flex items-center gap-2"><Users size={18} /> Docentes y asignaturas o módulos</h3>
 
-      {!soloLectura && (
-        <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
-          <p className="text-sm text-slate-700 mb-2">
-            {mias.length ? "Puedes sumar otra asignatura tuya:" : "Súmate al proyecto con la asignatura que vas a integrar:"}
+      {!soloLectura && !abierto && (
+        <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm text-slate-700">
+            {mias.length ? "¿Integras otra asignatura o módulo?" : "Súmate al proyecto con tu asignatura o módulo y tu parte del plan."}
           </p>
-          <div className="flex flex-col sm:flex-row gap-2">
-            <input className={`${inputCls} mt-0`} list="paec-asignaturas" value={asig} onChange={(e) => setAsig(e.target.value)}
-              placeholder="Escribe o elige tu asignatura" maxLength={200} />
+          <button className={btnPrim} onClick={() => setAbierto(true)}><Plus size={16} /> {mias.length ? "Sumar otra" : "Sumarme"}</button>
+        </div>
+      )}
+      {!soloLectura && abierto && (
+        <div className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 space-y-3">
+          <label className="block text-sm font-medium text-slate-700">Tu asignatura o módulo
+            <input className={inputCls} list="paec-asignaturas" value={asig} onChange={(e) => setAsig(e.target.value)}
+              placeholder="Escribe o elige" maxLength={200} />
             <datalist id="paec-asignaturas">{sugeridas.map((s) => <option key={s} value={s} />)}</datalist>
-            <button className={btnPrim} onClick={sumarme} disabled={trabajando || asig.trim().length < 2}>
+          </label>
+          <p className="text-xs font-semibold text-indigo-700 uppercase tracking-wide pt-1">Tu parte del plan</p>
+          <CamposActividad v={act} set={setAct} />
+          <div className="flex gap-2 justify-end">
+            <button className={btnSec} onClick={() => setAbierto(false)} disabled={trabajando}><X size={16} /> Cancelar</button>
+            <button className={btnPrim} onClick={sumarme} disabled={trabajando}>
               {trabajando ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} Sumarme
             </button>
           </div>
@@ -468,6 +496,186 @@ function Participantes({ proyecto, participantes, user, db, esAdmin, soloLectura
             </li>
           ))}
         </ul>
+      )}
+    </Card>
+  );
+}
+
+/* ---------- Plan del proyecto ----------
+   Se arma con lo que aporta cada docente al sumarse (actividad,
+   contenido de su asignatura o módulo, grupos y fechas), más las
+   actividades generales que agregue la administración. */
+const actividadVacia = () => ({ actividad: "", contenido: "", grupos: "", fecha_inicio: "", fecha_fin: "", responsable: "", asignatura: "" });
+const faltaEnActividad = (a) =>
+  a.actividad.trim().length < 3 ? "Describe la actividad."
+  : a.fecha_inicio && a.fecha_fin && a.fecha_fin < a.fecha_inicio ? "La fecha de fin no puede ser antes del inicio."
+  : "";
+const filaActividad = (a, extra) => ({
+  actividad: a.actividad.trim().slice(0, 500),
+  contenido: a.contenido.trim().slice(0, 500) || null,
+  grupos: a.grupos.trim().slice(0, 100) || null,
+  fecha_inicio: a.fecha_inicio || null,
+  fecha_fin: a.fecha_fin || null,
+  ...extra,
+});
+const ordenarPlan = (lista) => [...lista].sort((a, b) =>
+  (a.fecha_inicio || "9999").localeCompare(b.fecha_inicio || "9999") || (a.creado_en || "").localeCompare(b.creado_en || ""));
+const rangoFechas = (a) => {
+  if (!a.fecha_inicio && !a.fecha_fin) return "Sin fecha";
+  if (!a.fecha_fin || a.fecha_fin === a.fecha_inicio) return fechaLarga(a.fecha_inicio || a.fecha_fin);
+  if (!a.fecha_inicio) return `Hasta ${fechaLarga(a.fecha_fin)}`;
+  return `${fechaLarga(a.fecha_inicio)} – ${fechaLarga(a.fecha_fin)}`;
+};
+
+function CamposActividad({ v, set, general = false }) {
+  const c = (k) => (e) => set((x) => ({ ...x, [k]: e.target.value }));
+  return (
+    <div className="space-y-3">
+      {general && (
+        <div className="grid sm:grid-cols-2 gap-3">
+          <label className="text-sm font-medium text-slate-700">Responsable
+            <input className={inputCls} value={v.responsable} onChange={c("responsable")} maxLength={150} placeholder="Ej. Dirección, Vinculación…" />
+          </label>
+          <label className="text-sm font-medium text-slate-700">Área (opcional)
+            <input className={inputCls} value={v.asignatura} onChange={c("asignatura")} maxLength={200} placeholder="Ej. Todo el plantel" />
+          </label>
+        </div>
+      )}
+      <label className="block text-sm font-medium text-slate-700">Actividad <span className="text-slate-400 font-normal">({v.actividad.length}/500)</span>
+        <textarea className={inputCls} rows={2} maxLength={500} value={v.actividad} onChange={c("actividad")}
+          placeholder={general ? "Ej. Feria de cierre con la comunidad" : "Ej. Encuesta a familias sobre el uso de plantas medicinales"} />
+      </label>
+      {!general && (
+        <label className="block text-sm font-medium text-slate-700">Contenido de su asignatura o módulo
+          <textarea className={inputCls} rows={2} maxLength={500} value={v.contenido} onChange={c("contenido")}
+            placeholder="Ej. Estadística descriptiva: tablas de frecuencia y gráficas" />
+        </label>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <label className="text-sm font-medium text-slate-700">Grupos
+          <input className={inputCls} value={v.grupos} onChange={c("grupos")} maxLength={100} placeholder={general ? "Ej. Todos" : "Ej. 3A, 3B"} />
+        </label>
+        <label className="text-sm font-medium text-slate-700">Inicio
+          <input type="date" className={inputCls} value={v.fecha_inicio} onChange={c("fecha_inicio")} />
+        </label>
+        <label className="text-sm font-medium text-slate-700">Fin
+          <input type="date" className={inputCls} value={v.fecha_fin} min={v.fecha_inicio || undefined} onChange={c("fecha_fin")} />
+        </label>
+      </div>
+    </div>
+  );
+}
+
+function PlanProyecto({ proyecto, plan, participantes, user, esAdmin, soloLectura, onCambio }) {
+  // forma: null | { modo: "nueva" | "editar", id?, participante_id?, general, v }
+  const [forma, setForma] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const mias = participantes.filter((p) => p.docente_id === user.id);
+  const sinActividad = mias.filter((p) => !plan.some((a) => a.participante_id === p.id));
+
+  const abrirNueva = (participante, general = false) =>
+    setForma({ modo: "nueva", participante_id: participante?.id || null, general, v: actividadVacia(),
+               asignatura: participante?.asignatura || "" });
+  const abrirEditar = (a) =>
+    setForma({ modo: "editar", id: a.id, participante_id: a.participante_id, general: a.general, asignatura: a.asignatura || "",
+               v: { actividad: a.actividad || "", contenido: a.contenido || "", grupos: a.grupos || "",
+                    fecha_inicio: a.fecha_inicio || "", fecha_fin: a.fecha_fin || "",
+                    responsable: a.responsable || "", asignatura: a.asignatura || "" } });
+
+  const guardar = async () => {
+    const falta = faltaEnActividad(forma.v);
+    if (falta) { alert(falta); return; }
+    if (!forma.general && !forma.participante_id) { alert("Elige tu asignatura o módulo."); return; }
+    const part = participantes.find((p) => p.id === forma.participante_id);
+    const extra = forma.general
+      ? { general: true, participante_id: null, responsable: forma.v.responsable.trim() || "Administración",
+          asignatura: forma.v.asignatura.trim() || null, contenido: null }
+      : { general: false, participante_id: forma.participante_id, asignatura: part?.asignatura || forma.asignatura,
+          responsable: part?.docente_nombre || user.nombre || "" };
+    setGuardando(true);
+    const fila = filaActividad(forma.v, extra);
+    const r = forma.modo === "editar"
+      ? await supabase.from("paec_plan").update(fila).eq("id", forma.id)
+      : await supabase.from("paec_plan").insert({ ...fila, proyecto_id: proyecto.id, docente_id: user.id });
+    setGuardando(false);
+    if (r.error) { alert(`No se pudo guardar: ${r.error.message}`); return; }
+    setForma(null); onCambio();
+  };
+  const borrar = async (a) => {
+    if (!confirm("¿Borrar esta actividad del plan?")) return;
+    const { error } = await supabase.from("paec_plan").delete().eq("id", a.id);
+    if (error) alert(`No se pudo: ${error.message}`); else onCambio();
+  };
+  const puedeEditar = (a) => !soloLectura && (esAdmin || (a.docente_id === user.id && !a.general));
+
+  return (
+    <Card className="p-5 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="font-bold text-slate-800 flex items-center gap-2"><CalendarDays size={18} /> Plan del proyecto</h3>
+        {!soloLectura && !forma && (
+          <div className="flex flex-wrap gap-2">
+            {mias.length > 0 && (
+              <button className={btnSec} onClick={() => abrirNueva(mias.length === 1 ? mias[0] : null)}><Plus size={16} /> Agregar actividad mía</button>
+            )}
+            {esAdmin && <button className={btnSec} onClick={() => abrirNueva(null, true)}><Plus size={16} /> Actividad general</button>}
+          </div>
+        )}
+      </div>
+
+      {!soloLectura && !forma && sinActividad.map((p) => (
+        <div key={p.id} className="rounded-xl border border-amber-200 bg-amber-50 p-3 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-sm text-amber-900">Falta tu parte del plan para <b>{p.asignatura}</b>.</p>
+          <button className={btnPrim} onClick={() => abrirNueva(p)}><Pencil size={16} /> Completar mi parte</button>
+        </div>
+      ))}
+
+      {forma && (
+        <div className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 space-y-3">
+          <p className="text-sm font-semibold text-slate-700">
+            {forma.modo === "editar" ? "Editar actividad" : forma.general ? "Nueva actividad general del plantel" : "Nueva actividad"}
+          </p>
+          {!forma.general && (forma.modo === "editar" || mias.length <= 1
+            ? <p className="text-sm text-slate-600">Asignatura o módulo: <b>{participantes.find((p) => p.id === forma.participante_id)?.asignatura || forma.asignatura}</b></p>
+            : <label className="block text-sm font-medium text-slate-700">Asignatura o módulo
+                <select className={inputCls} value={forma.participante_id || ""} onChange={(e) => setForma((f) => ({ ...f, participante_id: e.target.value || null }))}>
+                  <option value="">Elige…</option>
+                  {mias.map((p) => <option key={p.id} value={p.id}>{p.asignatura}</option>)}
+                </select>
+              </label>)}
+          <CamposActividad v={forma.v} set={(fn) => setForma((f) => ({ ...f, v: fn(f.v) }))} general={forma.general} />
+          <div className="flex gap-2 justify-end">
+            <button className={btnSec} onClick={() => setForma(null)} disabled={guardando}><X size={16} /> Cancelar</button>
+            <button className={btnPrim} onClick={guardar} disabled={guardando}>
+              {guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Guardar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {plan.length === 0 ? (
+        <p className="text-sm text-slate-500">El plan se irá formando con la actividad que capture cada docente al sumarse.</p>
+      ) : (
+        <ol className="space-y-2">
+          {plan.map((a) => (
+            <li key={a.id} className={`rounded-xl border p-3 ${a.general ? "border-violet-200 bg-violet-50/50" : "border-slate-200"}`}>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <p className="text-xs font-semibold text-indigo-700">{rangoFechas(a)}</p>
+                {puedeEditar(a) && (
+                  <div className="flex gap-1 -mt-1">
+                    <button onClick={() => abrirEditar(a)} title="Editar" className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50"><Pencil size={15} /></button>
+                    <button onClick={() => borrar(a)} title="Borrar" className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"><Trash2 size={15} /></button>
+                  </div>
+                )}
+              </div>
+              <p className="text-sm font-semibold text-slate-800 whitespace-pre-line break-words">{a.actividad}</p>
+              {a.contenido && <p className="text-sm text-slate-600 break-words"><span className="text-slate-500">Contenido:</span> {a.contenido}</p>}
+              <p className="text-xs text-slate-500 mt-1">
+                {a.general ? "Actividad general" : a.asignatura}{a.general && a.asignatura ? ` · ${a.asignatura}` : ""}
+                {" · "}{a.responsable || "—"}{a.grupos ? ` · Grupos: ${a.grupos}` : ""}
+              </p>
+            </li>
+          ))}
+        </ol>
       )}
     </Card>
   );
@@ -639,7 +847,7 @@ function Evidencias({ proyecto, evidencias, urls, user, esAdmin, soloLectura, su
 }
 
 /* ---------- Ficha para la plataforma SEMS (Anexo 1) ---------- */
-function FichaSEMS({ proyecto, participantes, evidencias, urls, esAdmin, onCerrar, onCambio }) {
+function FichaSEMS({ proyecto, participantes, plan, evidencias, urls, esAdmin, onCerrar, onCambio }) {
   const [copiado, setCopiado] = useState("");
   const [marcando, setMarcando] = useState(false);
   const pl = datosPlantel(proyecto.plantel);
@@ -734,7 +942,7 @@ function FichaSEMS({ proyecto, participantes, evidencias, urls, esAdmin, onCerra
                 </button>
                 <button className={btnPrim} disabled={generando} onClick={async () => {
                   setGenerando(true);
-                  try { await generarPDF({ proyecto, participantes, evidencias, urls, plantel: pl, asignaturas }); }
+                  try { await generarPDF({ proyecto, participantes, plan, evidencias, urls, plantel: pl, asignaturas }); }
                   catch (e) { alert(`No se pudo generar el PDF: ${e.message}`); }
                   finally { setGenerando(false); }
                 }}>
@@ -794,7 +1002,7 @@ const MEMBRETE = import.meta.env.BASE_URL + "paec/";
 const VINO = [105, 17, 53];      // #691135, color del pie del oficio
 const GUINDA = [156, 33, 72];    // #9C2148, línea del pie
 
-async function generarPDF({ proyecto, participantes, evidencias, urls, plantel, asignaturas }) {
+async function generarPDF({ proyecto, participantes, plan = [], evidencias, urls, plantel, asignaturas }) {
   const fotosSel = evidencias.filter((e) => e.comprobable && urls[e.foto]);
   const [{ jsPDF, autoTable }, sep, dgeta, bandera, anio, ...fotos] = await Promise.all([
     cargarLib(),
@@ -873,7 +1081,24 @@ async function generarPDF({ proyecto, participantes, evidencias, urls, plantel, 
     y = sitio(y, 30);
     y = titulo("Docentes participantes", y);
     y = tabla(y, [...porAsig.entries()].sort((a, b) => a[0].localeCompare(b[0], "es")).map(([a, d]) => [a, d.join(", ")]),
-      { head: [["Asignatura", "Docentes"]], headStyles: { fillColor: VINO, textColor: 255, fontStyle: "bold" } });
+      { head: [["Asignatura o módulo", "Docentes"]], headStyles: { fillColor: VINO, textColor: 255, fontStyle: "bold" } });
+  }
+
+  if (plan.length) {
+    y = sitio(y, 30);
+    y = titulo("Plan del proyecto", y);
+    y = tabla(y, ordenarPlan(plan).map((a) => [
+      rangoFechas(a),
+      a.actividad + (a.contenido ? `\nContenido: ${a.contenido}` : ""),
+      a.general ? (a.asignatura || "General") : (a.asignatura || ""),
+      a.responsable || "",
+      a.grupos || "",
+    ]), {
+      head: [["Fechas", "Actividad", "Asignatura o módulo", "Responsable", "Grupos"]],
+      headStyles: { fillColor: VINO, textColor: 255, fontStyle: "bold", fontSize: 8.5 },
+      styles: { font: "helvetica", fontSize: 8.5, cellPadding: 1.6, lineColor: [190, 190, 190], lineWidth: 0.2, textColor: 30, valign: "top" },
+      columnStyles: { 0: { cellWidth: 26, fontStyle: "normal", fillColor: false }, 1: { cellWidth: 58 }, 2: { cellWidth: 28 }, 3: { cellWidth: 26 }, 4: { cellWidth: 17.9 } },
+    });
   }
 
   y = sitio(y, 40);
