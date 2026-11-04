@@ -1,0 +1,736 @@
+/* ================================================================
+   PAEC · PROGRAMA AULA, ESCUELA Y COMUNIDAD  (primera versión)
+   ----------------------------------------------------------------
+   Un solo proyecto por ciclo escolar para todo el plantel
+   (escolarizado). La administración general lo crea y lo edita;
+   cada docente se suma con su asignatura y sube evidencias con foto.
+   Al final, la "Ficha para SEMS" junta los campos del Anexo 1 del
+   documento oficial para copiarlos a la plataforma de Planteles con
+   Responsabilidad Social SEMS.
+
+   Es independiente del resto del portal: usa sus propias tablas
+   (paec_…) y su propio espacio de fotos ("paec"), y no pasa por el
+   guardado general. Para quitarlo ver quitar_paec.sql.
+   ================================================================ */
+
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+import {
+  Users, Camera, Trash2, Loader2, Plus, Pencil, Save, X, Copy, Check,
+  AlertTriangle, Star, ClipboardList, CheckCircle2, History,
+} from "lucide-react";
+import { supabase } from "./lib/supabase";
+
+const Card = ({ children, className = "" }) => (
+  <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm ${className}`}>{children}</div>
+);
+const inputCls = "mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white";
+const btnPrim = "inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#1a2340] text-white text-sm font-semibold hover:bg-[#2a3660] disabled:opacity-50 transition";
+const btnSec = "inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-300 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition disabled:opacity-50";
+
+const ETAPAS = [
+  { n: 1, nombre: "Identificación del tema", ayuda: "¿Qué pasa en la localidad que preocupa o inspira al estudiantado? Diagnóstico y elección del tema." },
+  { n: 2, nombre: "Plan factible", ayuda: "Propósito, actividades, responsables, cronograma y asignaturas que se integran." },
+  { n: 3, nombre: "Realización de actividades", ayuda: "Se llevan a cabo las actividades y el acercamiento con la comunidad." },
+  { n: 4, nombre: "Reflexión y conclusiones", ayuda: "Se difunden los resultados: feria, foro, video, podcast, mural…" },
+];
+const AMBITOS = [
+  "Práctica y colaboración ciudadana",
+  "Educación para la salud",
+  "Actividades físicas y deportivas",
+  "Educación integral en sexualidad y género",
+  "Actividades artísticas y culturales",
+];
+const CONTEOS = [
+  ["mujeres", "Estudiantes mujeres"],
+  ["hombres", "Estudiantes hombres"],
+  ["no_binarios", "Estudiantes no binarios"],
+  ["tutores", "Madres, padres y tutores"],
+  ["docentes", "Personal con funciones docentes"],
+  ["directivos", "Personal con funciones directivas"],
+  ["administrativos", "Personal con funciones administrativas"],
+  ["comunidad", "Integrantes de la comunidad"],
+];
+const PLANTEL_BASE = {
+  cct: "", subsistema: "DGETAyCM", plantel: "CBTA No. 291 \"Ignacio Ramírez Calzada\"",
+  entidad: "Quintana Roo", municipio: "José María Morelos", localidad: "Dziuché",
+};
+const MAX_RESUMEN = 1700;
+
+const hoyISO = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Cancun" });
+const fechaLarga = (f) => {
+  if (!f) return "";
+  const [a, m, d] = String(f).slice(0, 10).split("-").map(Number);
+  return new Date(a, m - 1, d).toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" });
+};
+const totalConteos = (p) => CONTEOS.reduce((s, [k]) => s + (Number(p?.[k]) || 0), 0);
+const nuevoId = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+/* Reduce la foto antes de subirla: máximo 1600 px por lado, en JPG.
+   Una foto de celular de 4–8 MB queda en unos 300–600 KB. */
+function reducirFoto(archivo) {
+  return new Promise((ok, mal) => {
+    const url = URL.createObjectURL(archivo);
+    const img = new Image();
+    img.onload = () => {
+      const max = 1600;
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * k);
+      c.height = Math.round(img.height * k);
+      const ctx = c.getContext("2d");
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      c.toBlob((b) => (b ? ok(b) : mal(new Error("No se pudo procesar la foto."))), "image/jpeg", 0.82);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); mal(new Error("El archivo no es una imagen válida.")); };
+    img.src = url;
+  });
+}
+
+/* Todas las asignaturas conocidas, para sugerirlas al sumarse */
+function asignaturasSugeridas(db, user) {
+  const set = new Set();
+  String(user?.asignaturas || "").split(/[,;\n]/).map((s) => s.trim()).filter(Boolean).forEach((a) => set.add(a));
+  (db?.programas || []).forEach((p) =>
+    (Array.isArray(p.asignaturas) ? p.asignaturas : []).forEach((a) => a?.nombre && set.add(a.nombre.trim())));
+  return [...set].sort((a, b) => a.localeCompare(b, "es"));
+}
+
+export default function Paec({ db, user }) {
+  const esAdmin = user.rol === "admin";
+  const cicloActual = db?.config?.cicloActual || "";
+
+  const [proyectos, setProyectos] = useState([]);
+  const [cicloVer, setCicloVer] = useState(cicloActual);
+  const [participantes, setParticipantes] = useState([]);
+  const [evidencias, setEvidencias] = useState([]);
+  const [urls, setUrls] = useState({});
+  const [cargando, setCargando] = useState(true);
+  const [err, setErr] = useState("");
+  const [editando, setEditando] = useState(false);
+  const [verFicha, setVerFicha] = useState(false);
+
+  const proyecto = proyectos.find((p) => p.ciclo === cicloVer) || null;
+  const soloLectura = !proyecto || proyecto.ciclo !== cicloActual;
+
+  const cargarProyectos = useCallback(async () => {
+    const { data, error } = await supabase.from("paec_proyectos").select("*").order("ciclo", { ascending: false });
+    if (error) throw error;
+    setProyectos(data || []);
+    return data || [];
+  }, []);
+
+  const cargarDetalle = useCallback(async (p) => {
+    if (!p) { setParticipantes([]); setEvidencias([]); setUrls({}); return; }
+    const [pa, ev] = await Promise.all([
+      supabase.from("paec_participantes").select("*").eq("proyecto_id", p.id).order("creado_en"),
+      supabase.from("paec_evidencias").select("*").eq("proyecto_id", p.id).order("fecha", { ascending: false }).order("creado_en", { ascending: false }),
+    ]);
+    if (pa.error) throw pa.error;
+    if (ev.error) throw ev.error;
+    setParticipantes(pa.data || []);
+    setEvidencias(ev.data || []);
+    const rutas = (ev.data || []).map((e) => e.foto);
+    if (rutas.length) {
+      const { data } = await supabase.storage.from("paec").createSignedUrls(rutas, 60 * 60);
+      const m = {};
+      (data || []).forEach((d) => { if (d.signedUrl) m[d.path] = d.signedUrl; });
+      setUrls(m);
+    } else setUrls({});
+  }, []);
+
+  const recargar = useCallback(async () => {
+    setErr("");
+    try {
+      const lista = await cargarProyectos();
+      await cargarDetalle(lista.find((p) => p.ciclo === cicloVer) || null);
+    } catch (e) {
+      setErr(/paec_/.test(e.message || "") && /exist|schema cache/i.test(e.message || "")
+        ? "Falta crear las tablas del PAEC en Supabase (archivo paec.sql)."
+        : `No se pudo cargar el PAEC: ${e.message}`);
+    } finally { setCargando(false); }
+  }, [cargarProyectos, cargarDetalle, cicloVer]);
+
+  useEffect(() => { recargar(); }, [recargar]);
+
+  if (cargando) return <Card className="p-8 text-center text-slate-400 text-sm"><Loader2 className="inline animate-spin mr-2" size={16} />Cargando PAEC…</Card>;
+
+  const ciclosConProyecto = proyectos.map((p) => p.ciclo);
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800">PAEC</h1>
+          <p className="text-sm text-slate-500">Programa Aula, Escuela y Comunidad · un proyecto para todo el plantel</p>
+        </div>
+        {ciclosConProyecto.length > 0 && (
+          <label className="text-sm text-slate-600 flex items-center gap-2">
+            <History size={15} /> Ciclo
+            <select className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm bg-white" value={cicloVer}
+              onChange={(e) => { setCicloVer(e.target.value); setEditando(false); }}>
+              {!ciclosConProyecto.includes(cicloActual) && <option value={cicloActual}>{cicloActual} (actual)</option>}
+              {ciclosConProyecto.map((c) => <option key={c} value={c}>{c}{c === cicloActual ? " (actual)" : ""}</option>)}
+            </select>
+          </label>
+        )}
+      </div>
+
+      {err && <p className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-xl p-3 flex gap-2"><AlertTriangle size={16} className="shrink-0 mt-0.5" />{err}</p>}
+
+      {!proyecto ? (
+        cicloVer !== cicloActual ? null : esAdmin ? (
+          editando
+            ? <FormProyecto ciclo={cicloActual} onCancelar={() => setEditando(false)} onGuardado={async () => { setEditando(false); await recargar(); }} />
+            : <Card className="p-8 text-center space-y-3">
+                <ClipboardList className="mx-auto text-slate-300" size={40} />
+                <p className="text-slate-600">Todavía no hay proyecto PAEC para el ciclo <b>{cicloActual}</b>.</p>
+                <button className={btnPrim} onClick={() => setEditando(true)}><Plus size={16} /> Crear el proyecto del ciclo</button>
+              </Card>
+        ) : (
+          <Card className="p-8 text-center text-slate-500 text-sm">
+            La administración aún no crea el proyecto PAEC de este ciclo. Cuando lo haga, aparecerá aquí para que te sumes.
+          </Card>
+        )
+      ) : editando ? (
+        <FormProyecto ciclo={proyecto.ciclo} proyecto={proyecto} onCancelar={() => setEditando(false)}
+          onGuardado={async () => { setEditando(false); await recargar(); }} />
+      ) : (
+        <>
+          <FichaProyecto proyecto={proyecto} esAdmin={esAdmin} soloLectura={soloLectura}
+            participantes={participantes} evidencias={evidencias}
+            onEditar={() => setEditando(true)} onFicha={() => setVerFicha(true)} onCambio={recargar} />
+          <Participantes proyecto={proyecto} participantes={participantes} user={user} db={db}
+            esAdmin={esAdmin} soloLectura={soloLectura} onCambio={recargar} />
+          <Evidencias proyecto={proyecto} evidencias={evidencias} urls={urls} user={user} esAdmin={esAdmin}
+            soloLectura={soloLectura} sumado={participantes.some((p) => p.docente_id === user.id)} onCambio={recargar} />
+          {verFicha && <FichaSEMS proyecto={proyecto} participantes={participantes} evidencias={evidencias}
+            urls={urls} esAdmin={esAdmin} onCerrar={() => setVerFicha(false)} onCambio={recargar} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Crear o editar el proyecto (solo administración) ---------- */
+function FormProyecto({ ciclo, proyecto, onCancelar, onGuardado }) {
+  const [f, setF] = useState(() => ({
+    nombre: proyecto?.nombre || "", tema: proyecto?.tema || "", proposito: proyecto?.proposito || "",
+    duracion: proyecto?.duracion || "", ambitos: proyecto?.ambitos || [], estatus: proyecto?.estatus || "En curso",
+    resumen: proyecto?.resumen || "", participantes: { ...(proyecto?.participantes || {}) },
+    plantel: { ...PLANTEL_BASE, ...(proyecto?.plantel || {}) },
+  }));
+  const [guardando, setGuardando] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+
+  const guardar = async () => {
+    if (!f.nombre.trim()) { setErr("Escribe el nombre del proyecto."); return; }
+    if (f.resumen.length > MAX_RESUMEN) { setErr(`El resumen pasa de ${MAX_RESUMEN} caracteres.`); return; }
+    setGuardando(true); setErr("");
+    const fila = { ...f, nombre: f.nombre.trim().slice(0, 200), actualizado_en: new Date().toISOString() };
+    const r = proyecto
+      ? await supabase.from("paec_proyectos").update(fila).eq("id", proyecto.id)
+      : await supabase.from("paec_proyectos").insert({ ...fila, ciclo });
+    setGuardando(false);
+    if (r.error) { setErr(`No se pudo guardar: ${r.error.message}`); return; }
+    onGuardado();
+  };
+
+  return (
+    <Card className="p-5 space-y-4">
+      <h2 className="font-bold text-slate-800">{proyecto ? "Editar proyecto" : "Nuevo proyecto"} · ciclo {ciclo}</h2>
+      <label className="block text-sm font-medium text-slate-700">Nombre del proyecto <span className="text-slate-400 font-normal">({f.nombre.length}/200)</span>
+        <input className={inputCls} maxLength={200} value={f.nombre} onChange={(e) => set("nombre", e.target.value)} placeholder="Ej. Cuidemos el agua de Dziuché" />
+      </label>
+      <label className="block text-sm font-medium text-slate-700">Tema o problemática de la comunidad
+        <textarea className={inputCls} rows={3} value={f.tema} onChange={(e) => set("tema", e.target.value)} placeholder="¿Qué situación del entorno se va a analizar o atender, y por qué?" />
+      </label>
+      <label className="block text-sm font-medium text-slate-700">Propósito
+        <textarea className={inputCls} rows={2} value={f.proposito} onChange={(e) => set("proposito", e.target.value)} placeholder="¿Qué queremos lograr?" />
+      </label>
+      <div className="grid sm:grid-cols-2 gap-4">
+        <label className="block text-sm font-medium text-slate-700">Duración
+          <input className={inputCls} value={f.duracion} onChange={(e) => set("duracion", e.target.value)} placeholder="Ej. Semestre agosto 2026 – enero 2027" />
+        </label>
+        <label className="block text-sm font-medium text-slate-700">Estatus
+          <select className={inputCls} value={f.estatus} onChange={(e) => set("estatus", e.target.value)}>
+            {["En curso", "Concluido", "Suspendido"].map((s) => <option key={s}>{s}</option>)}
+          </select>
+        </label>
+      </div>
+      <fieldset>
+        <legend className="text-sm font-medium text-slate-700">Ámbitos de Formación Socioemocional</legend>
+        <div className="mt-2 grid sm:grid-cols-2 gap-2">
+          {AMBITOS.map((a) => (
+            <label key={a} className="flex items-center gap-2 text-sm text-slate-700">
+              <input type="checkbox" checked={f.ambitos.includes(a)}
+                onChange={(e) => set("ambitos", e.target.checked ? [...f.ambitos, a] : f.ambitos.filter((x) => x !== a))} />
+              {a}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+
+      <details className="rounded-xl border border-slate-200 p-3" open={!!proyecto}>
+        <summary className="text-sm font-semibold text-slate-700 cursor-pointer">Para el registro en SEMS (se puede llenar al final)</summary>
+        <div className="mt-3 space-y-4">
+          <label className="block text-sm font-medium text-slate-700">
+            Resumen: objetivos, actividades y reflexiones (¿qué aprendimos?, ¿qué logramos?, ¿cómo lo hicimos?, ¿qué mejoraríamos?)
+            <span className={`ml-1 font-normal ${f.resumen.length > MAX_RESUMEN ? "text-rose-600" : "text-slate-400"}`}>({f.resumen.length}/{MAX_RESUMEN})</span>
+            <textarea className={inputCls} rows={6} value={f.resumen} onChange={(e) => set("resumen", e.target.value)} />
+          </label>
+          <div>
+            <p className="text-sm font-medium text-slate-700">Participantes</p>
+            <div className="mt-2 grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {CONTEOS.map(([k, t]) => (
+                <label key={k} className="text-xs text-slate-600">{t}
+                  <input type="number" min="0" className={inputCls} value={f.participantes[k] ?? ""}
+                    onChange={(e) => set("participantes", { ...f.participantes, [k]: e.target.value === "" ? "" : Math.max(0, parseInt(e.target.value, 10) || 0) })} />
+                </label>
+              ))}
+            </div>
+            <p className="text-xs text-slate-500 mt-1">Total: {totalConteos(f.participantes)}</p>
+          </div>
+          <div>
+            <p className="text-sm font-medium text-slate-700">Datos del plantel</p>
+            <div className="mt-2 grid sm:grid-cols-3 gap-3">
+              {[["cct", "CCT"], ["subsistema", "Subsistema"], ["plantel", "Plantel"], ["entidad", "Entidad"], ["municipio", "Municipio"], ["localidad", "Localidad"]].map(([k, t]) => (
+                <label key={k} className="text-xs text-slate-600">{t}
+                  <input className={inputCls} value={f.plantel[k] || ""} onChange={(e) => set("plantel", { ...f.plantel, [k]: e.target.value })} />
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+      </details>
+
+      {err && <p className="text-sm text-rose-700">{err}</p>}
+      <div className="flex gap-2 justify-end">
+        <button className={btnSec} onClick={onCancelar} disabled={guardando}><X size={16} /> Cancelar</button>
+        <button className={btnPrim} onClick={guardar} disabled={guardando}>
+          {guardando ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />} Guardar
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+/* ---------- Ficha del proyecto con su etapa ---------- */
+function FichaProyecto({ proyecto, esAdmin, soloLectura, participantes, evidencias, onEditar, onFicha, onCambio }) {
+  const [moviendo, setMoviendo] = useState(false);
+  const asignaturas = new Set(participantes.map((p) => p.asignatura.toLowerCase())).size;
+
+  const cambiarEtapa = async (n) => {
+    if (!esAdmin || soloLectura || n === proyecto.etapa) return;
+    setMoviendo(true);
+    const { error } = await supabase.from("paec_proyectos").update({ etapa: n, actualizado_en: new Date().toISOString() }).eq("id", proyecto.id);
+    setMoviendo(false);
+    if (error) alert(`No se pudo cambiar la etapa: ${error.message}`);
+    else onCambio();
+  };
+
+  return (
+    <Card className="p-5 space-y-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-indigo-600 uppercase tracking-wide">Ciclo {proyecto.ciclo} · {proyecto.estatus}</p>
+          <h2 className="text-xl font-bold text-slate-800 break-words">{proyecto.nombre}</h2>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {esAdmin && <button className={btnSec} onClick={onFicha}><ClipboardList size={16} /> Ficha para SEMS</button>}
+          {esAdmin && !soloLectura && <button className={btnSec} onClick={onEditar}><Pencil size={16} /> Editar</button>}
+        </div>
+      </div>
+
+      {proyecto.registrado_sems_en && (
+        <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2 flex items-center gap-2">
+          <CheckCircle2 size={16} /> Registrado en la plataforma SEMS el {fechaLarga(proyecto.registrado_sems_en)}
+        </p>
+      )}
+
+      <ol className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+        {ETAPAS.map((e) => {
+          const hecha = e.n < proyecto.etapa, actual = e.n === proyecto.etapa;
+          return (
+            <li key={e.n}>
+              <button type="button" disabled={!esAdmin || soloLectura || moviendo} onClick={() => cambiarEtapa(e.n)}
+                title={esAdmin && !soloLectura ? "Marcar como etapa actual" : e.ayuda}
+                className={`w-full h-full text-left rounded-xl border p-3 transition ${actual ? "border-indigo-400 bg-indigo-50" : hecha ? "border-emerald-200 bg-emerald-50" : "border-slate-200 bg-white"} ${esAdmin && !soloLectura ? "hover:border-indigo-300" : "cursor-default"}`}>
+                <span className={`text-xs font-bold ${actual ? "text-indigo-700" : hecha ? "text-emerald-700" : "text-slate-400"}`}>
+                  {hecha ? "✓ " : ""}Etapa {e.n}{actual ? " · actual" : ""}
+                </span>
+                <span className="block text-sm font-semibold text-slate-700 leading-snug">{e.nombre}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+      <p className="text-xs text-slate-500">{ETAPAS[proyecto.etapa - 1].ayuda}</p>
+
+      <div className="grid sm:grid-cols-2 gap-4 text-sm">
+        {proyecto.tema && <div><p className="font-semibold text-slate-700">Tema o problemática</p><p className="text-slate-600 whitespace-pre-line">{proyecto.tema}</p></div>}
+        {proyecto.proposito && <div><p className="font-semibold text-slate-700">Propósito</p><p className="text-slate-600 whitespace-pre-line">{proyecto.proposito}</p></div>}
+        {proyecto.duracion && <div><p className="font-semibold text-slate-700">Duración</p><p className="text-slate-600">{proyecto.duracion}</p></div>}
+        {proyecto.ambitos?.length > 0 && <div><p className="font-semibold text-slate-700">Ámbitos socioemocionales</p><p className="text-slate-600">{proyecto.ambitos.join(" · ")}</p></div>}
+      </div>
+
+      <div className="flex flex-wrap gap-2 text-xs">
+        <span className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-700">{new Set(participantes.map((p) => p.docente_id)).size} docente(s)</span>
+        <span className={`px-2.5 py-1 rounded-full ${asignaturas >= 3 ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+          {asignaturas} asignatura(s){asignaturas < 3 ? " · el PAEC pide 3 o más" : ""}
+        </span>
+        <span className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-700">{evidencias.length} evidencia(s)</span>
+      </div>
+    </Card>
+  );
+}
+
+/* ---------- Docentes que se suman con su asignatura ---------- */
+function Participantes({ proyecto, participantes, user, db, esAdmin, soloLectura, onCambio }) {
+  const [asig, setAsig] = useState("");
+  const [trabajando, setTrabajando] = useState(false);
+  const sugeridas = useMemo(() => asignaturasSugeridas(db, user), [db, user]);
+  const mias = participantes.filter((p) => p.docente_id === user.id);
+
+  const porAsignatura = useMemo(() => {
+    const m = new Map();
+    participantes.forEach((p) => {
+      const k = p.asignatura.trim();
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(p);
+    });
+    return [...m.entries()].sort((a, b) => a[0].localeCompare(b[0], "es"));
+  }, [participantes]);
+
+  const sumarme = async () => {
+    const a = asig.trim();
+    if (a.length < 2) return;
+    setTrabajando(true);
+    const { error } = await supabase.from("paec_participantes").insert({
+      proyecto_id: proyecto.id, docente_id: user.id, docente_nombre: user.nombre || "", asignatura: a,
+    });
+    setTrabajando(false);
+    if (error) alert(/duplicate|unique/i.test(error.message) ? "Ya estás sumado con esa asignatura." : `No se pudo: ${error.message}`);
+    else { setAsig(""); onCambio(); }
+  };
+  const quitar = async (p) => {
+    if (!confirm(`¿Quitar "${p.asignatura}"${p.docente_id !== user.id ? ` de ${p.docente_nombre}` : ""} del proyecto?`)) return;
+    const { error } = await supabase.from("paec_participantes").delete().eq("id", p.id);
+    if (error) alert(`No se pudo: ${error.message}`); else onCambio();
+  };
+
+  return (
+    <Card className="p-5 space-y-4">
+      <h3 className="font-bold text-slate-800 flex items-center gap-2"><Users size={18} /> Docentes y asignaturas</h3>
+
+      {!soloLectura && (
+        <div className="rounded-xl bg-slate-50 border border-slate-200 p-3">
+          <p className="text-sm text-slate-700 mb-2">
+            {mias.length ? "Puedes sumar otra asignatura tuya:" : "Súmate al proyecto con la asignatura que vas a integrar:"}
+          </p>
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input className={`${inputCls} mt-0`} list="paec-asignaturas" value={asig} onChange={(e) => setAsig(e.target.value)}
+              placeholder="Escribe o elige tu asignatura" maxLength={200} />
+            <datalist id="paec-asignaturas">{sugeridas.map((s) => <option key={s} value={s} />)}</datalist>
+            <button className={btnPrim} onClick={sumarme} disabled={trabajando || asig.trim().length < 2}>
+              {trabajando ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} Sumarme
+            </button>
+          </div>
+        </div>
+      )}
+
+      {porAsignatura.length === 0 ? (
+        <p className="text-sm text-slate-500">Aún no se suma ningún docente.</p>
+      ) : (
+        <ul className="divide-y divide-slate-100">
+          {porAsignatura.map(([a, lista]) => (
+            <li key={a} className="py-2.5">
+              <p className="text-sm font-semibold text-slate-800">{a}</p>
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {lista.map((p) => (
+                  <span key={p.id} className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-indigo-50 text-indigo-700">
+                    {p.docente_nombre || "Docente"}
+                    {!soloLectura && (p.docente_id === user.id || esAdmin) && (
+                      <button onClick={() => quitar(p)} title="Quitar" className="hover:text-rose-600"><X size={12} /></button>
+                    )}
+                  </span>
+                ))}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+/* ---------- Evidencias con foto ---------- */
+function Evidencias({ proyecto, evidencias, urls, user, esAdmin, soloLectura, sumado, onCambio }) {
+  const vacio = () => ({ archivo: null, vista: "", descripcion: "", grupo: "", fecha: hoyISO(), etapa: proyecto.etapa });
+  const [f, setF] = useState(vacio);
+  const [abierto, setAbierto] = useState(false);
+  const [subiendo, setSubiendo] = useState(false);
+  const [err, setErr] = useState("");
+  const [filtro, setFiltro] = useState(0);
+  const [ampliada, setAmpliada] = useState(null);
+  const comprobables = evidencias.filter((e) => e.comprobable).length;
+
+  useEffect(() => () => { if (f.vista) URL.revokeObjectURL(f.vista); }, [f.vista]);
+
+  const elegirFoto = (archivo) => {
+    if (!archivo) return;
+    if (!/^image\/(jpe?g|png|heic|heif|webp)$/i.test(archivo.type) && !/\.(jpe?g|png|heic|heif|webp)$/i.test(archivo.name)) {
+      setErr("Elige una foto (JPG o PNG)."); return;
+    }
+    setErr("");
+    setF((x) => ({ ...x, archivo, vista: URL.createObjectURL(archivo) }));
+  };
+
+  const subir = async () => {
+    if (!f.archivo) { setErr("Elige una foto."); return; }
+    if (f.descripcion.trim().length < 3) { setErr("Describe brevemente la actividad."); return; }
+    setSubiendo(true); setErr("");
+    try {
+      const blob = await reducirFoto(f.archivo);
+      const ruta = `${user.id}/${nuevoId()}.jpg`;
+      const up = await supabase.storage.from("paec").upload(ruta, blob, { contentType: "image/jpeg", upsert: false });
+      if (up.error) throw up.error;
+      const { error } = await supabase.from("paec_evidencias").insert({
+        proyecto_id: proyecto.id, docente_id: user.id, docente_nombre: user.nombre || "",
+        etapa: Number(f.etapa), grupo: f.grupo.trim() || null, fecha: f.fecha || hoyISO(),
+        descripcion: f.descripcion.trim().slice(0, 600), foto: ruta,
+      });
+      if (error) { await supabase.storage.from("paec").remove([ruta]); throw error; }
+      setF(vacio()); setAbierto(false); onCambio();
+    } catch (e) {
+      setErr(`No se pudo subir: ${e.message}`);
+    } finally { setSubiendo(false); }
+  };
+
+  const borrar = async (e) => {
+    if (!confirm("¿Borrar esta evidencia y su foto?")) return;
+    const { error } = await supabase.from("paec_evidencias").delete().eq("id", e.id);
+    if (error) { alert(`No se pudo: ${error.message}`); return; }
+    await supabase.storage.from("paec").remove([e.foto]);
+    onCambio();
+  };
+
+  const alternarComprobable = async (e) => {
+    if (!e.comprobable && comprobables >= 2) { alert("SEMS acepta máximo 2 fotos comprobables. Quita una antes de marcar otra."); return; }
+    const { error } = await supabase.from("paec_evidencias").update({ comprobable: !e.comprobable }).eq("id", e.id);
+    if (error) alert(`No se pudo: ${error.message}`); else onCambio();
+  };
+
+  const visibles = filtro ? evidencias.filter((e) => e.etapa === filtro) : evidencias;
+
+  return (
+    <Card className="p-5 space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="font-bold text-slate-800 flex items-center gap-2"><Camera size={18} /> Evidencias</h3>
+        <div className="flex flex-wrap gap-2 items-center">
+          <select className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm bg-white" value={filtro} onChange={(e) => setFiltro(Number(e.target.value))}>
+            <option value={0}>Todas las etapas</option>
+            {ETAPAS.map((e) => <option key={e.n} value={e.n}>Etapa {e.n}</option>)}
+          </select>
+          {!soloLectura && !abierto && (
+            sumado
+              ? <button className={btnPrim} onClick={() => { setF(vacio()); setAbierto(true); }}><Plus size={16} /> Subir evidencia</button>
+              : <span className="text-xs text-slate-500">Súmate al proyecto para subir evidencias</span>
+          )}
+        </div>
+      </div>
+
+      {esAdmin && <p className="text-xs text-slate-500">Toca la ⭐ para elegir las fotos comprobables para SEMS ({comprobables}/2).</p>}
+
+      {abierto && (
+        <div className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 space-y-3">
+          <label className="block">
+            <span className="text-sm font-medium text-slate-700">Foto de la actividad</span>
+            <input type="file" accept="image/jpeg,image/png,image/*" className="mt-1 block w-full text-sm"
+              onChange={(e) => elegirFoto(e.target.files?.[0])} />
+          </label>
+          {f.vista && <img src={f.vista} alt="" className="max-h-56 rounded-lg border border-slate-200 object-contain bg-white" />}
+          <label className="block text-sm font-medium text-slate-700">¿Qué se hizo? <span className="text-slate-400 font-normal">({f.descripcion.length}/600)</span>
+            <textarea className={inputCls} rows={3} maxLength={600} value={f.descripcion}
+              onChange={(e) => setF((x) => ({ ...x, descripcion: e.target.value }))} placeholder="Ej. Encuesta a vecinos sobre el uso del agua, grupo 3B." />
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <label className="text-sm font-medium text-slate-700">Grupo
+              <input className={inputCls} value={f.grupo} maxLength={40} onChange={(e) => setF((x) => ({ ...x, grupo: e.target.value }))} placeholder="Ej. 3B" />
+            </label>
+            <label className="text-sm font-medium text-slate-700">Fecha
+              <input type="date" className={inputCls} value={f.fecha} max={hoyISO()} onChange={(e) => setF((x) => ({ ...x, fecha: e.target.value }))} />
+            </label>
+            <label className="text-sm font-medium text-slate-700">Etapa
+              <select className={inputCls} value={f.etapa} onChange={(e) => setF((x) => ({ ...x, etapa: Number(e.target.value) }))}>
+                {ETAPAS.map((e) => <option key={e.n} value={e.n}>{e.n}. {e.nombre}</option>)}
+              </select>
+            </label>
+          </div>
+          {err && <p className="text-sm text-rose-700">{err}</p>}
+          <div className="flex gap-2 justify-end">
+            <button className={btnSec} onClick={() => { setAbierto(false); setErr(""); }} disabled={subiendo}><X size={16} /> Cancelar</button>
+            <button className={btnPrim} onClick={subir} disabled={subiendo}>
+              {subiendo ? <Loader2 size={16} className="animate-spin" /> : <Camera size={16} />} {subiendo ? "Subiendo…" : "Subir"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {visibles.length === 0 ? (
+        <p className="text-sm text-slate-500">{evidencias.length ? "No hay evidencias en esta etapa." : "Aún no hay evidencias."}</p>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {visibles.map((e) => (
+            <figure key={e.id} className="rounded-xl border border-slate-200 overflow-hidden bg-white flex flex-col">
+              <button type="button" className="relative block bg-slate-100 aspect-[4/3]" onClick={() => urls[e.foto] && setAmpliada(e)}>
+                {urls[e.foto]
+                  ? <img src={urls[e.foto]} alt={e.descripcion} loading="lazy" className="absolute inset-0 w-full h-full object-cover" />
+                  : <span className="absolute inset-0 flex items-center justify-center text-xs text-slate-400">Foto no disponible</span>}
+                {e.comprobable && <span className="absolute top-2 left-2 text-[11px] font-bold px-2 py-0.5 rounded-full bg-amber-400 text-amber-950">Comprobable SEMS</span>}
+              </button>
+              <figcaption className="p-3 flex-1 flex flex-col gap-1">
+                <p className="text-sm text-slate-700 whitespace-pre-line break-words">{e.descripcion}</p>
+                <p className="text-xs text-slate-500 mt-auto pt-1">
+                  {e.docente_nombre || "Docente"} · {fechaLarga(e.fecha)}{e.grupo ? ` · ${e.grupo}` : ""} · Etapa {e.etapa}
+                </p>
+                {!soloLectura && (esAdmin || e.docente_id === user.id) && (
+                  <div className="flex gap-1 justify-end pt-1">
+                    {esAdmin && (
+                      <button onClick={() => alternarComprobable(e)} title={e.comprobable ? "Quitar de comprobables" : "Marcar como comprobable para SEMS"}
+                        className={`p-1.5 rounded-lg hover:bg-amber-50 ${e.comprobable ? "text-amber-500" : "text-slate-400"}`}>
+                        <Star size={16} fill={e.comprobable ? "currentColor" : "none"} />
+                      </button>
+                    )}
+                    <button onClick={() => borrar(e)} title="Borrar" className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"><Trash2 size={16} /></button>
+                  </div>
+                )}
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+      )}
+
+      {ampliada && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setAmpliada(null)}>
+          <div className="max-w-4xl w-full" onClick={(ev) => ev.stopPropagation()}>
+            <img src={urls[ampliada.foto]} alt={ampliada.descripcion} className="max-h-[75vh] w-full object-contain rounded-lg" />
+            <div className="flex items-start justify-between gap-3 mt-3 text-white">
+              <p className="text-sm">{ampliada.descripcion}</p>
+              <div className="flex gap-2 shrink-0">
+                <a href={urls[ampliada.foto]} download target="_blank" rel="noreferrer" className="text-sm underline">Abrir original</a>
+                <button onClick={() => setAmpliada(null)} className="text-sm underline">Cerrar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/* ---------- Ficha para la plataforma SEMS (Anexo 1) ---------- */
+function FichaSEMS({ proyecto, participantes, evidencias, urls, esAdmin, onCerrar, onCambio }) {
+  const [copiado, setCopiado] = useState("");
+  const [marcando, setMarcando] = useState(false);
+  const pl = { ...PLANTEL_BASE, ...(proyecto.plantel || {}) };
+  const pa = proyecto.participantes || {};
+  const asignaturas = [...new Set(participantes.map((p) => p.asignatura.trim()))].sort((a, b) => a.localeCompare(b, "es"));
+  const fotos = evidencias.filter((e) => e.comprobable);
+
+  const campos = [
+    ["CCT plantel", pl.cct],
+    ["Subsistema", pl.subsistema],
+    ["Plantel", pl.plantel],
+    ["Entidad", pl.entidad],
+    ["Municipio", pl.municipio],
+    ["Localidad", pl.localidad],
+    ["Nombre proyecto", proyecto.nombre],
+    ["Asignaturas", asignaturas.join(", ")],
+    ["Ámbitos de Formación Socioemocional", (proyecto.ambitos || []).join(", ")],
+    ["Duración", proyecto.duracion],
+    ["Ciclo escolar", proyecto.ciclo],
+    ["Estatus", proyecto.estatus],
+    ["Resumen", proyecto.resumen],
+    ...CONTEOS.map(([k, t]) => [t, String(Number(pa[k]) || 0)]),
+    ["Total participantes", String(totalConteos(pa))],
+    ["Total de proyectos", "1"],
+  ];
+  const faltan = campos.filter(([, v]) => !String(v || "").trim()).map(([k]) => k);
+
+  const copiar = async (texto, clave) => {
+    try { await navigator.clipboard.writeText(texto || ""); setCopiado(clave); setTimeout(() => setCopiado(""), 1500); }
+    catch { alert("No se pudo copiar. Selecciona el texto y cópialo a mano."); }
+  };
+  const marcarRegistrado = async () => {
+    setMarcando(true);
+    const valor = proyecto.registrado_sems_en ? null : new Date().toISOString();
+    const { error } = await supabase.from("paec_proyectos").update({ registrado_sems_en: valor }).eq("id", proyecto.id);
+    setMarcando(false);
+    if (error) alert(`No se pudo: ${error.message}`); else onCambio();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-start sm:items-center justify-center p-3 overflow-y-auto" onClick={onCerrar}>
+      <div className="w-full max-w-2xl my-4 bg-white rounded-2xl border border-slate-200 shadow-sm p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h3 className="font-bold text-slate-800">Ficha para la plataforma SEMS</h3>
+              <p className="text-xs text-slate-500">Campos del Anexo 1 · toca <Copy size={11} className="inline" /> para copiar cada uno</p>
+            </div>
+            <button onClick={onCerrar} className="p-1.5 rounded-lg hover:bg-slate-100"><X size={18} /></button>
+          </div>
+
+          {faltan.length > 0 && (
+            <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+              Faltan: {faltan.join(", ")}. Complétalos en <b>Editar</b>.
+            </p>
+          )}
+
+          <dl className="divide-y divide-slate-100 border border-slate-200 rounded-xl">
+            {campos.map(([k, v]) => (
+              <div key={k} className="flex items-start gap-3 px-3 py-2">
+                <dt className="w-40 shrink-0 text-xs font-semibold text-slate-500 pt-0.5">{k}</dt>
+                <dd className="flex-1 min-w-0 text-sm text-slate-800 whitespace-pre-line break-words">{v || <span className="text-slate-300">—</span>}</dd>
+                <button onClick={() => copiar(v, k)} disabled={!v} className="p-1 rounded text-slate-400 hover:text-indigo-600 disabled:opacity-30" title="Copiar">
+                  {copiado === k ? <Check size={15} className="text-emerald-600" /> : <Copy size={15} />}
+                </button>
+              </div>
+            ))}
+          </dl>
+
+          <div>
+            <p className="text-sm font-semibold text-slate-700">Comprobables (1 a 2 fotos JPG o PNG)</p>
+            {fotos.length === 0
+              ? <p className="text-xs text-amber-700 mt-1">Aún no eliges fotos. Márcalas con ⭐ en Evidencias.</p>
+              : <div className="mt-2 flex flex-wrap gap-3">
+                  {fotos.map((e, i) => (
+                    <a key={e.id} href={urls[e.foto]} target="_blank" rel="noreferrer" download={`PAEC_comprobable_${i + 1}.jpg`}
+                      className="block w-36 text-xs text-indigo-700 underline">
+                      {urls[e.foto] && <img src={urls[e.foto]} alt="" className="w-36 h-24 object-cover rounded-lg border border-slate-200 mb-1" />}
+                      Descargar foto {i + 1}
+                    </a>
+                  ))}
+                </div>}
+          </div>
+
+          {esAdmin && (
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <button className={btnSec} onClick={() => copiar(campos.map(([k, v]) => `${k}: ${v || ""}`).join("\n"), "_todo")}>
+                {copiado === "_todo" ? <Check size={16} /> : <Copy size={16} />} Copiar todo
+              </button>
+              <button className={proyecto.registrado_sems_en ? btnSec : btnPrim} onClick={marcarRegistrado} disabled={marcando}>
+                <CheckCircle2 size={16} />
+                {proyecto.registrado_sems_en ? `Registrado el ${fechaLarga(proyecto.registrado_sems_en)} · desmarcar` : "Marcar como registrado en SEMS"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
