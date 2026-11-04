@@ -460,9 +460,9 @@ function Participantes({ proyecto, participantes, user, db, esAdmin, soloLectura
       )}
       {!soloLectura && abierto && (
         <div className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-4 space-y-3">
-          <label className="block text-sm font-medium text-slate-700">Tu asignatura o módulo
+          <label className="block text-sm font-medium text-slate-700">{user.rol === "personal_administrativo" ? "Tu área o función" : "Tu asignatura o módulo"}
             <input className={inputCls} list="paec-asignaturas" value={asig} onChange={(e) => setAsig(e.target.value)}
-              placeholder="Escribe o elige" maxLength={200} />
+              placeholder={user.rol === "personal_administrativo" ? "Ej. Biblioteca, Laboratorio, Prefectura" : "Escribe o elige"} maxLength={200} />
             <datalist id="paec-asignaturas">{sugeridas.map((s) => <option key={s} value={s} />)}</datalist>
           </label>
           <p className="text-xs font-semibold text-indigo-700 uppercase tracking-wide pt-1">Tu parte del plan</p>
