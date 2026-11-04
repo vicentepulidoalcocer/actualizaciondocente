@@ -1149,6 +1149,7 @@ export default function App() {
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "personal_administrativo" ? [
     { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
+    { id: "paec", label: "PAEC", icono: IconoPaec }, // PAEC
     { id: "avisos", label: "Avisos", icono: Megaphone },
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "jefe_rh" ? [
@@ -1330,7 +1331,7 @@ export default function App() {
               <Bitacora />
             </React.Suspense>
           )}
-          {pagina === "paec" && (esAdmin || user.rol === "docente") && <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}><Paec db={db} user={user} /></React.Suspense>} {/* PAEC */}
+          {pagina === "paec" && (esAdmin || user.rol === "docente" || user.rol === "personal_administrativo") && <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}><Paec db={db} user={user} /></React.Suspense>} {/* PAEC */}
           {pagina === "metas" && esRolValidador(user.rol) && <Administracion db={db} user={user} mutar={mutar} esAdmin={esAdmin} modo="metas" />}
           {pagina === "admin" && esRolValidador(user.rol) && <Administracion db={db} user={user} mutar={mutar} esAdmin={esAdmin} modo={esAdmin ? "sistema" : "todo"} />}
         </main>
