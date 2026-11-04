@@ -16,7 +16,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Users, Camera, Trash2, Loader2, Plus, Pencil, Save, X, Copy, Check,
-  AlertTriangle, Star, ClipboardList, CheckCircle2, History,
+  AlertTriangle, Star, ClipboardList, CheckCircle2, History, FileDown,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 
@@ -51,10 +51,16 @@ const CONTEOS = [
   ["comunidad", "Integrantes de la comunidad"],
 ];
 const PLANTEL_BASE = {
-  cct: "", subsistema: "DGETAyCM", plantel: "CBTA No. 291 \"Ignacio Ramírez Calzada\"",
+  cct: "23DTA0291Z", subsistema: "DGETAyCM", plantel: "CBTA No. 291 \"Ignacio Ramírez Calzada\"",
   entidad: "Quintana Roo", municipio: "José María Morelos", localidad: "Dziuché",
 };
 const MAX_RESUMEN = 1700;
+// Datos del plantel: lo guardado, y lo que falte, de los datos base
+const datosPlantel = (guardado) => {
+  const r = { ...PLANTEL_BASE };
+  Object.entries(guardado || {}).forEach(([k, v]) => { if (String(v ?? "").trim()) r[k] = v; });
+  return r;
+};
 
 const hoyISO = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Cancun" });
 const fechaLarga = (f) => {
@@ -220,7 +226,7 @@ function FormProyecto({ ciclo, proyecto, onCancelar, onGuardado }) {
     nombre: proyecto?.nombre || "", tema: proyecto?.tema || "", proposito: proyecto?.proposito || "",
     duracion: proyecto?.duracion || "", ambitos: proyecto?.ambitos || [], estatus: proyecto?.estatus || "En curso",
     resumen: proyecto?.resumen || "", participantes: { ...(proyecto?.participantes || {}) },
-    plantel: { ...PLANTEL_BASE, ...(proyecto?.plantel || {}) },
+    plantel: datosPlantel(proyecto?.plantel),
   }));
   const [guardando, setGuardando] = useState(false);
   const [err, setErr] = useState("");
@@ -636,7 +642,8 @@ function Evidencias({ proyecto, evidencias, urls, user, esAdmin, soloLectura, su
 function FichaSEMS({ proyecto, participantes, evidencias, urls, esAdmin, onCerrar, onCambio }) {
   const [copiado, setCopiado] = useState("");
   const [marcando, setMarcando] = useState(false);
-  const pl = { ...PLANTEL_BASE, ...(proyecto.plantel || {}) };
+  const pl = datosPlantel(proyecto.plantel);
+  const [generando, setGenerando] = useState(false);
   const pa = proyecto.participantes || {};
   const asignaturas = [...new Set(participantes.map((p) => p.asignatura.trim()))].sort((a, b) => a.localeCompare(b, "es"));
   const fotos = evidencias.filter((e) => e.comprobable);
@@ -674,8 +681,9 @@ function FichaSEMS({ proyecto, participantes, evidencias, urls, esAdmin, onCerra
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-start sm:items-center justify-center p-3 overflow-y-auto" onClick={onCerrar}>
-      <div className="w-full max-w-2xl my-4 bg-white rounded-2xl border border-slate-200 shadow-sm p-5" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[60] bg-black/50 overflow-y-auto" onClick={onCerrar}>
+      <div className="min-h-full flex items-start justify-center p-3 sm:p-8">
+      <div className="w-full max-w-2xl bg-white rounded-2xl border border-slate-200 shadow-xl p-4 sm:p-5" onClick={(e) => e.stopPropagation()}>
         <div className="space-y-4">
           <div className="flex items-start justify-between gap-3">
             <div>
@@ -693,8 +701,8 @@ function FichaSEMS({ proyecto, participantes, evidencias, urls, esAdmin, onCerra
 
           <dl className="divide-y divide-slate-100 border border-slate-200 rounded-xl">
             {campos.map(([k, v]) => (
-              <div key={k} className="flex items-start gap-3 px-3 py-2">
-                <dt className="w-40 shrink-0 text-xs font-semibold text-slate-500 pt-0.5">{k}</dt>
+              <div key={k} className="flex flex-wrap sm:flex-nowrap items-start gap-x-3 gap-y-0.5 px-3 py-2">
+                <dt className="w-full sm:w-40 shrink-0 text-xs font-semibold text-slate-500 pt-0.5">{k}</dt>
                 <dd className="flex-1 min-w-0 text-sm text-slate-800 whitespace-pre-line break-words">{v || <span className="text-slate-300">—</span>}</dd>
                 <button onClick={() => copiar(v, k)} disabled={!v} className="p-1 rounded text-slate-400 hover:text-indigo-600 disabled:opacity-30" title="Copiar">
                   {copiado === k ? <Check size={15} className="text-emerald-600" /> : <Copy size={15} />}
@@ -720,9 +728,19 @@ function FichaSEMS({ proyecto, participantes, evidencias, urls, esAdmin, onCerra
 
           {esAdmin && (
             <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-              <button className={btnSec} onClick={() => copiar(campos.map(([k, v]) => `${k}: ${v || ""}`).join("\n"), "_todo")}>
-                {copiado === "_todo" ? <Check size={16} /> : <Copy size={16} />} Copiar todo
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button className={btnSec} onClick={() => copiar(campos.map(([k, v]) => `${k}: ${v || ""}`).join("\n"), "_todo")}>
+                  {copiado === "_todo" ? <Check size={16} /> : <Copy size={16} />} Copiar todo
+                </button>
+                <button className={btnPrim} disabled={generando} onClick={async () => {
+                  setGenerando(true);
+                  try { await generarPDF({ proyecto, participantes, evidencias, urls, plantel: pl, asignaturas }); }
+                  catch (e) { alert(`No se pudo generar el PDF: ${e.message}`); }
+                  finally { setGenerando(false); }
+                }}>
+                  {generando ? <Loader2 size={16} className="animate-spin" /> : <FileDown size={16} />} {generando ? "Generando…" : "Descargar PDF"}
+                </button>
+              </div>
               <button className={proyecto.registrado_sems_en ? btnSec : btnPrim} onClick={marcarRegistrado} disabled={marcando}>
                 <CheckCircle2 size={16} />
                 {proyecto.registrado_sems_en ? `Registrado el ${fechaLarga(proyecto.registrado_sems_en)} · desmarcar` : "Marcar como registrado en SEMS"}
@@ -731,6 +749,197 @@ function FichaSEMS({ proyecto, participantes, evidencias, urls, esAdmin, onCerra
           )}
         </div>
       </div>
+      </div>
     </div>
   );
+}
+
+/* ---------- PDF de la ficha con el membrete del plantel ----------
+   Membrete tomado del oficio institucional: logos de Educación (SEP)
+   y DGETAyCM arriba, y la imagen del año con la dirección abajo. Las
+   imágenes viven en public/paec/. El generador de PDF se descarga
+   solo cuando alguien lo usa. */
+const CDN_JSPDF = "https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm";
+const CDN_AUTOTABLE = "https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.4/dist/jspdf.plugin.autotable.mjs";
+const funcionDe = (m, nombre) =>
+  [m?.[nombre], m?.default?.[nombre], m?.default, m?.default?.default].find((f) => typeof f === "function");
+let promesaLib = null;
+const cargarLib = () => {
+  if (!promesaLib) {
+    promesaLib = Promise.all([import(/* @vite-ignore */ CDN_JSPDF), import(/* @vite-ignore */ CDN_AUTOTABLE)])
+      .then(([a, b]) => {
+        const lib = { jsPDF: funcionDe(a, "jsPDF"), autoTable: funcionDe(b, "autoTable") };
+        if (!lib.jsPDF || !lib.autoTable) throw new Error("No se reconoció el generador de PDF.");
+        return lib;
+      })
+      .catch((e) => { promesaLib = null; throw e; });
+  }
+  return promesaLib;
+};
+
+// Descarga una imagen y la deja lista para el PDF: { d: dataURL, w, h, tipo }
+const imagenParaPDF = (url) =>
+  fetch(url)
+    .then((r) => (r.ok ? r.blob() : Promise.reject(new Error("imagen no disponible"))))
+    .then((b) => new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = no; fr.readAsDataURL(b); }))
+    .then((d) => new Promise((ok) => {
+      const i = new Image();
+      i.onload = () => ok({ d, w: i.naturalWidth, h: i.naturalHeight, tipo: /^data:image\/png/.test(d) ? "PNG" : "JPEG" });
+      i.onerror = () => ok(null);
+      i.src = d;
+    }))
+    .catch(() => null);
+
+const MEMBRETE = import.meta.env.BASE_URL + "paec/";
+const VINO = [105, 17, 53];      // #691135, color del pie del oficio
+const GUINDA = [156, 33, 72];    // #9C2148, línea del pie
+
+async function generarPDF({ proyecto, participantes, evidencias, urls, plantel, asignaturas }) {
+  const fotosSel = evidencias.filter((e) => e.comprobable && urls[e.foto]);
+  const [{ jsPDF, autoTable }, sep, dgeta, bandera, anio, ...fotos] = await Promise.all([
+    cargarLib(),
+    imagenParaPDF(MEMBRETE + "membrete-sep.png"),
+    imagenParaPDF(MEMBRETE + "membrete-dgetaycm.png"),
+    imagenParaPDF(MEMBRETE + "membrete-bandera.png"),
+    imagenParaPDF(MEMBRETE + "membrete-2026.png"),
+    ...fotosSel.map((e) => imagenParaPDF(urls[e.foto])),
+  ]);
+
+  const doc = new jsPDF({ unit: "mm", format: "letter" });
+  const W = 215.9, M = 30, ANCHO = W - 2 * M;
+  const ARRIBA = 40, ABAJO = 242;   // zona de contenido, entre membrete y pie
+  const pa = proyecto.participantes || {};
+  const hoy = new Date().toLocaleDateString("es-MX", { day: "numeric", month: "long", year: "numeric", timeZone: "America/Cancun" });
+
+  const titulo = (t, y) => {
+    doc.setFont("helvetica", "bold"); doc.setFontSize(10.5); doc.setTextColor(...VINO);
+    doc.text(t.toUpperCase(), M, y);
+    doc.setDrawColor(...GUINDA); doc.setLineWidth(0.3); doc.line(M, y + 1.5, M + ANCHO, y + 1.5);
+    doc.setTextColor(0);
+    return y + 4;
+  };
+  const tabla = (y, body, opciones = {}) => {
+    autoTable(doc, {
+      startY: y, body, theme: "grid",
+      margin: { left: M, right: M, top: ARRIBA, bottom: 279.4 - ABAJO },
+      styles: { font: "helvetica", fontSize: 9, cellPadding: 1.8, lineColor: [190, 190, 190], lineWidth: 0.2, textColor: 30, valign: "top" },
+      columnStyles: { 0: { cellWidth: 55, fontStyle: "bold", fillColor: [246, 240, 243] } },
+      ...opciones,
+    });
+    return doc.lastAutoTable.finalY + 7;
+  };
+  const sitio = (y, alto) => { if (y + alto > ABAJO) { doc.addPage(); return ARRIBA; } return y; };
+
+  // Encabezado del documento
+  let y = ARRIBA + 2;
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9.5);
+  doc.text(`${plantel.localidad || "Dziuché"}, Q. Roo, a ${hoy}`, M + ANCHO, y, { align: "right" });
+  y += 9;
+  doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(...VINO);
+  doc.text("PROGRAMA AULA, ESCUELA Y COMUNIDAD (PAEC)", W / 2, y, { align: "center" });
+  y += 6;
+  doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(60);
+  doc.text(`Ficha de registro · Ciclo escolar ${proyecto.ciclo}`, W / 2, y, { align: "center" });
+  doc.setTextColor(0);
+  y += 9;
+
+  y = titulo("Datos del plantel", y);
+  y = tabla(y, [
+    ["CCT", plantel.cct], ["Subsistema", plantel.subsistema], ["Plantel", plantel.plantel],
+    ["Entidad", plantel.entidad], ["Municipio", plantel.municipio], ["Localidad", plantel.localidad],
+  ].map(([a, b]) => [a, b || "—"]));
+
+  y = sitio(y, 30);
+  y = titulo("Datos del proyecto", y);
+  y = tabla(y, [
+    ["Nombre del proyecto", proyecto.nombre],
+    ["Tema o problemática", proyecto.tema],
+    ["Propósito", proyecto.proposito],
+    ["Asignaturas", asignaturas.join(", ")],
+    ["Ámbitos de Formación Socioemocional", (proyecto.ambitos || []).join(", ")],
+    ["Duración", proyecto.duracion],
+    ["Ciclo escolar", proyecto.ciclo],
+    ["Estatus", proyecto.estatus],
+    ["Etapa", `${proyecto.etapa}. ${ETAPAS[proyecto.etapa - 1].nombre}`],
+    ...(proyecto.registrado_sems_en ? [["Registro en plataforma SEMS", fechaLarga(proyecto.registrado_sems_en)]] : []),
+  ].map(([a, b]) => [a, String(b || "").trim() || "—"]));
+
+  if (participantes.length) {
+    const porAsig = new Map();
+    participantes.forEach((p) => {
+      const k = p.asignatura.trim();
+      porAsig.set(k, [...(porAsig.get(k) || []), p.docente_nombre || "Docente"]);
+    });
+    y = sitio(y, 30);
+    y = titulo("Docentes participantes", y);
+    y = tabla(y, [...porAsig.entries()].sort((a, b) => a[0].localeCompare(b[0], "es")).map(([a, d]) => [a, d.join(", ")]),
+      { head: [["Asignatura", "Docentes"]], headStyles: { fillColor: VINO, textColor: 255, fontStyle: "bold" } });
+  }
+
+  y = sitio(y, 40);
+  y = titulo("Participantes", y);
+  y = tabla(y, [
+    ...CONTEOS.map(([k, t]) => [t, String(Number(pa[k]) || 0)]),
+    ["Total de participantes", String(totalConteos(pa))],
+    ["Total de proyectos", "1"],
+  ], { columnStyles: { 0: { cellWidth: 110, fontStyle: "bold", fillColor: [246, 240, 243] }, 1: { halign: "center" } },
+       didParseCell: (d) => { if (d.row.index >= CONTEOS.length) d.cell.styles.fontStyle = "bold"; } });
+
+  y = sitio(y, 30);
+  y = titulo("Resumen", y);
+  doc.setFontSize(8.5); doc.setTextColor(90);
+  doc.text("Objetivos, actividades y reflexiones: ¿qué aprendimos?, ¿qué logramos?, ¿cómo lo hicimos?, ¿qué mejoraríamos?", M, y + 2);
+  doc.setTextColor(0);
+  y = tabla(y + 4, [[proyecto.resumen?.trim() || "Sin resumen todavía."]],
+    { columnStyles: { 0: { fontStyle: "normal", fillColor: false, halign: "justify" } }, styles: { font: "helvetica", fontSize: 9.5, cellPadding: 3, lineColor: [190, 190, 190], lineWidth: 0.2, textColor: 30 } });
+
+  // Comprobables: cada foto con su descripción
+  const validas = fotosSel.map((e, i) => [e, fotos[i]]).filter(([, f]) => f);
+  if (validas.length) {
+    y = sitio(y, 95);
+    y = titulo("Comprobables", y);
+    for (const [e, f] of validas) {
+      const maxW = ANCHO, maxH = 78;
+      const k = Math.min(maxW / f.w, maxH / f.h);
+      const w = f.w * k, h = f.h * k;
+      const pie = doc.setFontSize(8.5).splitTextToSize(
+        `${e.descripcion} — ${e.docente_nombre || "Docente"}, ${fechaLarga(e.fecha)}${e.grupo ? `, grupo ${e.grupo}` : ""}.`, ANCHO);
+      y = sitio(y, h + 6 + pie.length * 4);
+      doc.addImage(f.d, f.tipo, M + (ANCHO - w) / 2, y, w, h, undefined, "FAST");
+      doc.setDrawColor(190); doc.setLineWidth(0.2); doc.rect(M + (ANCHO - w) / 2, y, w, h);
+      y += h + 4;
+      doc.setFont("helvetica", "italic"); doc.setFontSize(8.5); doc.setTextColor(70);
+      doc.text(pie, W / 2, y, { align: "center" });
+      doc.setTextColor(0); doc.setFont("helvetica", "normal");
+      y += pie.length * 4 + 6;
+    }
+  }
+
+  // Membrete y pie en todas las páginas (medidas tomadas del oficio)
+  const total = doc.getNumberOfPages();
+  for (let n = 1; n <= total; n++) {
+    doc.setPage(n);
+    if (sep) doc.addImage(sep.d, "PNG", 12.2, 12.7, 59.8, 16.9);
+    if (dgeta) doc.addImage(dgeta.d, "PNG", 73.6, 14.8, 32.5, 7.2);
+    if (bandera) doc.addImage(bandera.d, "PNG", 175.2, 8.8, 23.8, 24.9);
+    if (anio) doc.addImage(anio.d, "PNG", 10, 248.8, 56.7, 23.5);
+    doc.setDrawColor(...GUINDA); doc.setLineWidth(0.5); doc.line(61.2, 260.7, 188.7, 260.7);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(6.5); doc.setTextColor(...VINO);
+    doc.text("Km 121, Carretera Federal 184, Dziuché, Quintana Roo. CP 77800", 62, 264.5);
+    doc.text("www.sep.gob.mx", 62, 267.6);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(120);
+    doc.text(`Página ${n} de ${total}`, 188.7, 267.6, { align: "right" });
+    doc.setTextColor(0);
+  }
+
+  const nombre = `PAEC_${proyecto.ciclo}_${(proyecto.nombre || "proyecto").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^\w]+/g, "_").slice(0, 40)}.pdf`;
+  const blob = doc.output("blob");
+  const archivo = typeof File === "function" ? new File([blob], nombre, { type: "application/pdf" }) : null;
+  if (archivo && /Android|iPhone|iPad/i.test(navigator.userAgent) && navigator.canShare?.({ files: [archivo] })) {
+    try { await navigator.share({ files: [archivo], title: nombre }); return; } catch (e) { if (e?.name === "AbortError") return; }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = nombre; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
