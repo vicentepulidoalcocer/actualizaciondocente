@@ -32,6 +32,7 @@ const AsistenciaDocente = React.lazy(() => import("./AsistenciaDocente"));
 const Finanzas = React.lazy(() => import("./Finanzas"));
 const Ausentes = React.lazy(() => import("./Ausentes"));
 const Bitacora = React.lazy(() => import("./Bitacora"));
+const Paec = React.lazy(() => import("./Paec")); import { Sprout as IconoPaec } from "lucide-react"; // PAEC
 import {
   soportaPush, esIOS, instaladoEnInicio, permisoActual,
   activarNotificaciones, desactivarNotificaciones, estaActivo, enviarPush, registrarServicio,
@@ -1116,6 +1117,7 @@ export default function App() {
       { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
       { id: "tutorias", label: "Tutorías", icono: Users },
     ]},
+    { id: "paec", label: "PAEC", icono: IconoPaec }, // PAEC
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
     { id: "asistencia_baetam", label: "Asistencia BAETAM", icono: ScanLine },
     { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
@@ -1164,6 +1166,7 @@ export default function App() {
     { id: "avisos", label: "Avisos", icono: Megaphone, badge: avisosPendientes(db, user).length },
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "mi_asignacion", label: "Mi asignación", icono: FolderOpen, badge: pendientesEntrega(db, user.id) },
+    { id: "paec", label: "PAEC", icono: IconoPaec }, // PAEC
     { id: "ausentes", label: "Alumnos ausentes", icono: Users },
     { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
@@ -1327,6 +1330,7 @@ export default function App() {
               <Bitacora />
             </React.Suspense>
           )}
+          {pagina === "paec" && (esAdmin || user.rol === "docente") && <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}><Paec db={db} user={user} /></React.Suspense>} {/* PAEC */}
           {pagina === "metas" && esRolValidador(user.rol) && <Administracion db={db} user={user} mutar={mutar} esAdmin={esAdmin} modo="metas" />}
           {pagina === "admin" && esRolValidador(user.rol) && <Administracion db={db} user={user} mutar={mutar} esAdmin={esAdmin} modo={esAdmin ? "sistema" : "todo"} />}
         </main>
