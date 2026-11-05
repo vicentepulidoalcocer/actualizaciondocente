@@ -7795,6 +7795,42 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
   const gradoDe = (nivel) => db.grados.find(g => g.docenteId === docenteId && g.nivel === nivel);
   const misComp = db.comp.filter(c => c.docenteId === docenteId);
 
+  /* Cédulas de cada grado y constancia de situación fiscal. Se anotan
+     en el perfil del docente (no en el grado, que una vez validado ya
+     no se modifica). La constancia fiscal se guarda como csf_<docente>_…
+     y solo la abren el docente, RH y la administración. */
+  const cedulas = docente?.cedulas || {};
+  const csf = docente?.csf || null;
+  const extraRef = useRef();
+  const [extra, setExtra] = useState(null);           // { tipo: "cedula", nivel } | { tipo: "csf" }
+  const [subiendoExtra, setSubiendoExtra] = useState("");
+  const nombreBase = nombreSeguro(docente?.nombre || "docente", 40);
+  const elegirExtra = (obj) => { setExtra(obj); if (extraRef.current) { extraRef.current.value = ""; extraRef.current.click(); } };
+  const subirExtra = async (file) => {
+    if (!file || !extra) return;
+    const permitidos = ["application/pdf", "image/jpeg", "image/jpg", "image/png"];
+    if (!permitidos.includes(file.type)) { alert("Formatos permitidos: PDF, JPG, JPEG o PNG."); return; }
+    const llave = extra.tipo === "csf" ? "csf" : extra.nivel;
+    setSubiendoExtra(llave);
+    try {
+      const base64 = await leerComoBase64(file);
+      const clave = extra.tipo === "csf" ? `csf_${docenteId}_${uid()}` : `ced_${uid()}`;
+      const r = await guardarArchivo(clave, base64, file.type, file.name);
+      if (!r.guardado) { alert("No se pudo subir: " + (r.error || "error desconocido")); return; }
+      const anterior = extra.tipo === "csf" ? csf : cedulas[extra.nivel];
+      const registro = { clave, nombre: file.name, cargadaEn: ahora() };
+      mutar(d => {
+        const u = d.users.find(x => x.id === docenteId);
+        if (!u) return;
+        if (extra.tipo === "csf") u.csf = registro;
+        else u.cedulas = { ...(u.cedulas || {}), [extra.nivel]: registro };
+      });
+      if (anterior?.clave) eliminarArchivo(anterior.clave);
+    } catch (e) { alert("No se pudo subir: " + e.message); }
+    finally { setSubiendoExtra(""); setExtra(null); }
+  };
+  const diasDesde = (iso) => iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : null;
+
   const cargarDoc = async (file) => {
     if (!file) return;
     const permitidos = ["application/pdf", "image/jpeg", "image/jpg", "image/png"];
@@ -7900,6 +7936,25 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
                         {g.estado === "rechazado" && g.motivoRechazo && <span className="block text-rose-600">Motivo del rechazo: {g.motivoRechazo}</span>}
                       </div>
                     )}
+                    {g && (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+                        <span className="font-semibold text-slate-600">Cédula:</span>
+                        {cedulas[nivel]
+                          ? <>
+                              <span className="text-emerald-700">cargada el {fmtFecha(cedulas[nivel].cargadaEn)}</span>
+                              <VerArchivoBtn certId={cedulas[nivel].clave} guardado />
+                              <DescargarArchivoBtn clave={cedulas[nivel].clave} guardado nombre={`${nombreBase}_Cedula_${nombreSeguro(nivel, 20)}`} />
+                            </>
+                          : <span className="text-slate-400">sin cargar</span>}
+                        {editable && (
+                          <button className="ml-1 inline-flex items-center gap-1 px-2 py-1 rounded-lg border border-slate-300 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                            disabled={!!subiendoExtra} onClick={() => elegirExtra({ tipo: "cedula", nivel })}>
+                            {subiendoExtra === nivel ? <Loader2 size={12} className="animate-spin"/> : <Upload size={12}/>}
+                            {cedulas[nivel] ? "Reemplazar" : "Subir cédula"}
+                          </button>
+                        )}
+                      </div>
+                    )}
                   </div>
                   {g?.archivoGuardado && (
                     <div className="flex shrink-0">
@@ -7918,6 +7973,36 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
             );
           })}
         </div>
+      </Card>
+
+      {/* Constancia de situación fiscal */}
+      <Card className="p-5">
+        <input ref={extraRef} type="file" accept="application/pdf,image/jpeg,image/png" className="hidden" onChange={e => subirExtra(e.target.files[0])} />
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+          <h3 className="font-bold text-sm flex items-center gap-2"><FileText size={16}/>Constancia de situación fiscal</h3>
+          {editable && (
+            <button className={btnSec + " !px-3 !py-1.5"} disabled={!!subiendoExtra} onClick={() => elegirExtra({ tipo: "csf" })}>
+              {subiendoExtra === "csf" ? <Loader2 size={13} className="animate-spin"/> : <Upload size={13}/>}{csf ? "Actualizar" : "Subir constancia"}
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-slate-400 mb-2">Constancia del SAT actualizada (PDF o imagen). Solo la ven tú y la administración.</p>
+        {!csf
+          ? <p className="text-sm text-slate-400 py-1">Sin cargar todavía.</p>
+          : (() => {
+              const dias = diasDesde(csf.cargadaEn);
+              const vieja = dias !== null && dias > 90;
+              return (
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-medium">Cargada el {fmtFecha(csf.cargadaEn)}</span>
+                  <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${vieja ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>
+                    {vieja ? "Conviene actualizarla (más de 3 meses)" : "Actualizada"}
+                  </span>
+                  <VerArchivoBtn certId={csf.clave} guardado />
+                  <DescargarArchivoBtn clave={csf.clave} guardado nombre={`${nombreBase}_Constancia_situacion_fiscal`} />
+                </div>
+              );
+            })()}
       </Card>
 
       {/* Formación complementaria */}
