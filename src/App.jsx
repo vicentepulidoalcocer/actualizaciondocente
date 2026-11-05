@@ -2250,6 +2250,31 @@ function VerArchivoBtn({ certId, guardado }) {
   return <button onClick={abrir} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Ver documento">{abriendo ? <Loader2 size={15} className="animate-spin"/> : <Eye size={15} />}</button>;
 }
 
+/* Descarga el documento con un nombre claro (docente + tipo), en su
+   formato original (PDF o imagen). */
+function DescargarArchivoBtn({ clave, guardado, nombre }) {
+  const [bajando, setBajando] = useState(false);
+  if (!guardado) return null;
+  const bajar = async () => {
+    setBajando(true);
+    try {
+      const f = await leerArchivo(clave);
+      if (!f) { alert("No se encontró el archivo."); return; }
+      const bytes = atob(f.base64);
+      const arr = new Uint8Array(bytes.length);
+      for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+      const ext = (f.nombre && f.nombre.includes(".")) ? f.nombre.split(".").pop().toLowerCase()
+        : (f.mime || "").includes("pdf") ? "pdf" : (f.mime || "").includes("png") ? "png" : "jpg";
+      const url = URL.createObjectURL(new Blob([arr], { type: f.mime }));
+      const a = document.createElement("a");
+      a.href = url; a.download = `${nombre}.${ext}`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } finally { setBajando(false); }
+  };
+  return <button onClick={bajar} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Descargar documento">{bajando ? <Loader2 size={15} className="animate-spin"/> : <Download size={15} />}</button>;
+}
+
 function MisCursos({ db, user, mutar, irA }) {
   const [cicloF, setCicloF] = useState("todos");
   const [estado, setEstado] = useState("todos");
@@ -7876,6 +7901,13 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
                       </div>
                     )}
                   </div>
+                  {g?.archivoGuardado && (
+                    <div className="flex shrink-0">
+                      <VerArchivoBtn certId={g.id} guardado={g.archivoGuardado} />
+                      <DescargarArchivoBtn clave={g.id} guardado={g.archivoGuardado}
+                        nombre={`${nombreSeguro(docente?.nombre || "docente", 40)}_${nombreSeguro(nivel, 20)}`} />
+                    </div>
+                  )}
                   {editable && (!g || g.estado === "rechazado") && (
                     <button className={btnSec + " !px-3 !py-1.5 shrink-0"} onClick={() => { setSubiendo({ nivel }); setForm(null); setErr(""); }}>
                       <Upload size={13}/>{g ? "Volver a subir" : "Subir documento"}
@@ -7905,6 +7937,8 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
             </div>
             <Badge estado={c.estado} mapa={ESTADOS_GRADO} />
             <VerArchivoBtn certId={c.id} guardado={c.archivoGuardado} />
+            <DescargarArchivoBtn clave={c.id} guardado={c.archivoGuardado}
+              nombre={`${nombreSeguro(docente?.nombre || "docente", 40)}_${nombreSeguro(c.tipo || "Formacion", 20)}_${nombreSeguro(c.nombre || "documento", 40)}`} />
           </div>
         ))}
       </Card>
