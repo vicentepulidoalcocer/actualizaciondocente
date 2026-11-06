@@ -7741,12 +7741,17 @@ function Docentes({ db, mutar, irA, esAdmin = true }) {
         {docentes.map(u => {
           const exp = completitudExpediente(db, u.id);
           return (
-            <div key={u.id} className={`flex items-center gap-3 py-2.5 border-b border-slate-100 last:border-0 ${!u.activo ? "opacity-50" : ""}`}>
-              <div className="w-9 h-9 rounded-full bg-[#1a2340] text-white flex items-center justify-center text-sm font-bold shrink-0">{u.nombre.split(" ").map(p=>p[0]).slice(0,2).join("")}</div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium truncate">{u.nombre} {!u.activo && <span className="text-[10px] font-bold text-rose-500">DESACTIVADO</span>}</div>
-                <div className="text-xs text-slate-500 truncate">{u.email} · {u.area || "Sin área"} · Expediente {exp.pct}%</div>
+            <div key={u.id} className={`flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-2 py-2.5 border-b border-slate-100 last:border-0 ${!u.activo ? "opacity-50" : ""}`}>
+              {/* En el celular, el nombre ocupa su propio renglón y los botones van debajo */}
+              <div className="flex items-center gap-3 basis-full sm:basis-auto sm:flex-1 min-w-0">
+                <div className="w-9 h-9 rounded-full bg-[#1a2340] text-white flex items-center justify-center text-sm font-bold shrink-0">{u.nombre.split(" ").map(p=>p[0]).slice(0,2).join("")}</div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium break-words sm:truncate">{u.nombre} {!u.activo && <span className="text-[10px] font-bold text-rose-500">DESACTIVADO</span>}</div>
+                  <div className="text-xs text-slate-500 truncate">{u.email}</div>
+                  <div className="text-xs text-slate-500 truncate">{u.area || "Sin área"} · Expediente {exp.pct}%</div>
+                </div>
               </div>
+              <div className="flex items-center gap-1 pl-12 sm:pl-0 shrink-0">
               <button className={btnSec + " !px-3 !py-1.5"} onClick={() => irA("expediente_docente", u.id)}><FolderOpen size={14}/>Expediente</button>
               {esAdmin && <>
                 <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Respaldar expediente en ZIP"
@@ -7759,6 +7764,7 @@ function Docentes({ db, mutar, irA, esAdmin = true }) {
                   {u.activo ? <XCircle size={15}/> : <CheckCircle2 size={15}/>}
                 </button>
               </>}
+              </div>
             </div>
           );
         })}
