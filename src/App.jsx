@@ -186,14 +186,34 @@ const fmtFecha = (f) => {
 const certsDeCiclo = (certs, ciclo) =>
   ciclo === "historico" ? certs : certs.filter(c => c.ciclo === ciclo);
 
+/* Formación complementaria: los DIPLOMADOS suman horas de capacitación
+   (las especialidades, certificaciones y otros estudios no). Cuentan en
+   el ciclo de su fecha, igual que las constancias. Las horas salen del
+   campo "horas"; en registros anteriores se leen de la duración
+   escrita (p. ej. "120 horas"). */
+const compSumaHoras = (c) => c.tipo === "Diplomado";
+const horasDeComp = (c) => {
+  const n = Number(c.horas);
+  if (n > 0) return n;
+  const m = String(c.duracion || "").match(/(\d+(?:[.,]\d+)?)\s*(h\b|hr|hrs|hora)/i);
+  return m ? Number(m[1].replace(",", ".")) : 0;
+};
+const cicloDeComp = (c) => cicloDeFecha(c.fecha || null);
+const horasComp = (db, docenteId, ciclo, estado) =>
+  (db.comp || []).filter(c => c.docenteId === docenteId && compSumaHoras(c) && c.estado === estado
+    && (ciclo === "historico" || cicloDeComp(c) === ciclo))
+    .reduce((s, c) => s + horasDeComp(c), 0);
+
 const horasValidadas = (db, docenteId, ciclo) =>
   certsDeCiclo(db.certs, ciclo).filter(c => c.docenteId === docenteId && c.estado === "validada")
-    .reduce((s, c) => s + (Number(c.datos.horas) || 0), 0);
+    .reduce((s, c) => s + (Number(c.datos.horas) || 0), 0)
+  + horasComp(db, docenteId, ciclo, "validado");
 
 const horasPendientes = (db, docenteId, ciclo) =>
   certsDeCiclo(db.certs, ciclo).filter(c => c.docenteId === docenteId &&
     ["pendiente_validacion", "revision_docente", "procesando"].includes(c.estado))
-    .reduce((s, c) => s + (Number(c.datos.horas) || 0), 0);
+    .reduce((s, c) => s + (Number(c.datos.horas) || 0), 0)
+  + horasComp(db, docenteId, ciclo, "pendiente");
 
 const metaDe = (db, docenteId) =>
   db.config.metasPorDocente[docenteId] ?? db.config.metaAnual;
@@ -7531,11 +7551,13 @@ function Validaciones({ db, user, mutar }) {
     await mutar(d => {
       const g = d[coleccion].find(x => x.id === item.id);
       if (coleccion === "grados") g.datos = item.datos;
+      if (coleccion === "comp" && compSumaHoras(item)) { g.horas = horasDeComp(item) || null; g.fecha = item.fecha || g.fecha; }
       g.estado = aprobar ? "validado" : "rechazado";
       g.motivoRechazo = aprobar ? null : motivo.trim();
       g.validadoEn = aprobar ? ahora() : null; g.validadoPor = user.nombre;
       const que = coleccion === "grados" ? `tu ${g.nivel}` : `“${g.nombre}”`;
-      notificar(d, g.docenteId, aprobar ? `✅ Se validó ${que} en tu expediente académico.` : `❌ Se rechazó ${que}. Motivo: ${motivo.trim()}`);
+      const extra = aprobar && coleccion === "comp" && compSumaHoras(g) && horasDeComp(g) ? ` Suma ${horasDeComp(g)} horas a tu capacitación del ciclo ${cicloDeComp(g)}.` : "";
+      notificar(d, g.docenteId, aprobar ? `✅ Se validó ${que} en tu expediente académico.${extra}` : `❌ Se rechazó ${que}. Motivo: ${motivo.trim()}`);
     });
     setMotivo(""); setGradoRev(null);
   };
@@ -7621,7 +7643,22 @@ function Validaciones({ db, user, mutar }) {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-slate-600">{gradoRev.item.tipo}: <b>{gradoRev.item.nombre}</b> · {gradoRev.item.institucion || "—"} · {fmtFecha(gradoRev.item.fecha)} {gradoRev.item.duracion ? `· ${gradoRev.item.duracion}` : ""}</p>
+            <div className="space-y-3">
+              <p className="text-sm text-slate-600">{gradoRev.item.tipo}: <b>{gradoRev.item.nombre}</b> · {gradoRev.item.institucion || "—"} · {fmtFecha(gradoRev.item.fecha)} {gradoRev.item.duracion ? `· ${gradoRev.item.duracion}` : ""}</p>
+              {compSumaHoras(gradoRev.item) && (
+                <div className="grid sm:grid-cols-2 gap-3 items-end">
+                  <Campo label="Horas del diplomado (revísalas en el documento)">
+                    <input className={inputCls} type="number" min="0" value={gradoRev.item.horas ?? (horasDeComp(gradoRev.item) || "")}
+                      onChange={e => setGradoRev(g => ({ ...g, item: { ...g.item, horas: e.target.value === "" ? null : Number(e.target.value) } }))} />
+                  </Campo>
+                  <Campo label="Fecha del diplomado">
+                    <input className={inputCls} type="date" value={gradoRev.item.fecha || ""}
+                      onChange={e => setGradoRev(g => ({ ...g, item: { ...g.item, fecha: e.target.value || null } }))} />
+                  </Campo>
+                  <p className="sm:col-span-2 text-xs text-emerald-700">Al validarlo suma {horasDeComp(gradoRev.item) || 0} horas al ciclo {cicloDeComp(gradoRev.item)}.</p>
+                </div>
+              )}
+            </div>
           )}
           <div className="mt-4 flex flex-wrap gap-2 justify-end items-center">
             <input className={inputCls + " !mt-0 !w-56"} placeholder="Motivo del rechazo…" value={motivo} onChange={e => setMotivo(e.target.value)} />
@@ -7922,9 +7959,13 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
 
   const enviarComp = async () => {
     if (!form.nombre.trim()) { setErr("Escribe el nombre del estudio."); return; }
+    const horasDip = Number(form.horas);
+    if (form.tipo === "Diplomado" && !(horasDip > 0)) { setErr("Escribe cuántas horas tiene el diplomado (vienen en el documento)."); return; }
+    if (form.tipo === "Diplomado" && !form.fecha) { setErr("Escribe la fecha del diplomado: con ella se sabe a qué ciclo suman sus horas."); return; }
     await mutar(d => {
       d.comp.push({ id: form.id, docenteId, tipo: form.tipo, nombre: form.nombre, institucion: form.institucion,
-        fecha: form.fecha || null, duracion: form.duracion || null, archivoGuardado: form.archivoGuardado,
+        fecha: form.fecha || null, duracion: form.duracion || null, horas: form.tipo === "Diplomado" ? horasDip : null,
+        archivoGuardado: form.archivoGuardado,
         archivoNombre: form.archivoNombre, estado: "pendiente", cargadoEn: ahora() });
       d.users.filter(u => esRolValidador(u.rol) && u.activo).forEach(a => notificar(d, a.id, `📜 ${docente.nombre} registró formación complementaria: ${form.nombre}.`));
     });
@@ -8066,14 +8107,14 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
           <h3 className="font-bold text-sm flex items-center gap-2"><Star size={16}/>Formación complementaria</h3>
           {editable && <button className={btnSec + " !px-3 !py-1.5"} onClick={() => { setSubiendo({ comp: true }); setForm(null); setErr(""); }}><Plus size={13}/>Agregar</button>}
         </div>
-        <p className="text-xs text-slate-400 mb-2">Especialidades, diplomados y certificaciones. No se contabilizan como grados académicos.</p>
+        <p className="text-xs text-slate-400 mb-2">Especialidades, diplomados y certificaciones. No se contabilizan como grados académicos. Los <b>diplomados</b> validados sí suman horas de capacitación.</p>
         {misComp.length === 0 && <p className="text-sm text-slate-400 py-2">Sin registros todavía.</p>}
         {misComp.map(c => (
           <div key={c.id} className="flex items-center gap-3 py-2 border-b border-slate-100 last:border-0 text-sm">
             <span className="text-[11px] font-bold text-slate-400 uppercase w-24 shrink-0">{c.tipo}</span>
             <div className="flex-1 min-w-0">
               <div className="font-medium truncate">{c.nombre}</div>
-              <div className="text-xs text-slate-500">{c.institucion || "—"} · {fmtFecha(c.fecha)} {c.duracion ? `· ${c.duracion}` : ""}</div>
+              <div className="text-xs text-slate-500">{c.institucion || "—"} · {fmtFecha(c.fecha)} {compSumaHoras(c) ? `· ${horasDeComp(c) || "?"} h · suma horas al ciclo ${cicloDeComp(c)}` : c.duracion ? `· ${c.duracion}` : ""}</div>
             </div>
             <Badge estado={c.estado} mapa={ESTADOS_GRADO} />
             <VerArchivoBtn certId={c.id} guardado={c.archivoGuardado} />
@@ -8121,8 +8162,15 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
                 <Campo label="Nombre"><input className={inputCls} value={form.nombre} onChange={e => setForm({ ...form, nombre: e.target.value })} /></Campo>
                 <Campo label="Institución"><input className={inputCls} value={form.institucion} onChange={e => setForm({ ...form, institucion: e.target.value })} /></Campo>
                 <Campo label="Fecha"><input className={inputCls} type="date" value={form.fecha || ""} onChange={e => setForm({ ...form, fecha: e.target.value })} /></Campo>
-                <Campo label="Duración (si aplica)"><input className={inputCls} value={form.duracion || ""} onChange={e => setForm({ ...form, duracion: e.target.value })} placeholder="p. ej. 120 horas" /></Campo>
+                {form.tipo === "Diplomado"
+                  ? <Campo label="Horas del diplomado"><input className={inputCls} type="number" min="1" value={form.horas ?? ""} onChange={e => setForm({ ...form, horas: e.target.value })} placeholder="p. ej. 120" /></Campo>
+                  : <Campo label="Duración (si aplica)"><input className={inputCls} value={form.duracion || ""} onChange={e => setForm({ ...form, duracion: e.target.value })} placeholder="p. ej. 2 años" /></Campo>}
               </div>
+              <p className="text-xs text-slate-500">
+                {form.tipo === "Diplomado"
+                  ? <>✅ Los diplomados <b>suman horas de capacitación</b> cuando se validan, en el ciclo de su fecha{form.fecha ? ` (${cicloDeFecha(form.fecha)})` : ""}.</>
+                  : "Las especialidades, certificaciones y otros estudios se registran en tu expediente, pero no suman horas de capacitación."}
+              </p>
               {err && <p className="text-sm text-rose-600">{err}</p>}
               <div className="flex justify-end gap-2"><button className={btnSec} onClick={() => setForm(null)}>Atrás</button>
                 <button className={btnPrim} onClick={enviarComp}>Enviar a validación</button></div>
