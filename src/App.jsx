@@ -8378,7 +8378,7 @@ function ActividadReciente({ db }) {
     if (totales) {
       // Cifras exactas, contadas por la base de datos
       totales.forEach(t => porUsuario.set(t.usuario_id, {
-        id: t.usuario_id, veces: Number(t.veces) || 0, ultimo: t.ultimo,
+        id: t.usuario_id, veces: Number(t.veces) || 0, ultimo: t.ultimo, ultimoTotal: t.ultimo_total || t.ultimo,
       }));
     } else {
       // Reserva: si la función aún no existe en la base, se cuenta
@@ -8392,10 +8392,16 @@ function ActividadReciente({ db }) {
     }
     const filas = db.users.filter(u => u.activo).map(u => {
       const r = porUsuario.get(u.id);
-      return { id: u.id, nombre: u.nombre, rol: u.rol, veces: r?.veces || 0, ultimo: r?.ultimo || null };
+      return { id: u.id, nombre: u.nombre, rol: u.rol, veces: r?.veces || 0, ultimo: r?.ultimo || null, ultimoTotal: r?.ultimoTotal || r?.ultimo || null };
     });
     return filas.sort((a, b) => {
-      if (!a.ultimo && !b.ultimo) return a.nombre.localeCompare(b.nombre);
+      if (!a.ultimo && !b.ultimo) {
+        // Primero quienes entraron antes del periodo (más reciente arriba), al final quienes nunca
+        if (a.ultimoTotal && b.ultimoTotal) return b.ultimoTotal.localeCompare(a.ultimoTotal);
+        if (a.ultimoTotal) return -1;
+        if (b.ultimoTotal) return 1;
+        return a.nombre.localeCompare(b.nombre);
+      }
       if (!a.ultimo) return 1;
       if (!b.ultimo) return -1;
       return b.ultimo.localeCompare(a.ultimo);
@@ -8411,11 +8417,14 @@ function ActividadReciente({ db }) {
   const topado = !totales && accesos && accesos.length >= 1000;
 
   const nunca = resumen.filter(r => !r.ultimo).length;
+  const nuncaJamas = resumen.filter(r => !r.ultimoTotal).length;
 
   const exportar = () => {
     const filas = [["Nombre", "Rol", "Entradas en el periodo", "Último acceso"]];
     resumen.forEach(r => filas.push([r.nombre, NOMBRE_ROL[r.rol] || r.rol, r.veces,
-      r.ultimo ? new Date(r.ultimo).toLocaleString("es-MX") : "Nunca ha entrado"]));
+      r.ultimo ? new Date(r.ultimo).toLocaleString("es-MX")
+        : r.ultimoTotal ? `Sin entrar en el periodo (última vez: ${new Date(r.ultimoTotal).toLocaleString("es-MX")})`
+        : "Nunca ha entrado"]));
     descargarCSV(`accesos_ultimos_${dias}_dias`, filas);
   };
 
@@ -8488,7 +8497,7 @@ function ActividadReciente({ db }) {
 
               {nunca > 0 && (
                 <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-3">
-                  ⚠ Hay {nunca} cuenta(s) que no han entrado en este periodo. Puede ser que la persona
+                  ⚠ Hay {nunca} cuenta(s) que no han entrado en este periodo{nuncaJamas > 0 ? `, y ${nuncaJamas} de ellas nunca ha entrado` : ""}. Puede ser que la persona
                   no conozca sus datos de acceso o tenga problemas para entrar; conviene preguntarle.
                 </p>
               )}
@@ -8507,8 +8516,13 @@ function ActividadReciente({ db }) {
                           <div className="text-xs font-semibold">{new Date(r.ultimo).toLocaleString("es-MX")}</div>
                           <div className="text-[11px] text-slate-400">{haceCuanto(r.ultimo)} · {r.veces} entrada(s)</div>
                         </>
+                      ) : r.ultimoTotal ? (
+                        <>
+                          <div className="text-xs font-bold text-amber-600">Sin entrar en estos {dias} días</div>
+                          <div className="text-[11px] text-slate-400">Última vez: {new Date(r.ultimoTotal).toLocaleString("es-MX")} · {haceCuanto(r.ultimoTotal)}</div>
+                        </>
                       ) : (
-                        <span className="text-xs font-bold text-amber-600">Nunca ha entrado</span>
+                        <span className="text-xs font-bold text-rose-600">Nunca ha entrado</span>
                       )}
                     </div>
                   </div>
