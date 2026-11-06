@@ -7831,6 +7831,43 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
   };
   const diasDesde = (iso) => iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : null;
 
+  /* La administración general (dirección) puede borrar títulos, cédulas,
+     la constancia fiscal y la formación complementaria de un docente. */
+  const puedeBorrar = user?.rol === "admin";
+  const btnBorrar = (titulo, fn) => (
+    <button onClick={fn} className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50" title={titulo}><Trash2 size={15} /></button>
+  );
+  const borrarGrado = async (g) => {
+    const ced = cedulas[g.nivel];
+    if (!window.confirm(`¿Borrar el título de ${g.nivel} de ${docente?.nombre || "este docente"}?${ced ? "\n\nTambién se borrará su cédula." : ""}\n\nEsta acción no se puede deshacer.`)) return;
+    await mutar(d => {
+      d.grados = d.grados.filter(x => x.id !== g.id);
+      const u = d.users.find(x => x.id === docenteId);
+      if (u?.cedulas?.[g.nivel]) { const c = { ...u.cedulas }; delete c[g.nivel]; u.cedulas = c; }
+    });
+    await eliminarArchivo(g.id);
+    if (ced?.clave) await eliminarArchivo(ced.clave);
+  };
+  const borrarCedula = async (nivel) => {
+    const ced = cedulas[nivel];
+    if (!ced || !window.confirm(`¿Borrar la cédula de ${nivel}?\n\nEsta acción no se puede deshacer.`)) return;
+    await mutar(d => {
+      const u = d.users.find(x => x.id === docenteId);
+      if (u?.cedulas) { const c = { ...u.cedulas }; delete c[nivel]; u.cedulas = c; }
+    });
+    await eliminarArchivo(ced.clave);
+  };
+  const borrarCsf = async () => {
+    if (!csf || !window.confirm("¿Borrar la constancia de situación fiscal?\n\nEsta acción no se puede deshacer.")) return;
+    await mutar(d => { const u = d.users.find(x => x.id === docenteId); if (u) delete u.csf; });
+    await eliminarArchivo(csf.clave);
+  };
+  const borrarComp = async (c) => {
+    if (!window.confirm(`¿Borrar “${c.nombre}” de la formación complementaria?\n\nEsta acción no se puede deshacer.`)) return;
+    await mutar(d => { d.comp = d.comp.filter(x => x.id !== c.id); });
+    if (c.archivoGuardado) await eliminarArchivo(c.id);
+  };
+
   const cargarDoc = async (file) => {
     if (!file) return;
     const permitidos = ["application/pdf", "image/jpeg", "image/jpg", "image/png"];
@@ -7944,6 +7981,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
                               <span className="text-emerald-700">cargada el {fmtFecha(cedulas[nivel].cargadaEn)}</span>
                               <VerArchivoBtn certId={cedulas[nivel].clave} guardado />
                               <DescargarArchivoBtn clave={cedulas[nivel].clave} guardado nombre={`${nombreBase}_Cedula_${nombreSeguro(nivel, 20)}`} />
+                              {puedeBorrar && btnBorrar(`Borrar cédula de ${nivel}`, () => borrarCedula(nivel))}
                             </>
                           : <span className="text-slate-400">sin cargar</span>}
                         {editable && (
@@ -7963,6 +8001,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
                         nombre={`${nombreSeguro(docente?.nombre || "docente", 40)}_${nombreSeguro(nivel, 20)}`} />
                     </div>
                   )}
+                  {g && puedeBorrar && btnBorrar(`Borrar título de ${nivel}`, () => borrarGrado(g))}
                   {editable && (!g || g.estado === "rechazado") && (
                     <button className={btnSec + " !px-3 !py-1.5 shrink-0"} onClick={() => { setSubiendo({ nivel }); setForm(null); setErr(""); }}>
                       <Upload size={13}/>{g ? "Volver a subir" : "Subir documento"}
@@ -8000,6 +8039,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
                   </span>
                   <VerArchivoBtn certId={csf.clave} guardado />
                   <DescargarArchivoBtn clave={csf.clave} guardado nombre={`${nombreBase}_Constancia_situacion_fiscal`} />
+                  {puedeBorrar && btnBorrar("Borrar constancia de situación fiscal", borrarCsf)}
                 </div>
               );
             })()}
@@ -8024,6 +8064,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
             <VerArchivoBtn certId={c.id} guardado={c.archivoGuardado} />
             <DescargarArchivoBtn clave={c.id} guardado={c.archivoGuardado}
               nombre={`${nombreSeguro(docente?.nombre || "docente", 40)}_${nombreSeguro(c.tipo || "Formacion", 20)}_${nombreSeguro(c.nombre || "documento", 40)}`} />
+            {puedeBorrar && btnBorrar("Borrar", () => borrarComp(c))}
           </div>
         ))}
       </Card>
@@ -8120,7 +8161,19 @@ function ExpedienteIntegral({ db, docenteId, mutar, user, volver }) {
             <Stat icono={Award} label="Insignias del ciclo" valor={db.logros.filter(l => l.docenteId === docenteId && l.clave.endsWith("@" + ciclo) && logroVigente(l.clave)).length} />
           </div>
           <Card className="p-5"><Progreso actual={h} meta={meta} semaforo={semaforoDe(db, meta ? Math.round(100*h/meta) : 0)} /></Card>
-          <Card className="p-4"><h3 className="font-bold text-sm mb-2">Constancias</h3><TablaCursos certs={certs} db={db} /></Card>
+          <Card className="p-4"><h3 className="font-bold text-sm mb-2">Constancias</h3>
+            <TablaCursos certs={certs} db={db} acciones={user?.rol === "admin" ? (c => (
+              <div className="flex items-center">
+                <VerArchivoBtn certId={c.id} guardado={c.archivoGuardado} />
+                <button title="Borrar constancia" className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                  onClick={async () => {
+                    if (!window.confirm(`¿Borrar la constancia “${c.datos.curso || c.archivoNombre || "sin título"}” de ${d.nombre}?${c.estado === "validada" ? `\n\nEstá validada: se le restarán ${c.datos.horas || 0} horas.` : ""}\n\nEsta acción no se puede deshacer.`)) return;
+                    await mutar(x => { x.certs = x.certs.filter(y => y.id !== c.id); });
+                    if (c.archivoGuardado) await eliminarArchivo(c.id);
+                  }}><Trash2 size={15} /></button>
+              </div>
+            )) : undefined} />
+          </Card>
         </div>
       )}
     </div>
