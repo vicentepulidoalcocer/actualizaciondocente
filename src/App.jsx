@@ -2250,6 +2250,15 @@ function VerArchivoBtn({ certId, guardado }) {
   return <button onClick={abrir} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Ver documento">{abriendo ? <Loader2 size={15} className="animate-spin"/> : <Eye size={15} />}</button>;
 }
 
+/* Confirmación reforzada para borrados de la dirección: hay que
+   escribir BORRAR (mayúsculas o minúsculas) para continuar. */
+function confirmarBorrado(mensaje) {
+  const r = window.prompt(`${mensaje}\n\nPara confirmar, escribe BORRAR:`);
+  if (r === null) return false;
+  if (r.trim().toUpperCase() !== "BORRAR") { alert("No se borró nada: no escribiste BORRAR."); return false; }
+  return true;
+}
+
 /* Descarga el documento con un nombre claro (docente + tipo), en su
    formato original (PDF o imagen). */
 function DescargarArchivoBtn({ clave, guardado, nombre }) {
@@ -7839,7 +7848,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
   );
   const borrarGrado = async (g) => {
     const ced = cedulas[g.nivel];
-    if (!window.confirm(`¿Borrar el título de ${g.nivel} de ${docente?.nombre || "este docente"}?${ced ? "\n\nTambién se borrará su cédula." : ""}\n\nEsta acción no se puede deshacer.`)) return;
+    if (!confirmarBorrado(`¿Borrar el título de ${g.nivel} de ${docente?.nombre || "este docente"}?${ced ? "\n\nTambién se borrará su cédula." : ""}\n\nEsta acción no se puede deshacer.`)) return;
     await mutar(d => {
       d.grados = d.grados.filter(x => x.id !== g.id);
       const u = d.users.find(x => x.id === docenteId);
@@ -7850,7 +7859,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
   };
   const borrarCedula = async (nivel) => {
     const ced = cedulas[nivel];
-    if (!ced || !window.confirm(`¿Borrar la cédula de ${nivel}?\n\nEsta acción no se puede deshacer.`)) return;
+    if (!ced || !confirmarBorrado(`¿Borrar la cédula de ${nivel}?\n\nEsta acción no se puede deshacer.`)) return;
     await mutar(d => {
       const u = d.users.find(x => x.id === docenteId);
       if (u?.cedulas) { const c = { ...u.cedulas }; delete c[nivel]; u.cedulas = c; }
@@ -7858,12 +7867,12 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
     await eliminarArchivo(ced.clave);
   };
   const borrarCsf = async () => {
-    if (!csf || !window.confirm("¿Borrar la constancia de situación fiscal?\n\nEsta acción no se puede deshacer.")) return;
+    if (!csf || !confirmarBorrado("¿Borrar la constancia de situación fiscal?\n\nEsta acción no se puede deshacer.")) return;
     await mutar(d => { const u = d.users.find(x => x.id === docenteId); if (u) delete u.csf; });
     await eliminarArchivo(csf.clave);
   };
   const borrarComp = async (c) => {
-    if (!window.confirm(`¿Borrar “${c.nombre}” de la formación complementaria?\n\nEsta acción no se puede deshacer.`)) return;
+    if (!confirmarBorrado(`¿Borrar “${c.nombre}” de la formación complementaria?\n\nEsta acción no se puede deshacer.`)) return;
     await mutar(d => { d.comp = d.comp.filter(x => x.id !== c.id); });
     if (c.archivoGuardado) await eliminarArchivo(c.id);
   };
@@ -8167,7 +8176,7 @@ function ExpedienteIntegral({ db, docenteId, mutar, user, volver }) {
                 <VerArchivoBtn certId={c.id} guardado={c.archivoGuardado} />
                 <button title="Borrar constancia" className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
                   onClick={async () => {
-                    if (!window.confirm(`¿Borrar la constancia “${c.datos.curso || c.archivoNombre || "sin título"}” de ${d.nombre}?${c.estado === "validada" ? `\n\nEstá validada: se le restarán ${c.datos.horas || 0} horas.` : ""}\n\nEsta acción no se puede deshacer.`)) return;
+                    if (!confirmarBorrado(`¿Borrar la constancia “${c.datos.curso || c.archivoNombre || "sin título"}” de ${d.nombre}?${c.estado === "validada" ? `\n\nEstá validada: se le restarán ${c.datos.horas || 0} horas.` : ""}\n\nEsta acción no se puede deshacer.`)) return;
                     await mutar(x => { x.certs = x.certs.filter(y => y.id !== c.id); });
                     if (c.archivoGuardado) await eliminarArchivo(c.id);
                   }}><Trash2 size={15} /></button>
