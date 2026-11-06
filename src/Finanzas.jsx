@@ -4,12 +4,15 @@
    Lo usan control escolar y la administración general. Los egresos
    pueden llevar factura en PDF o imagen, y esa factura se puede
    compartir por WhatsApp a un número que se configura aquí mismo.
+
+   Hay dos cajas separadas, cada una con sus propios ingresos, egresos
+   y saldo: Dirección y Prefectura (columna "caja" de la tabla).
    ================================================================ */
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   TrendingUp, TrendingDown, Plus, Loader2, AlertTriangle,
-  Paperclip, X, Trash2, MessageCircle, Search,
+  Paperclip, X, Trash2, MessageCircle, Search, ArrowLeftRight,
 } from "lucide-react";
 import { supabase } from "./lib/supabase";
 import { guardarArchivo, leerArchivo, eliminarArchivo, MAX_FILE_B64 } from "./lib/nube";
@@ -49,6 +52,9 @@ const archivoDe = async (clave, nombre) => {
   return { blob: new Blob([arr], { type: tipo }), nombre: f.nombre || nombre || "factura.pdf", tipo };
 };
 
+const CAJAS = [["direccion", "Dirección"], ["prefectura", "Prefectura"]];
+const nombreCaja = (c) => (CAJAS.find(x => x[0] === c) || CAJAS[0])[1];
+
 /* ---------------- estilos ---------------- */
 const btnPrim = "inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-[#1a2340] text-white text-sm font-semibold hover:bg-[#26305a] transition disabled:opacity-50";
 const btnSec = "inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-white border border-slate-300 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition disabled:opacity-50";
@@ -62,6 +68,7 @@ const Card = ({ children, className = "", ...r }) => (
    ================================================================ */
 
 export default function Finanzas({ user }) {
+  const [caja, setCaja] = useState("direccion");
   const [tab, setTab] = useState("ingresos");
   const [movs, setMovs] = useState([]);
   const [cargando, setCargando] = useState(true);
@@ -78,8 +85,9 @@ export default function Finanzas({ user }) {
 
   useEffect(() => { cargar(); }, [cargar]);
 
-  const ingresos = movs.filter(m => m.tipo === "ingreso");
-  const egresos = movs.filter(m => m.tipo === "egreso");
+  const deCaja = movs.filter(m => (m.caja || "direccion") === caja);
+  const ingresos = deCaja.filter(m => m.tipo === "ingreso");
+  const egresos = deCaja.filter(m => m.tipo === "egreso");
   const totalIn = ingresos.reduce((s, m) => s + Number(m.monto || 0), 0);
   const totalEg = egresos.reduce((s, m) => s + Number(m.monto || 0), 0);
   const saldo = totalIn - totalEg;
@@ -89,6 +97,17 @@ export default function Finanzas({ user }) {
       <div>
         <h2 className="text-xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>Finanzas</h2>
         <p className="text-sm text-slate-500">Registro de ingresos y egresos del plantel.</p>
+      </div>
+
+      {/* Caja: Dirección o Prefectura, cada una con sus cuentas */}
+      <div className="flex gap-2 border-b border-slate-200">
+        {CAJAS.map(([id, txt]) => (
+          <button key={id} onClick={() => setCaja(id)}
+            className={`px-4 py-2 -mb-px text-sm font-bold border-b-2 transition ${
+              caja === id ? "border-[#1a2340] text-[#1a2340]" : "border-transparent text-slate-400 hover:text-slate-600"}`}>
+            {txt}
+          </button>
+        ))}
       </div>
 
       {/* Resumen */}
@@ -113,7 +132,7 @@ export default function Finanzas({ user }) {
         </Card>
         <Card className="p-4">
           <div className="flex items-center gap-2 text-slate-400 mb-1">
-            <span className="text-[11px] uppercase font-semibold">Saldo</span>
+            <span className="text-[11px] uppercase font-semibold">Saldo · {nombreCaja(caja)}</span>
           </div>
           <div className={`text-xl font-bold ${saldo < 0 ? "text-rose-700" : "text-[#1a2340]"}`}
             style={{ fontFamily: "'Archivo', sans-serif" }}>
@@ -148,6 +167,8 @@ export default function Finanzas({ user }) {
         </Card>
       ) : (
         <Movimientos
+          key={caja + tab}
+          caja={caja}
           tipo={tab === "ingresos" ? "ingreso" : "egreso"}
           lista={tab === "ingresos" ? ingresos : egresos}
           user={user}
@@ -162,7 +183,7 @@ export default function Finanzas({ user }) {
    LISTA Y ALTA DE MOVIMIENTOS
    ================================================================ */
 
-function Movimientos({ tipo, lista, user, recargar }) {
+function Movimientos({ caja, tipo, lista, user, recargar }) {
   const [form, setForm] = useState(null);
   const [q, setQ] = useState("");
   const esEgreso = tipo === "egreso";
@@ -176,7 +197,7 @@ function Movimientos({ tipo, lista, user, recargar }) {
   }, [lista, q]);
 
   const nuevo = () => setForm({
-    tipo, fecha: hoyISO(), concepto: "", monto: "", observaciones: "",
+    caja, tipo, fecha: hoyISO(), concepto: "", monto: "", observaciones: "",
     con_factura: false, _archivo: null,
   });
 
@@ -189,6 +210,15 @@ function Movimientos({ tipo, lista, user, recargar }) {
     await recargar();
   };
 
+  /* Pasar un movimiento a la otra caja (por si se registró en la equivocada) */
+  const otra = caja === "prefectura" ? "direccion" : "prefectura";
+  const mover = async (m) => {
+    if (!window.confirm(`¿Pasar "${m.concepto}" (${fmtDinero(m.monto)}) a ${nombreCaja(otra)}?`)) return;
+    const { error } = await supabase.from("finanzas").update({ caja: otra }).eq("id", m.id);
+    if (error) { alert("No se pudo mover: " + error.message); return; }
+    await recargar();
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -198,14 +228,14 @@ function Movimientos({ tipo, lista, user, recargar }) {
             value={q} onChange={e => setQ(e.target.value)} />
         </div>
         <button className={btnPrim} onClick={nuevo}>
-          <Plus size={15} />Registrar {esEgreso ? "egreso" : "ingreso"}
+          <Plus size={15} />Registrar {esEgreso ? "egreso" : "ingreso"} · {nombreCaja(caja)}
         </button>
       </div>
 
       {visibles.length === 0 ? (
         <Card className="p-8 text-center text-sm text-slate-400">
           {q ? "Ningún movimiento coincide con la búsqueda."
-             : `Todavía no hay ${esEgreso ? "egresos" : "ingresos"} registrados.`}
+             : `Todavía no hay ${esEgreso ? "egresos" : "ingresos"} de ${nombreCaja(caja)} registrados.`}
         </Card>
       ) : (
         <Card className="overflow-hidden">
@@ -243,10 +273,16 @@ function Movimientos({ tipo, lista, user, recargar }) {
                   </div>
                 )}
               </div>
-              <button className="text-slate-300 hover:text-rose-600 shrink-0" title="Eliminar"
-                onClick={() => eliminar(m)}>
-                <Trash2 size={16} />
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button className="text-slate-300 hover:text-indigo-600" title={`Pasar a ${nombreCaja(otra)}`}
+                  onClick={() => mover(m)}>
+                  <ArrowLeftRight size={16} />
+                </button>
+                <button className="text-slate-300 hover:text-rose-600" title="Eliminar"
+                  onClick={() => eliminar(m)}>
+                  <Trash2 size={16} />
+                </button>
+              </div>
             </div>
           ))}
         </Card>
@@ -303,7 +339,7 @@ function FormaMovimiento({ form, setForm, user, onListo }) {
     }
 
     const { error } = await supabase.from("finanzas").insert({
-      id, tipo: form.tipo, fecha: form.fecha,
+      id, caja: form.caja || "direccion", tipo: form.tipo, fecha: form.fecha,
       concepto: form.concepto.trim(), monto,
       observaciones: (form.observaciones || "").trim(),
       con_factura: esEgreso ? !!form.con_factura : false,
@@ -327,7 +363,7 @@ function FormaMovimiento({ form, setForm, user, onListo }) {
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-md my-8" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
           <h3 className="font-bold text-base" style={{ fontFamily: "'Archivo', sans-serif" }}>
-            {esEgreso ? "Nuevo egreso" : "Nuevo ingreso"}
+            {esEgreso ? "Nuevo egreso" : "Nuevo ingreso"} · {nombreCaja(form.caja)}
           </h3>
           <button onClick={() => setForm(null)} className="p-1 rounded-lg hover:bg-slate-100"><X size={18} /></button>
         </div>
