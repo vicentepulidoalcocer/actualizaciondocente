@@ -8492,7 +8492,8 @@ function ActividadReciente({ db }) {
                 <Stat icono={Users} label="Han entrado" valor={resumen.filter(r => r.ultimo).length} sub={`de ${resumen.length} cuentas activas`} />
                 <Stat icono={Activity} label="Entradas registradas" valor={totalEntradas}
                   sub={topado ? `últimos ${dias} días (cifra incompleta)` : `últimos ${dias} días`} />
-                <Stat icono={AlertTriangle} label="Nunca han entrado" valor={nunca} color={nunca ? "text-amber-600" : "text-slate-900"} />
+                <Stat icono={AlertTriangle} label="Sin entrar en el periodo" valor={nunca} color={nunca ? "text-amber-600" : "text-slate-900"}
+                  sub={nunca ? (nuncaJamas ? `${nuncaJamas} nunca ha(n) entrado` : "todas han entrado antes") : `últimos ${dias} días`} />
               </div>
 
               {nunca > 0 && (
