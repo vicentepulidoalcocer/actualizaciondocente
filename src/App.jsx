@@ -34,6 +34,7 @@ const Ausentes = React.lazy(() => import("./Ausentes"));
 const Bitacora = React.lazy(() => import("./Bitacora"));
 import { VistaDocumento, posiblesDuplicados, AvisoDuplicados } from "./Revision";
 const ExpedientesIncompletos = React.lazy(() => import("./ExpedientesIncompletos"));
+const ArchivosSobrantes = React.lazy(() => import("./ArchivosSobrantes"));
 const Paec = React.lazy(() => import("./Paec")); import { Sprout as IconoPaec } from "lucide-react"; // PAEC
 const TarjetaPaec = React.lazy(() => import("./Paec").then(m => ({ default: m.TarjetaPaec }))); // PAEC
 import {
@@ -2039,8 +2040,9 @@ function TablaCursos({ certs, db, acciones }) {
         <tbody>
           {certs.map(c => (
             <tr key={c.id} className="border-b border-slate-100 last:border-0">
-              <td className="py-2.5 pr-3 font-medium max-w-[220px]">
-                <div className="truncate">{c.datos.curso || <span className="text-slate-400 italic">Sin título detectado</span>}</div>
+              <td className="py-2.5 pr-3 font-medium sm:max-w-[220px]">
+                {/* En el celular el nombre se ve completo; en pantalla grande, en un renglón */}
+                <div className="break-words sm:truncate">{c.datos.curso || <span className="text-slate-400 italic">Sin título detectado</span>}</div>
                 {c.dupFlag && <span className="text-[10px] font-bold text-amber-600 flex items-center gap-1"><AlertTriangle size={11}/>Posible constancia duplicada</span>}
               </td>
               <td className="py-2.5 pr-3 hidden md:table-cell text-slate-500 max-w-[180px] truncate">{c.datos.institucion || "—"}</td>
@@ -2227,7 +2229,11 @@ function SubirConstancia({ db, user, mutar, irA, compacto = false }) {
           <FormularioConstancia cert={cert} onChange={setCert} />
           {errMsg && <p className="text-sm text-rose-600">{errMsg}</p>}
           <div className="flex flex-wrap gap-2 justify-end">
-            <button className={btnSec} onClick={() => { setCert(null); setFase("elegir"); }}>Descartar</button>
+            <button className={btnSec} onClick={() => {
+              // El PDF ya se había guardado al elegirlo: si se descarta, se borra
+              if (cert?.archivoGuardado && cert?.id) eliminarArchivo(cert.id);
+              setCert(null); setFase("elegir");
+            }}>Descartar</button>
             <button className={btnPrim} onClick={enviarValidacion}><CheckCircle2 size={15} /> Enviar a validación</button>
           </div>
         </Card>
@@ -3651,6 +3657,10 @@ de cada ciclo escolar.
           </p>
         )}
         <p className="text-[11px] text-slate-400">También puedes hacerlo desde Docentes, con el ícono de descarga de cada persona.</p>
+      </Card>
+
+      <Card className="p-5">
+        <React.Suspense fallback={null}><ArchivosSobrantes /></React.Suspense>
       </Card>
 
       <Card className="p-5">
@@ -7593,9 +7603,9 @@ function Validaciones({ db, user, mutar }) {
         <Card className="p-4">
           {certs.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">No hay constancias {soloPend ? "pendientes de validación" : "registradas"}. Todo al día. ✨</p>}
           {certs.map(c => (
-            <div key={c.id} className="flex items-center gap-3 py-2.5 border-b border-slate-100 last:border-0">
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium truncate">{c.datos.curso || <i className="text-slate-400">Sin título</i>}
+            <div key={c.id} className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-2 py-2.5 border-b border-slate-100 last:border-0">
+              <div className="basis-full sm:basis-auto sm:flex-1 min-w-0">
+                <div className="text-sm font-medium break-words sm:truncate">{c.datos.curso || <i className="text-slate-400">Sin título</i>}
                   {c.dupFlag && <span className="ml-2 text-[10px] font-bold text-amber-600">⚠️ Posible constancia duplicada</span>}
                 </div>
                 <div className="text-xs text-slate-500">{nombreDe(c.docenteId)} · {c.datos.horas ?? "?"} h · {c.datos.institucion || "—"} · ciclo {c.ciclo}</div>
@@ -7614,9 +7624,9 @@ function Validaciones({ db, user, mutar }) {
         <Card className="p-4">
           {(tab === "grados" ? grados : comps).length === 0 && <p className="text-sm text-slate-400 py-6 text-center">Nada pendiente en esta sección.</p>}
           {(tab === "grados" ? grados : comps).map(g => (
-            <div key={g.id} className="flex items-center gap-3 py-2.5 border-b border-slate-100 last:border-0">
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium">{tab === "grados" ? `${g.nivel} · ${g.datos?.programa || "—"}` : `${g.tipo}: ${g.nombre}`}</div>
+            <div key={g.id} className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-2 py-2.5 border-b border-slate-100 last:border-0">
+              <div className="basis-full sm:basis-auto sm:flex-1 min-w-0">
+                <div className="text-sm font-medium break-words">{tab === "grados" ? `${g.nivel} · ${g.datos?.programa || "—"}` : `${g.tipo}: ${g.nombre}`}</div>
                 <div className="text-xs text-slate-500">{nombreDe(g.docenteId)} · {(tab === "grados" ? g.datos?.institucion : g.institucion) || "—"}</div>
               </div>
               <Badge estado={g.estado} mapa={ESTADOS_GRADO} />
@@ -7901,15 +7911,17 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
       const clave = extra.tipo === "csf" ? `csf_${docenteId}_${uid()}` : `ced_${uid()}`;
       const r = await guardarArchivo(clave, base64, file.type, file.name);
       if (!r.guardado) { alert("No se pudo subir: " + (r.error || "error desconocido")); return; }
-      const anterior = extra.tipo === "csf" ? csf : cedulas[extra.nivel];
       const registro = { clave, nombre: file.name, cargadaEn: ahora() };
-      mutar(d => {
+      // La versión anterior se toma de los datos más recientes (no de la
+      // pantalla), para borrarla aunque se suban dos archivos seguidos.
+      let anterior = null;
+      await mutar(d => {
         const u = d.users.find(x => x.id === docenteId);
         if (!u) return;
-        if (extra.tipo === "csf") u.csf = registro;
-        else u.cedulas = { ...(u.cedulas || {}), [extra.nivel]: registro };
+        if (extra.tipo === "csf") { anterior = u.csf || null; u.csf = registro; }
+        else { anterior = u.cedulas?.[extra.nivel] || null; u.cedulas = { ...(u.cedulas || {}), [extra.nivel]: registro }; }
       });
-      if (anterior?.clave) eliminarArchivo(anterior.clave);
+      if (anterior?.clave && anterior.clave !== clave) eliminarArchivo(anterior.clave);
     } catch (e) { alert("No se pudo subir: " + e.message); }
     finally { setSubiendoExtra(""); setExtra(null); }
   };
@@ -8018,6 +8030,13 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
       d.users.filter(u => esRolValidador(u.rol) && u.activo).forEach(a => notificar(d, a.id, `📜 ${docente.nombre} registró formación complementaria: ${form.nombre}.`));
     });
     setForm(null); setSubiendo(null); setErr("");
+  };
+
+  /* Si se sale del formulario sin enviar, se borra el documento que ya
+     se había guardado al elegirlo (si no, queda como archivo sobrante). */
+  const descartarForm = () => {
+    if (form?.archivoGuardado && form?.id) eliminarArchivo(form.id);
+    setForm(null);
   };
 
   const iconoEstado = (g) => {
@@ -8158,12 +8177,14 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
         <p className="text-xs text-slate-400 mb-2">Especialidades, diplomados y certificaciones. No se contabilizan como grados académicos. Los <b>diplomados</b> validados sí suman horas de capacitación.</p>
         {misComp.length === 0 && <p className="text-sm text-slate-400 py-2">Sin registros todavía.</p>}
         {misComp.map(c => (
-          <div key={c.id} className="flex items-center gap-3 py-2 border-b border-slate-100 last:border-0 text-sm">
-            <span className="text-[11px] font-bold text-slate-400 uppercase w-24 shrink-0">{c.tipo}</span>
-            <div className="flex-1 min-w-0">
-              <div className="font-medium truncate">{c.nombre}</div>
+          <div key={c.id} className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-1.5 py-2 border-b border-slate-100 last:border-0 text-sm">
+            <span className="text-[11px] font-bold text-slate-400 uppercase sm:w-24 shrink-0 order-1 sm:order-none">{c.tipo}</span>
+            {/* En el celular el nombre ocupa todo el ancho y los botones van debajo */}
+            <div className="basis-full sm:basis-auto sm:flex-1 min-w-0 order-2 sm:order-none">
+              <div className="font-medium break-words sm:truncate">{c.nombre}</div>
               <div className="text-xs text-slate-500">{c.institucion || "—"} · {fmtFecha(c.fecha)} {compSumaHoras(c) ? `· ${horasDeComp(c) || "?"} h · suma horas al ciclo ${cicloDeComp(c)}` : c.duracion ? `· ${c.duracion}` : ""}</div>
             </div>
+            <div className="flex items-center gap-1 order-3 sm:order-none">
             <Badge estado={c.estado} mapa={ESTADOS_GRADO} />
             {puedeBorrar && compSumaHoras(c) && (
               <button onClick={() => setEditComp({ id: c.id, horas: horasDeComp(c) || "", fecha: c.fecha || "" })}
@@ -8173,6 +8194,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
             <DescargarArchivoBtn clave={c.id} guardado={c.archivoGuardado}
               nombre={`${nombreSeguro(docente?.nombre || "docente", 40)}_${nombreSeguro(c.tipo || "Formacion", 20)}_${nombreSeguro(c.nombre || "documento", 40)}`} />
             {puedeBorrar && btnBorrar("Borrar", () => borrarComp(c))}
+            </div>
           </div>
         ))}
         {editComp && (() => {
@@ -8196,7 +8218,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
 
       {/* Modal de carga */}
       {subiendo && (
-        <Modal titulo={subiendo.comp ? "Agregar formación complementaria" : `Subir documento de ${subiendo.nivel}`} onClose={() => { setSubiendo(null); setForm(null); }}>
+        <Modal titulo={subiendo.comp ? "Agregar formación complementaria" : `Subir documento de ${subiendo.nivel}`} onClose={() => { setSubiendo(null); descartarForm(); }}>
           {!form && (
             <div className="text-center py-4">
               <input ref={inputRef} type="file" accept="application/pdf,image/jpeg,image/png" className="hidden" onChange={e => cargarDoc(e.target.files[0])} />
@@ -8219,7 +8241,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
                   <Campo key={k} label={l}><input className={inputCls} value={form.datos[k] ?? ""} onChange={e => setForm(f => ({ ...f, datos: { ...f.datos, [k]: e.target.value || null } }))} /></Campo>
                 ))}
               </div>
-              <div className="flex justify-end gap-2"><button className={btnSec} onClick={() => setForm(null)}>Atrás</button>
+              <div className="flex justify-end gap-2"><button className={btnSec} onClick={descartarForm}>Atrás</button>
                 <button className={btnPrim} onClick={enviarGrado}>Enviar a validación</button></div>
             </div>
           )}
@@ -8241,7 +8263,7 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
                   : "Las especialidades, certificaciones y otros estudios se registran en tu expediente, pero no suman horas de capacitación."}
               </p>
               {err && <p className="text-sm text-rose-600">{err}</p>}
-              <div className="flex justify-end gap-2"><button className={btnSec} onClick={() => setForm(null)}>Atrás</button>
+              <div className="flex justify-end gap-2"><button className={btnSec} onClick={descartarForm}>Atrás</button>
                 <button className={btnPrim} onClick={enviarComp}>Enviar a validación</button></div>
             </div>
           )}
