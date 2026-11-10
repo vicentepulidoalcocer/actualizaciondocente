@@ -7,7 +7,7 @@ import {
   FolderOpen, User, Activity, ShieldCheck, Menu, X, Megaphone,
   Paperclip, Link2, Archive, Send, Sparkles, CalendarDays, ScanLine, RefreshCw,
   Image as ImageIcon, HardDrive, History
-} from "lucide-react";
+, Save } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie,
   Cell, LineChart, Line, Legend, CartesianGrid
@@ -8274,6 +8274,58 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
    EXPEDIENTE INTEGRAL (vista del administrador)
    ================================================================ */
 
+/* La dirección corrige los datos de una constancia ya registrada (por
+   ejemplo, una fecha que la IA leyó mal). El ciclo solo se recalcula
+   si se cambia alguna fecha. */
+function EditarConstanciaAdmin({ cert, docente, user, mutar }) {
+  const [edit, setEdit] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const FECHAS = ["fecha_emision", "fecha_termino", "fecha_inicio"];
+  const cambioFecha = edit && FECHAS.some(k => (edit.datos[k] || null) !== (cert.datos[k] || null));
+  const cicloNuevo = edit ? (cambioFecha && tieneFechaDeCiclo(edit.datos) ? cicloDeConstancia(edit.datos) : cert.ciclo) : cert.ciclo;
+
+  const guardar = async () => {
+    setGuardando(true);
+    const cambios = Object.keys(edit.datos).filter(k => String(edit.datos[k] ?? "") !== String(cert.datos[k] ?? ""));
+    await mutar(d => {
+      const c = d.certs.find(x => x.id === cert.id);
+      if (!c) return;
+      const antesH = Number(c.datos.horas) || 0, antesCiclo = c.ciclo;
+      c.datos = edit.datos;
+      c.ciclo = cicloNuevo;
+      (c.historial = c.historial || []).push({ fecha: ahora(), accion: `Datos corregidos por la dirección: ${cambios.join(", ") || "sin cambios"}${antesCiclo !== c.ciclo ? ` · ciclo ${antesCiclo} → ${c.ciclo}` : ""}`, por: user.nombre });
+      const h = Number(c.datos.horas) || 0;
+      if (c.estado === "validada" && (h !== antesH || antesCiclo !== c.ciclo))
+        notificar(d, c.docenteId, `✏️ La dirección corrigió tu constancia “${c.datos.curso}”${h !== antesH ? `: ${antesH} → ${h} h` : ""}${antesCiclo !== c.ciclo ? ` (ahora cuenta en el ciclo ${c.ciclo})` : ""}.`);
+    });
+    setGuardando(false); setEdit(null);
+  };
+
+  return (
+    <>
+      <button title="Corregir datos" className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50"
+        onClick={() => setEdit(JSON.parse(JSON.stringify(cert)))}><Pencil size={15} /></button>
+      {edit && (
+        <Modal titulo={`Corregir constancia · ${docente?.nombre || ""}`} onClose={() => setEdit(null)} ancho={cert.archivoGuardado ? "max-w-6xl" : "max-w-3xl"}>
+          <div className={cert.archivoGuardado ? "grid lg:grid-cols-2 gap-5" : ""}>
+            {cert.archivoGuardado && <div className="lg:sticky lg:top-4 self-start"><VistaDocumento clave={cert.id} guardado={cert.archivoGuardado} /></div>}
+            <div className="space-y-3 min-w-0">
+              <FormularioConstancia cert={edit} onChange={setEdit} />
+              <p className={`text-xs ${cicloNuevo !== cert.ciclo ? "text-amber-700 font-semibold" : "text-slate-500"}`}>
+                Ciclo: {cicloNuevo}{cicloNuevo !== cert.ciclo ? ` (antes ${cert.ciclo}): las horas pasarán a ese ciclo.` : " (sin cambio)."}
+              </p>
+              <div className="flex justify-end gap-2">
+                <button className={btnSec} onClick={() => setEdit(null)} disabled={guardando}>Cancelar</button>
+                <button className={btnPrim} onClick={guardar} disabled={guardando}>{guardando ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}Guardar cambios</button>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 /* Descarga en un ZIP todos los documentos del docente (mismo respaldo
    que el botón ⬇ de la lista de docentes). */
 function BotonZipExpediente({ db, u }) {
@@ -8333,6 +8385,7 @@ function ExpedienteIntegral({ db, docenteId, mutar, user, volver }) {
           <Card className="p-4"><h3 className="font-bold text-sm mb-2">Constancias</h3>
             <TablaCursos certs={certs} db={db} acciones={user?.rol === "admin" ? (c => (
               <div className="flex items-center">
+                <EditarConstanciaAdmin cert={c} docente={d} user={user} mutar={mutar} />
                 <VerArchivoBtn certId={c.id} guardado={c.archivoGuardado} />
                 <button title="Borrar constancia" className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
                   onClick={async () => {
