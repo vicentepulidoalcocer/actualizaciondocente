@@ -1148,7 +1148,6 @@ export default function App() {
     { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
     { id: "finanzas", label: "Finanzas", icono: TrendingUp },
     { id: "ranking_general", label: "Ranking general", icono: Medal },
-    { id: "actividad", label: "Actividad reciente", icono: Activity },
     { id: "respaldo", label: "Respaldo", icono: Download },
     { id: "bitacora", label: "Bitácora de cambios", icono: History },
     { id: "admin", label: "Administración", icono: Settings },
@@ -1351,13 +1350,9 @@ export default function App() {
           {pagina === "expediente_docente" && esRolValidador(user.rol) && <ExpedienteIntegral db={db} docenteId={paginaCtx} mutar={mutar} user={user} volver={() => irA("docentes")} />}
           {pagina === "reportes" && esRolValidador(user.rol) && <Reportes db={db} />}
           {pagina === "perfil_inst" && esRolValidador(user.rol) && <PerfilInstitucional db={db} />}
-          {pagina === "actividad" && esAdmin && <ActividadReciente db={db} />}
+          {pagina === "actividad" && esAdmin && <BitacoraYAccesos db={db} inicial="accesos" />}
           {pagina === "respaldo" && esAdmin && <Respaldo db={db} user={user} />}
-          {pagina === "bitacora" && esAdmin && (
-            <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}>
-              <Bitacora />
-            </React.Suspense>
-          )}
+          {pagina === "bitacora" && esAdmin && <BitacoraYAccesos db={db} />}
           {pagina === "paec" && (esAdmin || user.rol === "docente" || user.rol === "personal_administrativo") && <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}><Paec db={db} user={user} /></React.Suspense>} {/* PAEC */}
           {pagina === "metas" && esRolValidador(user.rol) && <Administracion db={db} user={user} mutar={mutar} esAdmin={esAdmin} modo="metas" />}
           {pagina === "admin" && esRolValidador(user.rol) && <Administracion db={db} user={user} mutar={mutar} esAdmin={esAdmin} modo={esAdmin ? "sistema" : "todo"} />}
@@ -1797,7 +1792,7 @@ function DashboardAdmin({ db, irA }) {
         <Card className="p-4">
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-bold text-sm">Actividad reciente</h3>
-            <button className="text-xs text-indigo-600 font-semibold" onClick={() => irA("actividad")}>Ver todo</button>
+            <button className="text-xs text-indigo-600 font-semibold" onClick={() => irA("bitacora")}>Ver todo</button>
           </div>
           {db.activity.slice(0, 6).map(a => (
             <div key={a.id} className="py-2 border-b border-slate-100 last:border-0 text-sm text-slate-700">
@@ -8492,8 +8487,33 @@ function PerfilInstitucional({ db }) {
    ACTIVIDAD RECIENTE
    ================================================================ */
 
+/* Bitácora de cambios con una segunda pestaña "Quién ha entrado"
+   (antes estaba en "Actividad reciente", que se retiró del menú). */
+function BitacoraYAccesos({ db, inicial = "cambios" }) {
+  const [t, setT] = useState(inicial);
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
+        {[["cambios", "Cambios", History], ["accesos", "Quién ha entrado", User]].map(([id, txt, Ico]) => (
+          <button key={id} onClick={() => setT(id)}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold transition ${t === id ? "bg-white text-[#1a2340] shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+            <Ico size={14}/>{txt}
+          </button>
+        ))}
+      </div>
+      {t === "cambios"
+        ? <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}><Bitacora /></React.Suspense>
+        : <>
+            <h2 className="text-xl font-bold flex items-center gap-2" style={{fontFamily:"'Archivo', sans-serif"}}><User size={20} />Quién ha entrado</h2>
+            <ActividadReciente db={db} />
+          </>}
+    </div>
+  );
+}
+
+/* Quién ha entrado al portal (resumen de accesos por persona) */
 function ActividadReciente({ db }) {
-  const [tab, setTab] = useState("actividad");
+  const tab = "accesos";
   const [accesos, setAccesos] = useState(null);
   const [totales, setTotales] = useState(null);   // resumen calculado en la base
   const [cargando, setCargando] = useState(false);
@@ -8597,31 +8617,6 @@ function ActividadReciente({ db }) {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Actividad reciente</h2>
-
-      <div className="flex gap-1 bg-slate-100 rounded-xl p-1 w-fit">
-        {[["actividad", "Movimientos", Activity], ["accesos", "Quién ha entrado", User]].map(([id, txt, Ico]) => (
-          <button key={id} onClick={() => setTab(id)}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold transition ${tab === id ? "bg-white text-[#1a2340] shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
-            <Ico size={14}/>{txt}
-          </button>
-        ))}
-      </div>
-
-      {tab === "actividad" && (
-        <Card className="p-4">
-          {db.activity.length === 0 && <p className="text-sm text-slate-400 py-6 text-center">La actividad de la escuela se registrará aquí conforme el sistema se use.</p>}
-          {db.activity.map(a => (
-            <div key={a.id} className="flex gap-3 py-2.5 border-b border-slate-100 last:border-0">
-              <Activity size={15} className="text-[#E8871E] mt-0.5 shrink-0" />
-              <div className="text-sm text-slate-700">{a.texto}
-                <span className="block text-[11px] text-slate-400">{new Date(a.fecha).toLocaleString("es-MX")}</span>
-              </div>
-            </div>
-          ))}
-        </Card>
-      )}
-
       {tab === "accesos" && (
         <>
           <Card className="p-3 flex flex-wrap gap-2 items-center">
