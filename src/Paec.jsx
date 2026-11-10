@@ -213,6 +213,8 @@ export default function Paec({ db, user }) {
             onEditar={() => setEditando(true)} onFicha={() => setVerFicha(true)} onCambio={recargar} />
           <Participantes proyecto={proyecto} participantes={participantes} user={user} db={db}
             esAdmin={esAdmin} soloLectura={soloLectura} onCambio={recargar} />
+          <ConstanciasParticipacion proyecto={proyecto} participantes={participantes} plan={plan}
+            evidencias={evidencias} user={user} esAdmin={esAdmin} />
           <PlanProyecto proyecto={proyecto} plan={plan} participantes={participantes} user={user}
             esAdmin={esAdmin} soloLectura={soloLectura} onCambio={recargar} />
           <Evidencias proyecto={proyecto} evidencias={evidencias} urls={urls} user={user} esAdmin={esAdmin}
@@ -497,6 +499,55 @@ function Participantes({ proyecto, participantes, user, db, esAdmin, soloLectura
           ))}
         </ul>
       )}
+    </Card>
+  );
+}
+
+/* ---------- Constancias de participación ----------
+   La administración puede descargar la de cualquier participante; cada
+   docente, la suya. */
+function ConstanciasParticipacion({ proyecto, participantes, plan, evidencias, user, esAdmin }) {
+  const [generando, setGenerando] = useState("");
+  const personas = useMemo(() => {
+    const m = new Map();
+    participantes.forEach((p) => {
+      if (!m.has(p.docente_id)) m.set(p.docente_id, { id: p.docente_id, nombre: p.docente_nombre || "Docente", asignaturas: [] });
+      m.get(p.docente_id).asignaturas.push(p.asignatura.trim());
+    });
+    return [...m.values()].sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
+  }, [participantes]);
+  const visibles = esAdmin ? personas : personas.filter((p) => p.id === user.id);
+  if (!visibles.length) return null;
+
+  const generar = async (p) => {
+    setGenerando(p.id);
+    try {
+      await generarConstanciaPAEC({
+        proyecto, persona: p,
+        actividades: ordenarPlan(plan.filter((a) => !a.general && a.docente_id === p.id)),
+        nEvidencias: evidencias.filter((e) => e.docente_id === p.id).length,
+      });
+    } catch (e) { alert(`No se pudo generar la constancia: ${e.message}`); }
+    finally { setGenerando(""); }
+  };
+
+  return (
+    <Card className="p-5 space-y-3">
+      <h3 className="font-bold text-slate-800 flex items-center gap-2"><FileDown size={18} /> {esAdmin ? "Constancias de participación" : "Mi constancia de participación"}</h3>
+      <p className="text-xs text-slate-500">PDF con el membrete del plantel: proyecto, ciclo, asignaturas o módulos, actividades del plan y evidencias aportadas.</p>
+      <ul className="divide-y divide-slate-100">
+        {visibles.map((p) => (
+          <li key={p.id} className="py-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-800 break-words">{p.nombre}</p>
+              <p className="text-xs text-slate-500">{p.asignaturas.join(" · ")}</p>
+            </div>
+            <button className={btnSec + " !px-3 !py-1.5"} disabled={generando === p.id} onClick={() => generar(p)}>
+              {generando === p.id ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />} Constancia PDF
+            </button>
+          </li>
+        ))}
+      </ul>
     </Card>
   );
 }
@@ -1158,6 +1209,98 @@ async function generarPDF({ proyecto, participantes, plan = [], evidencias, urls
   }
 
   const nombre = `PAEC_${proyecto.ciclo}_${(proyecto.nombre || "proyecto").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^\w]+/g, "_").slice(0, 40)}.pdf`;
+  const blob = doc.output("blob");
+  const archivo = typeof File === "function" ? new File([blob], nombre, { type: "application/pdf" }) : null;
+  if (archivo && /Android|iPhone|iPad/i.test(navigator.userAgent) && navigator.canShare?.({ files: [archivo] })) {
+    try { await navigator.share({ files: [archivo], title: nombre }); return; } catch (e) { if (e?.name === "AbortError") return; }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = nombre; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+
+/* ---------- Constancia de participación en PDF ---------- */
+async function generarConstanciaPAEC({ proyecto, persona, actividades, nEvidencias }) {
+  const [{ jsPDF, autoTable }, sep, dgeta, bandera, anio] = await Promise.all([
+    cargarLib(),
+    imagenParaPDF(MEMBRETE + "membrete-sep.png"),
+    imagenParaPDF(MEMBRETE + "membrete-dgetaycm.png"),
+    imagenParaPDF(MEMBRETE + "membrete-bandera.png"),
+    imagenParaPDF(MEMBRETE + "membrete-2026.png"),
+  ]);
+  const doc = new jsPDF({ unit: "mm", format: "letter" });
+  const W = 215.9, M = 30, ANCHO = W - 2 * M;
+  const pl = datosPlantel(proyecto.plantel);
+  const hoy = new Date().toLocaleDateString("es-MX", { day: "numeric", month: "long", year: "numeric", timeZone: "America/Cancun" });
+
+  let y = 44;
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9.5);
+  doc.text(`${pl.localidad || "Dziuché"}, Q. Roo, a ${hoy}`, M + ANCHO, y, { align: "right" });
+  y += 16;
+  doc.setFont("helvetica", "bold"); doc.setFontSize(16); doc.setTextColor(...VINO);
+  doc.text("CONSTANCIA DE PARTICIPACIÓN", W / 2, y, { align: "center" });
+  y += 6;
+  doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(70);
+  doc.text("Programa Aula, Escuela y Comunidad (PAEC)", W / 2, y, { align: "center" });
+  y += 14;
+  doc.setTextColor(0); doc.setFontSize(11);
+  doc.text(`La Dirección del ${pl.plantel}, con CCT ${pl.cct}, hace constar que`, W / 2, y, { align: "center", maxWidth: ANCHO });
+  y += 13;
+  doc.setFont("helvetica", "bold"); doc.setFontSize(17);
+  const nom = doc.splitTextToSize(persona.nombre.toUpperCase(), ANCHO);
+  doc.text(nom, W / 2, y, { align: "center" });
+  y += nom.length * 7 + 5;
+  doc.setDrawColor(...GUINDA); doc.setLineWidth(0.4); doc.line(W / 2 - 50, y - 6, W / 2 + 50, y - 6);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(11);
+  const asig = persona.asignaturas.join(", ");
+  const parrafo = `participó en el Programa Aula, Escuela y Comunidad con el proyecto «${proyecto.nombre}», durante el ciclo escolar ${proyecto.ciclo}, integrando ${persona.asignaturas.length > 1 ? "las asignaturas o módulos" : "la asignatura o módulo"} ${asig}` +
+    (nEvidencias ? ` y aportando ${nEvidencias} evidencia${nEvidencias === 1 ? "" : "s"} de las actividades realizadas.` : ".");
+  const lineas = doc.splitTextToSize(parrafo, ANCHO);
+  doc.text(lineas, W / 2, y, { align: "center", lineHeightFactor: 1.5 });
+  y += lineas.length * 6.2 + 6;
+
+  if (actividades.length) {
+    doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(...VINO);
+    doc.text("Actividades a su cargo", M, y); doc.setTextColor(0);
+    autoTable(doc, {
+      startY: y + 2, theme: "grid",
+      margin: { left: M, right: M, top: 40, bottom: 40 },
+      head: [["Fechas", "Actividad", "Grupos"]],
+      headStyles: { fillColor: VINO, textColor: 255, fontStyle: "bold", fontSize: 9 },
+      styles: { font: "helvetica", fontSize: 9, cellPadding: 1.8, lineColor: [190, 190, 190], lineWidth: 0.2, textColor: 30, valign: "top" },
+      columnStyles: { 0: { cellWidth: 38 }, 2: { cellWidth: 22 } },
+      body: actividades.map((a) => [rangoFechas(a), a.actividad + (a.contenido ? `\nContenido: ${a.contenido}` : ""), a.grupos || ""]),
+    });
+    y = doc.lastAutoTable.finalY + 8;
+  }
+
+  doc.setFont("helvetica", "normal"); doc.setFontSize(10.5);
+  if (y > 200) { doc.addPage(); y = 50; }
+  doc.text("Se extiende la presente para los fines que a la persona interesada convengan.", W / 2, y + 2, { align: "center", maxWidth: ANCHO });
+  y = Math.max(y + 32, 215);
+  if (y > 235) { doc.addPage(); y = 90; }
+  doc.setDrawColor(60); doc.setLineWidth(0.3); doc.line(W / 2 - 40, y, W / 2 + 40, y);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(10);
+  doc.text("DIRECCIÓN DEL PLANTEL", W / 2, y + 5, { align: "center" });
+
+  const total = doc.getNumberOfPages();
+  for (let n = 1; n <= total; n++) {
+    doc.setPage(n);
+    if (sep) doc.addImage(sep.d, "PNG", 12.2, 12.7, 59.8, 16.9);
+    if (dgeta) doc.addImage(dgeta.d, "PNG", 73.6, 14.8, 32.5, 7.2);
+    if (bandera) doc.addImage(bandera.d, "PNG", 175.2, 8.8, 23.8, 24.9);
+    if (anio) doc.addImage(anio.d, "PNG", 10, 248.8, 56.7, 23.5);
+    doc.setDrawColor(...GUINDA); doc.setLineWidth(0.5); doc.line(61.2, 260.7, 188.7, 260.7);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(6.5); doc.setTextColor(...VINO);
+    doc.text("Km 121, Carretera Federal 184, Dziuché, Quintana Roo. CP 77800", 62, 264.5);
+    doc.text("www.sep.gob.mx", 62, 267.6);
+    doc.setTextColor(0);
+  }
+
+  const limpio = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^\w]+/g, "_").slice(0, 40);
+  const nombre = `Constancia_PAEC_${proyecto.ciclo}_${limpio(persona.nombre)}.pdf`;
   const blob = doc.output("blob");
   const archivo = typeof File === "function" ? new File([blob], nombre, { type: "application/pdf" }) : null;
   if (archivo && /Android|iPhone|iPad/i.test(navigator.userAgent) && navigator.canShare?.({ files: [archivo] })) {

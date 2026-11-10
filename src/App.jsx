@@ -32,6 +32,8 @@ const AsistenciaDocente = React.lazy(() => import("./AsistenciaDocente"));
 const Finanzas = React.lazy(() => import("./Finanzas"));
 const Ausentes = React.lazy(() => import("./Ausentes"));
 const Bitacora = React.lazy(() => import("./Bitacora"));
+import { VistaDocumento, posiblesDuplicados, AvisoDuplicados } from "./Revision";
+const ExpedientesIncompletos = React.lazy(() => import("./ExpedientesIncompletos"));
 const Paec = React.lazy(() => import("./Paec")); import { Sprout as IconoPaec } from "lucide-react"; // PAEC
 import {
   soportaPush, esIOS, instaladoEnInicio, permisoActual,
@@ -1126,6 +1128,7 @@ export default function App() {
     { id: "docentes", label: "Docentes y administrativos", icono: Users },
     { id: "g_formacion", label: "Formación Docente", icono: Award, hijos: [
       { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: pendValidacion },
+      { id: "exp_incompletos", label: "Expedientes incompletos", icono: FolderOpen },
       { id: "metas", label: "Metas y ciclos", icono: Target },
       { id: "perfil_inst", label: "Perfil institucional", icono: GraduationCap },
       { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
@@ -1151,6 +1154,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
     { id: "validaciones", label: "Validaciones", icono: FileCheck, badge: pendValidacion },
     { id: "docentes", label: "Expedientes docentes", icono: Users },
+    { id: "exp_incompletos", label: "Expedientes incompletos", icono: FolderOpen },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
     { id: "ranking", label: "Ranking de capacitación", icono: Trophy },
@@ -1341,6 +1345,7 @@ export default function App() {
           {pagina === "mi_asignacion" && user.rol === "docente" && <MiAsignacion db={db} user={user} mutar={mutar} />}
           {pagina === "validaciones" && esRolValidador(user.rol) && <Validaciones db={db} user={user} mutar={mutar} />}
           {pagina === "docentes" && esRolValidador(user.rol) && <Docentes db={db} mutar={mutar} irA={irA} esAdmin={esAdmin} />}
+          {pagina === "exp_incompletos" && esRolValidador(user.rol) && <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}><ExpedientesIncompletos db={db} irA={irA} completitud={completitudExpediente} /></React.Suspense>}
           {pagina === "expediente_docente" && esRolValidador(user.rol) && <ExpedienteIntegral db={db} docenteId={paginaCtx} mutar={mutar} user={user} volver={() => irA("docentes")} />}
           {pagina === "reportes" && esRolValidador(user.rol) && <Reportes db={db} />}
           {pagina === "perfil_inst" && esRolValidador(user.rol) && <PerfilInstitucional db={db} />}
@@ -3078,7 +3083,8 @@ const csvTexto = (filas) => {
 };
 
 /* Genera el ZIP con el expediente completo de UN docente: constancias,
-   grados, formación complementaria y planeaciones, con índices en CSV. */
+   grados y sus cédulas, formación complementaria, constancia de
+   situación fiscal y planeaciones, con índices en CSV. */
 async function generarRespaldoDocente(db, u) {
   const { default: JSZip } = await import("jszip");
   const zip = new JSZip();
@@ -3102,8 +3108,8 @@ async function generarRespaldoDocente(db, u) {
   zip.file(`${carpeta}/grados_academicos.csv`, csvTexto(fG));
 
   if (comp.length) {
-    const fK = [["Tipo", "Nombre", "Institución", "Fecha", "Duración", "Estado"]];
-    comp.forEach(c => fK.push([c.tipo, c.nombre, c.institucion, c.fecha, c.duracion, c.estado]));
+    const fK = [["Tipo", "Nombre", "Institución", "Fecha", "Duración", "Horas que suma", "Estado"]];
+    comp.forEach(c => fK.push([c.tipo, c.nombre, c.institucion, c.fecha, c.duracion, compSumaHoras(c) ? horasDeComp(c) : "", c.estado]));
     zip.file(`${carpeta}/formacion_complementaria.csv`, csvTexto(fK));
   }
 
@@ -3122,6 +3128,10 @@ async function generarRespaldoDocente(db, u) {
       ruta: `${carpeta}/Grados_academicos/${nombreSeguro(g.nivel || "grado", 30)}__${nombreSeguro(g.datos?.programa || "titulo", 40)}` })),
     ...comp.filter(c => c.archivoGuardado).map(c => ({ clave: c.id,
       ruta: `${carpeta}/Formacion_complementaria/${nombreSeguro(c.nombre || "documento", 50)}` })),
+    ...Object.entries(u.cedulas || {}).filter(([, c]) => c?.clave).map(([nivel, c]) => ({ clave: c.clave,
+      ruta: `${carpeta}/Grados_academicos/Cedula_${nombreSeguro(nivel, 20)}` })),
+    ...(u.csf?.clave ? [{ clave: u.csf.clave,
+      ruta: `${carpeta}/Constancia_de_situacion_fiscal__${(u.csf.cargadaEn || "").slice(0, 10)}` }] : []),
     ...entregas.map(e => ({ clave: "ent_" + e.id,
       ruta: `${carpeta}/Planeaciones_planes_e_informes/${nombreSeguro(e.ciclo + "_" + (e.periodo || ""), 20)}__${nombreSeguro(e.actividad, 35)}__${NOMBRE_TIPO_ENTREGA[e.tipo] || e.tipo}__${nombreSeguro(e.titulo, 25)}` })),
   ];
@@ -3153,8 +3163,9 @@ Generado el: ${new Date().toLocaleString("es-MX")}
 CAPACITACIÓN
 Constancias registradas: ${certs.length} (validadas: ${certs.filter(c => c.estado === "validada").length})
 Horas validadas en el ciclo ${db.config.cicloActual}: ${horasValidadas(db, u.id, db.config.cicloActual)}
-Grados académicos: ${grados.length}
+Grados académicos: ${grados.length} (cédulas cargadas: ${Object.keys(u.cedulas || {}).length})
 Formación complementaria: ${comp.length}
+Constancia de situación fiscal: ${u.csf ? `cargada el ${(u.csf.cargadaEn || "").slice(0, 10)}` : "no cargada"}
 Completitud del expediente: ${exp.pct}%
 
 PLANEACIONES Y PLANES DE TRABAJO
@@ -7615,13 +7626,24 @@ function Validaciones({ db, user, mutar }) {
       )}
 
       {revisando && (
-        <Modal titulo={`Revisar constancia · ${nombreDe(revisando.docenteId)}`} onClose={() => setRevisando(null)} ancho="max-w-3xl">
-          {revisando.dupFlag && <p className="mb-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5 flex gap-2"><AlertTriangle size={16} className="shrink-0"/>Posible constancia duplicada: existe otro registro del mismo docente con curso, fecha, horas o folio coincidentes. Decide si procede validarla.</p>}
+        <Modal titulo={`Revisar constancia · ${nombreDe(revisando.docenteId)}`} onClose={() => setRevisando(null)} ancho={revisando.archivoGuardado ? "max-w-6xl" : "max-w-3xl"}>
+          <div className={revisando.archivoGuardado ? "grid lg:grid-cols-2 gap-5" : ""}>
+          {revisando.archivoGuardado && (
+            <div className="lg:sticky lg:top-4 self-start"><VistaDocumento clave={revisando.id} guardado={revisando.archivoGuardado} /></div>
+          )}
+          <div className="space-y-3 min-w-0">
+          {(() => {
+            const dups = posiblesDuplicados(db, { id: revisando.id, docenteId: revisando.docenteId, nombre: revisando.datos?.curso, folio: revisando.datos?.folio });
+            if (dups.length) return <AvisoDuplicados lista={dups} />;
+            return revisando.dupFlag ? <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5 flex gap-2"><AlertTriangle size={16} className="shrink-0"/>Posible constancia duplicada: existe otro registro del mismo docente con curso, fecha, horas o folio coincidentes. Decide si procede validarla.</p> : null;
+          })()}
           <FormularioConstancia cert={revisando} onChange={setRevisando} />
           <div className="mt-4 border-t border-slate-100 pt-3">
             <h4 className="text-xs font-bold text-slate-400 uppercase mb-1">Historial de cambios</h4>
             {(revisando.historial || []).map((h, i) => <p key={i} className="text-xs text-slate-500">· {new Date(h.fecha).toLocaleString("es-MX")} — {h.accion} ({h.por})</p>)}
             {revisando.validadoPor && <p className="text-xs text-emerald-700 mt-1">Validada por {revisando.validadoPor} el {new Date(revisando.validadoEn).toLocaleString("es-MX")}</p>}
+          </div>
+          </div>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-2 justify-between">
             <button className="text-rose-600 text-sm font-semibold inline-flex items-center gap-1.5" onClick={() => eliminarCert(revisando)}><Trash2 size={15}/>Eliminar registro</button>
@@ -7635,7 +7657,13 @@ function Validaciones({ db, user, mutar }) {
       )}
 
       {gradoRev && (
-        <Modal titulo="Revisar documento académico" onClose={() => setGradoRev(null)} ancho="max-w-2xl">
+        <Modal titulo={`Revisar documento académico · ${nombreDe(gradoRev.item.docenteId)}`} onClose={() => setGradoRev(null)} ancho={gradoRev.item.archivoGuardado ? "max-w-6xl" : "max-w-2xl"}>
+          <div className={gradoRev.item.archivoGuardado ? "grid lg:grid-cols-2 gap-5" : ""}>
+          {gradoRev.item.archivoGuardado && (
+            <div className="lg:sticky lg:top-4 self-start"><VistaDocumento clave={gradoRev.item.id} guardado={gradoRev.item.archivoGuardado} /></div>
+          )}
+          <div className="space-y-3 min-w-0">
+          {gradoRev.coleccion === "comp" && <AvisoDuplicados lista={posiblesDuplicados(db, { id: gradoRev.item.id, docenteId: gradoRev.item.docenteId, nombre: gradoRev.item.nombre })} />}
           {gradoRev.coleccion === "grados" ? (
             <div className="grid sm:grid-cols-2 gap-3">
               {[["programa","Programa"],["institucion","Institución"],["campus","Campus"],["pais","País"],["inicio","Inicio"],["fin","Terminación"],["titulacion","Año de titulación"],["cedula","Cédula profesional"],["numTitulo","Número de título"]].map(([k,l]) => (
@@ -7664,6 +7692,8 @@ function Validaciones({ db, user, mutar }) {
             <input className={inputCls + " !mt-0 !w-56"} placeholder="Motivo del rechazo…" value={motivo} onChange={e => setMotivo(e.target.value)} />
             <button className={btnSec + " !text-rose-600 !border-rose-300"} disabled={!motivo.trim()} onClick={() => resolverGrado(gradoRev.item, gradoRev.coleccion, false)}>Rechazar</button>
             <button className={btnPrim + " !bg-emerald-700 hover:!bg-emerald-800"} onClick={() => resolverGrado(gradoRev.item, gradoRev.coleccion, true)}>Validar</button>
+          </div>
+          </div>
           </div>
         </Modal>
       )}
@@ -7914,6 +7944,22 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
     await mutar(d => { const u = d.users.find(x => x.id === docenteId); if (u) delete u.csf; });
     await eliminarArchivo(csf.clave);
   };
+  /* Corregir horas y fecha de un diplomado (también ya validado) */
+  const [editComp, setEditComp] = useState(null);      // { id, horas, fecha }
+  const guardarEditComp = async () => {
+    const h = Number(editComp.horas);
+    if (!(h >= 0)) { alert("Escribe un número de horas válido."); return; }
+    if (!editComp.fecha) { alert("Escribe la fecha del diplomado."); return; }
+    await mutar(d => {
+      const c = d.comp.find(x => x.id === editComp.id);
+      if (!c) return;
+      const antes = horasDeComp(c);
+      c.horas = h || null; c.fecha = editComp.fecha;
+      if (c.estado === "validado" && antes !== h)
+        notificar(d, c.docenteId, `✏️ La administración ajustó las horas de “${c.nombre}”: ${antes} → ${h} h (ciclo ${cicloDeComp(c)}).`);
+    });
+    setEditComp(null);
+  };
   const borrarComp = async (c) => {
     if (!confirmarBorrado(`¿Borrar “${c.nombre}” de la formación complementaria?\n\nEsta acción no se puede deshacer.`)) return;
     await mutar(d => { d.comp = d.comp.filter(x => x.id !== c.id); });
@@ -8117,12 +8163,33 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
               <div className="text-xs text-slate-500">{c.institucion || "—"} · {fmtFecha(c.fecha)} {compSumaHoras(c) ? `· ${horasDeComp(c) || "?"} h · suma horas al ciclo ${cicloDeComp(c)}` : c.duracion ? `· ${c.duracion}` : ""}</div>
             </div>
             <Badge estado={c.estado} mapa={ESTADOS_GRADO} />
+            {puedeBorrar && compSumaHoras(c) && (
+              <button onClick={() => setEditComp({ id: c.id, horas: horasDeComp(c) || "", fecha: c.fecha || "" })}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50" title="Corregir horas y fecha"><Pencil size={15} /></button>
+            )}
             <VerArchivoBtn certId={c.id} guardado={c.archivoGuardado} />
             <DescargarArchivoBtn clave={c.id} guardado={c.archivoGuardado}
               nombre={`${nombreSeguro(docente?.nombre || "docente", 40)}_${nombreSeguro(c.tipo || "Formacion", 20)}_${nombreSeguro(c.nombre || "documento", 40)}`} />
             {puedeBorrar && btnBorrar("Borrar", () => borrarComp(c))}
           </div>
         ))}
+        {editComp && (() => {
+          const c = misComp.find(x => x.id === editComp.id);
+          return (
+            <div className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50/50 p-3 space-y-2">
+              <p className="text-sm font-semibold">Corregir diplomado: {c?.nombre}</p>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <Campo label="Horas"><input className={inputCls} type="number" min="0" value={editComp.horas} onChange={e => setEditComp({ ...editComp, horas: e.target.value })} /></Campo>
+                <Campo label="Fecha"><input className={inputCls} type="date" value={editComp.fecha} onChange={e => setEditComp({ ...editComp, fecha: e.target.value })} /></Campo>
+              </div>
+              <p className="text-xs text-slate-500">{editComp.fecha ? `Contará en el ciclo ${cicloDeFecha(editComp.fecha)}.` : ""} {c?.estado === "validado" ? "Ya está validado: el cambio se refleja de inmediato en sus horas y se le avisa al docente." : "Las horas se sumarán cuando se valide."}</p>
+              <div className="flex justify-end gap-2">
+                <button className={btnSec} onClick={() => setEditComp(null)}>Cancelar</button>
+                <button className={btnPrim} onClick={guardarEditComp}>Guardar</button>
+              </div>
+            </div>
+          );
+        })()}
       </Card>
 
       {/* Modal de carga */}
@@ -8186,6 +8253,23 @@ function PerfilAcademico({ db, user, docenteId, mutar, editable }) {
    EXPEDIENTE INTEGRAL (vista del administrador)
    ================================================================ */
 
+/* Descarga en un ZIP todos los documentos del docente (mismo respaldo
+   que el botón ⬇ de la lista de docentes). */
+function BotonZipExpediente({ db, u }) {
+  const [bajando, setBajando] = useState(false);
+  return (
+    <button className={btnSec + " !px-3 !py-1.5"} disabled={bajando} title="Títulos, cédulas, constancias, formación complementaria y constancia fiscal"
+      onClick={async () => {
+        setBajando(true);
+        try { await generarRespaldoDocente(db, u); }
+        catch (e) { alert("No se pudo generar el ZIP: " + e.message); }
+        setBajando(false);
+      }}>
+      {bajando ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}{bajando ? "Preparando…" : "Descargar expediente (ZIP)"}
+    </button>
+  );
+}
+
 function ExpedienteIntegral({ db, docenteId, mutar, user, volver }) {
   const [tab, setTab] = useState("academica");
   const d = db.users.find(u => u.id === docenteId);
@@ -8209,6 +8293,7 @@ function ExpedienteIntegral({ db, docenteId, mutar, user, volver }) {
         <div className="text-center px-4"><div className="text-xl font-bold">{exp.pct}%</div><div className="text-[11px] text-slate-400">Expediente</div></div>
         <div className="text-center px-4"><div className="text-xl font-bold">{h}/{meta}</div><div className="text-[11px] text-slate-400">Horas ciclo</div></div>
         <div className="text-center px-4"><div className="text-xl font-bold">{pos > 0 ? "#" + pos : "—"}</div><div className="text-[11px] text-slate-400">Ranking</div></div>
+        {user?.rol === "admin" && <div className="w-full sm:w-auto"><BotonZipExpediente db={db} u={d} /></div>}
       </Card>
       <div className="flex gap-2">
         <button onClick={() => setTab("academica")} className={`px-3.5 py-1.5 rounded-xl text-sm font-semibold ${tab === "academica" ? "bg-[#1a2340] text-white" : "bg-white border border-slate-200 text-slate-600"}`}>Formación académica</button>
