@@ -172,10 +172,10 @@ export default function AsistenciaDocente({ user, usuarios = [] }) {
     <div className="space-y-4">
       <div>
         <h2 className="text-xl font-bold" style={{ fontFamily: "'Archivo', sans-serif" }}>
-          Asistencia Docente
+          Recursos Humanos
         </h2>
         <p className="text-sm text-slate-500">
-          Entradas y salidas registradas en el checador del plantel.
+          Asistencia del personal (entradas y salidas del checador), firmas y permisos.
         </p>
       </div>
 

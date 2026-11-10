@@ -1145,7 +1145,7 @@ export default function App() {
     { id: "paec", label: "PAEC", icono: IconoPaec }, // PAEC
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
     { id: "asistencia_baetam", label: "Asistencia BAETAM", icono: ScanLine },
-    { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
+    { id: "asistencia_docente", label: "Recursos Humanos", icono: Clock },
     { id: "finanzas", label: "Finanzas", icono: TrendingUp },
     { id: "ranking_general", label: "Ranking general", icono: Medal },
     { id: "respaldo", label: "Respaldo", icono: Download },
@@ -1173,12 +1173,12 @@ export default function App() {
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "personal_administrativo" ? [
-    { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
+    { id: "asistencia_docente", label: "Recursos Humanos", icono: Clock },
     { id: "paec", label: "PAEC", icono: IconoPaec }, // PAEC
     { id: "avisos", label: "Avisos", icono: Megaphone },
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "jefe_rh" ? [
-    { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
+    { id: "asistencia_docente", label: "Recursos Humanos", icono: Clock },
     { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "jefe_academico" ? [
@@ -1194,7 +1194,7 @@ export default function App() {
     { id: "mi_asignacion", label: "Mi asignación", icono: FolderOpen, badge: pendientesEntrega(db, user.id) },
     { id: "paec", label: "PAEC", icono: IconoPaec }, // PAEC
     { id: "ausentes", label: "Alumnos ausentes", icono: Users },
-    { id: "asistencia_docente", label: "Asistencia Docente", icono: Clock },
+    { id: "asistencia_docente", label: "Recursos Humanos", icono: Clock },
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "cursos", label: "Mis cursos", icono: BookOpen },
