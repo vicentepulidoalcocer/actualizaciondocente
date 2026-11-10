@@ -1311,3 +1311,89 @@ async function generarConstanciaPAEC({ proyecto, persona, actividades, nEvidenci
   a.href = url; a.download = nombre; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
+
+/* ---------- Tarjeta para el Dashboard de la dirección ----------
+   Resumen del proyecto PAEC del ciclo actual sin entrar al apartado:
+   etapa, docentes sumados, evidencias y actividades del plan. Si las
+   tablas del PAEC no existen (por ejemplo, si se quitó), no muestra
+   nada. */
+export function TarjetaPaec({ db, irA }) {
+  const ciclo = db?.config?.cicloActual || "";
+  const [info, setInfo] = useState(null);   // null = cargando · false = no mostrar
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const { data: p, error } = await supabase.from("paec_proyectos").select("*").eq("ciclo", ciclo).maybeSingle();
+        if (error) throw error;
+        if (!p) { if (vivo) setInfo({ sinProyecto: true }); return; }
+        const [pa, ev, pl] = await Promise.all([
+          supabase.from("paec_participantes").select("docente_id, asignatura").eq("proyecto_id", p.id),
+          supabase.from("paec_evidencias").select("fecha, comprobable").eq("proyecto_id", p.id),
+          supabase.from("paec_plan").select("id", { count: "exact", head: true }).eq("proyecto_id", p.id),
+        ]);
+        const part = pa.data || [], evs = ev.data || [];
+        if (vivo) setInfo({
+          p,
+          docentes: new Set(part.map((x) => x.docente_id)).size,
+          asignaturas: new Set(part.map((x) => x.asignatura.trim().toLowerCase())).size,
+          evidencias: evs.length,
+          comprobables: evs.filter((e) => e.comprobable).length,
+          ultima: evs.map((e) => e.fecha).sort().pop() || null,
+          actividades: pl.count || 0,
+        });
+      } catch { if (vivo) setInfo(false); }
+    })();
+    return () => { vivo = false; };
+  }, [ciclo]);
+
+  if (info === false) return null;
+  const ir = () => irA && irA("paec");
+  if (info === null) {
+    return <Card className="p-4 text-sm text-slate-400 flex items-center gap-2"><Loader2 size={14} className="animate-spin" />Cargando PAEC…</Card>;
+  }
+  if (info.sinProyecto) {
+    return (
+      <Card className="p-4 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-slate-600"><b>PAEC:</b> todavía no hay proyecto para el ciclo {ciclo}.</p>
+        <button className={btnSec + " !px-3 !py-1.5"} onClick={ir}>Ir al PAEC</button>
+      </Card>
+    );
+  }
+  const { p } = info;
+  const dato = (n, t, alerta) => (
+    <div className="min-w-[90px]">
+      <div className={`text-xl font-bold ${alerta ? "text-amber-600" : "text-slate-800"}`}>{n}</div>
+      <div className="text-[11px] text-slate-500 leading-tight">{t}</div>
+    </div>
+  );
+  return (
+    <Card className="p-4 space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold text-indigo-600 uppercase tracking-wide">PAEC · ciclo {p.ciclo} · {p.estatus}</p>
+          <p className="font-bold text-slate-800 break-words">{p.nombre}</p>
+        </div>
+        <button className={btnSec + " !px-3 !py-1.5"} onClick={ir}>Ver PAEC</button>
+      </div>
+      <div className="flex gap-1">
+        {ETAPAS.map((e) => (
+          <div key={e.n} title={e.nombre}
+            className={`flex-1 h-2 rounded-full ${e.n < p.etapa ? "bg-emerald-500" : e.n === p.etapa ? "bg-indigo-500" : "bg-slate-200"}`} />
+        ))}
+      </div>
+      <p className="text-xs text-slate-600">Etapa {p.etapa} de 4: <b>{ETAPAS[p.etapa - 1].nombre}</b></p>
+      <div className="flex flex-wrap gap-x-6 gap-y-2">
+        {dato(info.docentes, "docentes sumados")}
+        {dato(info.asignaturas, info.asignaturas < 3 ? "asignaturas (pide 3+)" : "asignaturas o módulos", info.asignaturas < 3)}
+        {dato(info.actividades, "actividades en el plan")}
+        {dato(info.evidencias, info.ultima ? `evidencias · última ${fechaLarga(info.ultima)}` : "evidencias")}
+        {dato(`${info.comprobables}/2`, "comprobables SEMS", info.comprobables === 0)}
+      </div>
+      {p.registrado_sems_en && (
+        <p className="text-xs text-emerald-700 flex items-center gap-1.5"><CheckCircle2 size={13} />Registrado en SEMS el {fechaLarga(p.registrado_sems_en)}</p>
+      )}
+    </Card>
+  );
+}

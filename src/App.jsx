@@ -35,6 +35,7 @@ const Bitacora = React.lazy(() => import("./Bitacora"));
 import { VistaDocumento, posiblesDuplicados, AvisoDuplicados } from "./Revision";
 const ExpedientesIncompletos = React.lazy(() => import("./ExpedientesIncompletos"));
 const Paec = React.lazy(() => import("./Paec")); import { Sprout as IconoPaec } from "lucide-react"; // PAEC
+const TarjetaPaec = React.lazy(() => import("./Paec").then(m => ({ default: m.TarjetaPaec }))); // PAEC
 import {
   soportaPush, esIOS, instaladoEnInicio, permisoActual,
   activarNotificaciones, desactivarNotificaciones, estaActivo, enviarPush, registrarServicio,
@@ -1513,6 +1514,7 @@ function DashboardGeneral({ db, irA }) {
   ];
   return (
     <div className="space-y-4">
+      <React.Suspense fallback={null}><TarjetaPaec db={db} irA={irA} /></React.Suspense> {/* PAEC */}
       <div className="flex gap-1 bg-slate-100 rounded-xl p-1 overflow-x-auto">
         {tabs.map(([id, txt, Ico]) => (
           <button key={id} onClick={() => setArea(id)}
