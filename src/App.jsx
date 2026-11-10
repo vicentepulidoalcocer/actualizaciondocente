@@ -3654,6 +3654,8 @@ de cada ciclo escolar.
         <p className="text-[11px] text-slate-400">También puedes hacerlo desde Docentes, con el ícono de descarga de cada persona.</p>
       </Card>
 
+      <EspacioAlmacenamiento />
+
       <Card className="p-5">
         <React.Suspense fallback={null}><ArchivosSobrantes /></React.Suspense>
       </Card>
@@ -9048,8 +9050,6 @@ function Administracion({ db, user, mutar, esAdmin = true, modo = "todo" }) {
       )}
 
       {verSistema && esAdmin && <ConfigTemas config={cfg} mutar={mutar} />}
-
-      {verSistema && esAdmin && <EspacioAlmacenamiento />}
 
       {verSistema && esAdmin && <JefesDepartamento db={db} mutar={mutar} />}
 
