@@ -1196,13 +1196,13 @@ async function generarPDF({ proyecto, participantes, plan = [], evidencias, urls
   for (let n = 1; n <= total; n++) {
     doc.setPage(n);
     if (sep) doc.addImage(sep.d, "PNG", 12.2, 12.7, 59.8, 16.9);
-    if (dgeta) doc.addImage(dgeta.d, "PNG", 73.6, 14.8, 32.5, 7.2);
+    if (dgeta) doc.addImage(dgeta.d, "PNG", 73.6, 17.65, 32.5, 7.2);  // centrado con el logo de Educación
     if (bandera) doc.addImage(bandera.d, "PNG", 175.2, 8.8, 23.8, 24.9);
     if (anio) doc.addImage(anio.d, "PNG", 10, 248.8, 56.7, 23.5);
     doc.setDrawColor(...GUINDA); doc.setLineWidth(0.5); doc.line(61.2, 260.7, 188.7, 260.7);
     doc.setFont("helvetica", "bold"); doc.setFontSize(6.5); doc.setTextColor(...VINO);
     doc.text("Km 121, Carretera Federal 184, Dziuché, Quintana Roo. CP 77800", 62, 264.5);
-    doc.text("www.sep.gob.mx", 62, 267.6);
+    doc.text("www.cbta291.edu.mx", 62, 267.6);
     doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(120);
     doc.text(`Página ${n} de ${total}`, 188.7, 267.6, { align: "right" });
     doc.setTextColor(0);
@@ -1289,13 +1289,13 @@ async function generarConstanciaPAEC({ proyecto, persona, actividades, nEvidenci
   for (let n = 1; n <= total; n++) {
     doc.setPage(n);
     if (sep) doc.addImage(sep.d, "PNG", 12.2, 12.7, 59.8, 16.9);
-    if (dgeta) doc.addImage(dgeta.d, "PNG", 73.6, 14.8, 32.5, 7.2);
+    if (dgeta) doc.addImage(dgeta.d, "PNG", 73.6, 17.65, 32.5, 7.2);  // centrado con el logo de Educación
     if (bandera) doc.addImage(bandera.d, "PNG", 175.2, 8.8, 23.8, 24.9);
     if (anio) doc.addImage(anio.d, "PNG", 10, 248.8, 56.7, 23.5);
     doc.setDrawColor(...GUINDA); doc.setLineWidth(0.5); doc.line(61.2, 260.7, 188.7, 260.7);
     doc.setFont("helvetica", "bold"); doc.setFontSize(6.5); doc.setTextColor(...VINO);
     doc.text("Km 121, Carretera Federal 184, Dziuché, Quintana Roo. CP 77800", 62, 264.5);
-    doc.text("www.sep.gob.mx", 62, 267.6);
+    doc.text("www.cbta291.edu.mx", 62, 267.6);
     doc.setTextColor(0);
   }
 
