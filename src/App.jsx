@@ -35,6 +35,7 @@ const Bitacora = React.lazy(() => import("./Bitacora"));
 import { VistaDocumento, posiblesDuplicados, AvisoDuplicados } from "./Revision";
 const ExpedientesIncompletos = React.lazy(() => import("./ExpedientesIncompletos"));
 const ArchivosSobrantes = React.lazy(() => import("./ArchivosSobrantes"));
+const ConstanciasEntregas = React.lazy(() => import("./ConstanciasEntregas"));
 const Paec = React.lazy(() => import("./Paec")); import { Sprout as IconoPaec } from "lucide-react"; // PAEC
 const TarjetaPaec = React.lazy(() => import("./Paec").then(m => ({ default: m.TarjetaPaec }))); // PAEC
 import {
@@ -680,6 +681,13 @@ const asignacionDe = (db, docenteId, ciclo, periodo) => {
     || null;
 };
 
+// Funciones que usa la pantalla de Constancias de entregas (archivo aparte)
+const AYUDAS_ENTREGAS = {
+  encargosDe: (...a) => encargosDe(...a), entregasDe: (...a) => entregasDe(...a), capturaDe: (...a) => capturaDe(...a),
+  nombrePeriodo: (...a) => nombrePeriodo(...a), cicloDeFecha: (...a) => cicloDeFecha(...a), periodoDeFecha: (...a) => periodoDeFecha(...a),
+  get NOMBRE_TIPO_ENTREGA() { return NOMBRE_TIPO_ENTREGA; },
+};
+
 // Entregas que le faltan al docente (para la insignia del menú)
 function pendientesEntrega(db, docenteId) {
   const asig = asignacionDe(db, docenteId);
@@ -1140,6 +1148,7 @@ export default function App() {
       { id: "programas", label: "Programas de Estudio", icono: BookOpen },
       { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
       { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
+      { id: "constancias_entregas", label: "Constancias de entregas", icono: Award },
       { id: "tutorias", label: "Tutorías", icono: Users },
     ]},
     { id: "paec", label: "PAEC", icono: IconoPaec }, // PAEC
@@ -1190,6 +1199,7 @@ export default function App() {
     { id: "programas", label: "Programas de Estudio", icono: BookOpen },
     { id: "asignaciones", label: "Asignaciones", icono: FolderOpen },
     { id: "ranking_entregas", label: "Ranking de entregas", icono: Trophy },
+    { id: "constancias_entregas", label: "Constancias de entregas", icono: Award },
   ] : [
     { id: "avisos", label: "Avisos", icono: Megaphone, badge: avisosPendientes(db, user).length },
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
@@ -1309,6 +1319,7 @@ export default function App() {
             ? <RankingGeneral db={db} user={user} />
             : <Ranking db={db} user={user} />)}
           {pagina === "ranking_entregas" && esRolAcademico(user.rol) && <RankingEntregas db={db} />}
+          {pagina === "constancias_entregas" && esRolAcademico(user.rol) && <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}><ConstanciasEntregas db={db} h={AYUDAS_ENTREGAS} /></React.Suspense>}
           {pagina === "finanzas" && esRolControlEscolar(user.rol) && (
             <React.Suspense fallback={<Card className="p-8 text-center text-slate-400 text-sm">Cargando…</Card>}>
               <Finanzas user={user} />
