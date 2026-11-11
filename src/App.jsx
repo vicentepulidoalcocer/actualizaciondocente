@@ -1143,8 +1143,10 @@ export default function App() {
       { id: "tutorias", label: "Tutorías", icono: Users },
     ]},
     { id: "paec", label: "PAEC", icono: IconoPaec }, // PAEC
-    { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
-    { id: "asistencia_baetam", label: "Asistencia BAETAM", icono: ScanLine },
+    { id: "g_servicios", label: "Servicios Escolares", icono: ScanLine, hijos: [
+      { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
+      { id: "asistencia_baetam", label: "Asistencia BAETAM", icono: ScanLine },
+    ]},
     { id: "asistencia_docente", label: "Recursos Humanos", icono: Clock },
     { id: "finanzas", label: "Finanzas", icono: TrendingUp },
     { id: "ranking_general", label: "Ranking general", icono: Medal },
