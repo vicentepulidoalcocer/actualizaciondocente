@@ -65,6 +65,14 @@ export const TEMAS = [
     lluvia: ["🎃", "🦇", "👻", "🦇"],
   },
   {
+    id: "revolucion", nombre: "Revolución Mexicana",
+    desde: "11-17", hasta: "11-20",
+    fondo: "linear-gradient(90deg,#3f2a14,#78350f 55%,#14532d)",
+    franja: "linear-gradient(90deg,#16a34a 0 33%,#ffffff 33% 66%,#dc2626 66% 100%)",
+    adorno: "🐎", mensaje: "20 de noviembre · Aniversario de la Revolución Mexicana.",
+    lluvia: null,
+  },
+  {
     id: "navidad", nombre: "Navidad y Año Nuevo",
     desde: "12-08", hasta: "01-06",
     fondo: "linear-gradient(90deg,#14532d,#166534 55%,#991b1b)",
