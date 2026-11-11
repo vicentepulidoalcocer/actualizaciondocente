@@ -1825,7 +1825,7 @@ async function generarReportePDF({ alumno, desde, hasta, filas }) {
   const pie = (n, total) => {
     doc.setDrawColor(...VERDE); doc.setLineWidth(0.8); doc.line(M, H - 50, W - M, H - 50);
     doc.setTextColor(61, 74, 65); doc.setFont("helvetica", "normal"); doc.setFontSize(7.5);
-    doc.text("Carretera Federal 184, Km 121, Dziuché, Quintana Roo, C.P. 77801", W / 2, H - 39, { align: "center" });
+    doc.text("Carretera Federal 184, Km 121, Dziuché, Quintana Roo, C.P. 77800", W / 2, H - 39, { align: "center" });
     const ancho = W - 2 * M;
     doc.setFillColor(...VERDE); doc.rect(M, H - 32, ancho * 0.857, 6, "F");
     doc.setFillColor(...AMARILLO); doc.rect(M + ancho * 0.857, H - 32, ancho * 0.143, 6, "F");
