@@ -8829,6 +8829,22 @@ function PersonalAdministrativo({ db, mutar }) {
     });
   };
 
+  /* Cambiar el nombre: todo está ligado a la cuenta (id), así que el
+     checador, los avisos y el resto siguen funcionando igual. */
+  const editarNombre = async (p) => {
+    const nuevo = window.prompt(`Nombre completo de ${p.nombre}:`, p.nombre || "");
+    if (nuevo === null) return;
+    const limpio = nuevo.replace(/\s+/g, " ").trim();
+    if (limpio.length < 3) { alert("Escribe el nombre completo."); return; }
+    if (limpio === p.nombre) return;
+    await mutar(d => {
+      const u = d.users.find(x => x.id === p.id);
+      if (u) u.nombre = limpio;
+      registrarActividad(d, `Se cambió el nombre de ${p.nombre} a ${limpio}.`);
+    });
+    setMsg(`Nombre actualizado: ${limpio}.`);
+  };
+
   const nuevaPass = async (p) => {
     const np = window.prompt(`Nueva contraseña para ${p.nombre} (mínimo 6 caracteres):`);
     if (np === null) return;
@@ -8870,6 +8886,9 @@ function PersonalAdministrativo({ db, mutar }) {
             </div>
             <div className="text-xs text-slate-500 truncate">{p.email}</div>
           </div>
+          <button className="text-xs font-semibold text-slate-500 hover:underline" onClick={() => editarNombre(p)}>
+            Editar nombre
+          </button>
           <button className="text-xs font-semibold text-slate-500 hover:underline" onClick={() => nuevaPass(p)}>
             Cambiar contraseña
           </button>
