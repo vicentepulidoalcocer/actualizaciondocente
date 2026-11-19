@@ -7807,9 +7807,25 @@ function Docentes({ db, mutar, irA, esAdmin = true }) {
   };
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>{esAdmin ? "Docentes y administrativos" : "Expedientes docentes"}</h2>
-        {esAdmin && <button className={btnPrim} onClick={() => setEditando({ nombre: "", email: "", area: "", asignaturas: "", nuevaPass: "" })}><Plus size={15}/>Agregar docente</button>}
+        <div className="flex flex-wrap gap-2">
+          {esAdmin && <button className={btnSec} onClick={async () => {
+            /* Excel con los nombres completos del personal activo:
+               docentes y personal administrativo, en orden alfabético. */
+            const XLSX = await import("xlsx");
+            const nombres = db.users
+              .filter(u => u.activo !== false && (u.rol === "docente" || u.rol === "personal_administrativo") && (u.nombre || "").trim())
+              .map(u => u.nombre.replace(/\s+/g, " ").trim())
+              .sort((a, b) => a.localeCompare(b, "es"));
+            const hoja = XLSX.utils.aoa_to_sheet([["Nombre completo"], ...nombres.map(n => [n])]);
+            hoja["!cols"] = [{ wch: Math.max(18, ...nombres.map(n => n.length + 2)) }];
+            const libro = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(libro, hoja, "Personal");
+            XLSX.writeFile(libro, `Personal_CBTA291_${new Date().toLocaleDateString("en-CA", { timeZone: "America/Cancun" })}.xlsx`);
+          }}><Download size={15}/>Descargar listado (Excel)</button>}
+          {esAdmin && <button className={btnPrim} onClick={() => setEditando({ nombre: "", email: "", area: "", asignaturas: "", nuevaPass: "" })}><Plus size={15}/>Agregar docente</button>}
+        </div>
       </div>
       <Card className="p-4">
         <div className="flex flex-wrap gap-2 items-center pb-3 mb-1 border-b border-slate-100">
