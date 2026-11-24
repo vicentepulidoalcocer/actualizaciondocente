@@ -727,13 +727,35 @@ const nAsignaciones = (n) => `${n} ${Number(n) === 1 ? "asignación" : "asignaci
 
 /* ---------------- Avisos y circulares ---------------------------- */
 
-// Destinatarios de un aviso: por ahora, todos los docentes activos.
-// El campo `destino` queda guardado en cada aviso para poder ampliarlo
-// después (una academia, un departamento, un docente en particular)
-// sin migrar los avisos ya publicados.
+/* Destinatarios de un aviso.
+   Los avisos antiguos guardan destino { tipo: "todos" } y siguen llegando
+   solo a los docentes activos, igual que siempre (sus acuses y su avance
+   no cambian). Los nuevos guardan { tipo: "grupos", grupos: [...] } con
+   uno o varios de los grupos de GRUPOS_AVISO. */
+const ROLES_JEFE_DEPTO = ["jefe_formacion", "jefe_academico", "jefe_rh",
+  "coord_tutorias", "administrativo", "coord_baetam"];
+const GRUPOS_AVISO = [
+  { id: "docentes", label: "Docentes", es: (r) => r === "docente" },
+  { id: "administrativos", label: "Personal administrativo", es: (r) => r === "personal_administrativo" },
+  { id: "jefes", label: "Jefes de departamento", es: (r) => ROLES_JEFE_DEPTO.includes(r) },
+];
+const esJefeDepto = (r) => ROLES_JEFE_DEPTO.includes(r);
+const gruposDeAviso = (aviso) => {
+  const d = aviso?.destino || { tipo: "todos" };
+  return d.tipo === "grupos" && Array.isArray(d.grupos) ? d.grupos : ["docentes"];
+};
+const textoDestino = (aviso) => {
+  const g = gruposDeAviso(aviso);
+  return GRUPOS_AVISO.filter(x => g.includes(x.id)).map(x => x.label).join(", ") || "Sin destinatarios";
+};
 function destinatariosDe(db, aviso) {
-  const activos = db.users.filter(u => u.rol === "docente" && u.activo);
   const destino = aviso?.destino || { tipo: "todos" };
+  if (destino.tipo === "grupos" && Array.isArray(destino.grupos)) {
+    const grupos = GRUPOS_AVISO.filter(g => destino.grupos.includes(g.id));
+    return db.users.filter(u => u.activo && u.id !== aviso.creadoPorId
+      && grupos.some(g => g.es(u.rol)));
+  }
+  const activos = db.users.filter(u => u.rol === "docente" && u.activo);
   if (destino.tipo === "docentes" && Array.isArray(destino.ids)) {
     return activos.filter(u => destino.ids.includes(u.id));
   }
@@ -1178,6 +1200,7 @@ export default function App() {
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "coord_baetam" ? [
     { id: "asistencia_baetam", label: "Asistencia BAETAM", icono: ScanLine },
+    { id: "avisos", label: "Avisos", icono: Megaphone },
   ] : user.rol === "administrativo" ? [
     { id: "asistencia", label: "Asistencia (QR)", icono: ScanLine },
     { id: "finanzas", label: "Finanzas", icono: TrendingUp },
@@ -1283,7 +1306,7 @@ export default function App() {
         {/* Navegación lateral */}
         <aside className={`${menuAbierto ? "block" : "hidden"} lg:block w-60 shrink-0 bg-white border-r border-slate-200 min-h-[calc(100vh-52px)] fixed lg:static z-30`}>
           <nav className="p-3 space-y-1">
-            {nav.filter(Boolean).map(item => item.hijos ? (
+            {nav.filter(Boolean).map(it => it.id === "avisos" && it.badge === undefined ? { ...it, badge: avisosPendientes(db, user).length } : it).map(item => item.hijos ? (
               <GrupoMenu key={item.id} item={item} pagina={pagina} irA={irA} />
             ) : (
               <button key={item.id} onClick={() => irA(item.id)}
@@ -1332,8 +1355,8 @@ export default function App() {
           )}
           {pagina === "ranking_general" && esRolComunicador(user.rol) && <RankingGeneral db={db} user={user} />}
           {pagina === "logros" && <Logros db={db} user={user} />}
-          {pagina === "avisos" && user.rol !== "coord_baetam" && (esRolComunicador(user.rol)
-            ? <Avisos db={db} user={user} mutar={mutar} />
+          {pagina === "avisos" && (esRolComunicador(user.rol) && user.rol !== "coord_baetam"
+            ? <Avisos db={db} user={user} mutar={mutar} recargar={() => recargar(user.id)} />
             : <MisAvisos db={db} user={user} recargar={() => recargar(user.id)} />)}
           {pagina === "asistencia" && esRolControlEscolar(user.rol) && (
             <React.Suspense fallback={<Card className="p-8 text-center text-sm text-slate-400"><Loader2 size={18} className="animate-spin inline mr-2"/>Cargando control de asistencia…</Card>}>
@@ -6914,7 +6937,27 @@ function TextoAviso({ texto }) {
 
 /* ---------------- Administrador ---------------- */
 
-function Avisos({ db, user, mutar }) {
+function Avisos({ db, user, mutar, recargar }) {
+  /* Los jefes de departamento publican avisos y, además, reciben los
+     que van dirigidos a ellos: los ven en la pestaña “Recibidos”. */
+  const [vista, setVista] = useState("publicar");
+  const recibe = esJefeDepto(user.rol);
+  const pendRecibidos = recibe ? avisosPendientes(db, user).length : 0;
+  const pestanas = recibe && (
+    <div className="flex gap-2">
+      {[["publicar", "Publicar y seguimiento"], ["recibidos", `Recibidos${pendRecibidos ? ` (${pendRecibidos} por confirmar)` : ""}`]].map(([k, l]) => (
+        <button key={k} onClick={() => setVista(k)}
+          className={`px-3.5 py-1.5 rounded-xl text-sm font-semibold ${vista === k ? "bg-[#1a2340] text-white" : "bg-white border border-slate-200 text-slate-600"}`}>{l}</button>
+      ))}
+    </div>
+  );
+  if (recibe && vista === "recibidos") {
+    return <div className="space-y-4">{pestanas}<MisAvisos db={db} user={user} recargar={recargar} /></div>;
+  }
+  return <AvisosPublicar db={db} user={user} mutar={mutar} pestanas={pestanas} />;
+}
+
+function AvisosPublicar({ db, user, mutar, pestanas }) {
   const [editando, setEditando] = useState(null);
   const [confirmar, setConfirmar] = useState(null);   // aviso por publicar
   const [siguiendo, setSiguiendo] = useState(null);   // aviso en seguimiento
@@ -6934,7 +6977,8 @@ function Avisos({ db, user, mutar }) {
   const nuevo = () => setEditando({
     id: uid(), titulo: "", descripcion: "", tipo: "Circular", prioridad: "Normal",
     fechaLimite: "", enlace: "", archivoNombre: null, archivoGuardado: false,
-    estado: "draft", destino: { tipo: "todos" }, creadoEn: ahora(), creadoPor: user.nombre,
+    estado: "draft", destino: { tipo: "grupos", grupos: ["docentes"] },
+    creadoEn: ahora(), creadoPor: user.nombre, creadoPorId: user.id,
     adjuntos: [], _nuevos: [], _borrar: [],
   });
 
@@ -6959,6 +7003,9 @@ function Avisos({ db, user, mutar }) {
     let paraPush = [];
     if (!editando.titulo.trim() || !editando.descripcion.trim()) {
       setErr("El título y la descripción son obligatorios."); return;
+    }
+    if (!gruposDeAviso(editando).length) {
+      setErr("Elige al menos un grupo de destinatarios."); return;
     }
     setGuardando(true); setErr("");
     try {
@@ -7024,6 +7071,7 @@ function Avisos({ db, user, mutar }) {
 
   return (
     <div className="space-y-4">
+      {pestanas}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-xl font-bold" style={{fontFamily:"'Archivo', sans-serif"}}>Avisos y Circulares</h2>
@@ -7064,6 +7112,7 @@ function Avisos({ db, user, mutar }) {
                 <div className="text-xs text-slate-500 mt-0.5">
                   {a.estado === "draft" ? "Sin publicar" : `Publicado ${fmtFecha((a.fechaPublicacion || "").slice(0,10))}`}
                   {a.fechaLimite && ` · Límite ${fmtFecha(a.fechaLimite)}`}
+                  {` · Para: ${textoDestino(a)}`}
                   {adjuntosDe(a).length > 0 && ` · 📎 ${adjuntosDe(a).length === 1
                     ? adjuntosDe(a)[0].nombre
                     : `${adjuntosDe(a).length} archivos`}`}
@@ -7115,6 +7164,25 @@ function Avisos({ db, user, mutar }) {
               <textarea className={inputCls + " min-h-[140px]"} value={editando.descripcion}
                 placeholder={"Se informa al personal docente que…\n\nPuedes usar **negritas**, *cursivas*, listas con - y pegar ligas."}
                 onChange={e => setEditando({ ...editando, descripcion: e.target.value })} />
+            </Campo>
+            <Campo label="Destinatarios">
+              <div className="flex flex-wrap gap-2 mt-1">
+                {GRUPOS_AVISO.map(g => {
+                  const sel = gruposDeAviso(editando);
+                  const on = sel.includes(g.id);
+                  const n = db.users.filter(u => u.activo && u.id !== (editando.creadoPorId || user.id) && g.es(u.rol)).length;
+                  return (
+                    <label key={g.id} className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm cursor-pointer select-none ${
+                      on ? "bg-emerald-50 border-emerald-400 text-emerald-900 font-semibold" : "bg-white border-slate-200 text-slate-600"}`}>
+                      <input type="checkbox" checked={on} className="accent-emerald-600"
+                        onChange={() => setEditando({ ...editando, destino: { tipo: "grupos",
+                          grupos: on ? sel.filter(x => x !== g.id) : [...sel, g.id] } })} />
+                      {g.label}<span className="text-[11px] text-slate-400 font-normal">({n})</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">Solo las personas de los grupos marcados verán el aviso y deberán marcarlo como enterado.</p>
             </Campo>
             <p className="text-[11px] text-slate-400 -mt-1">Formato: **negritas**, *cursivas*, líneas que empiezan con “- ” para listas. Las direcciones web se convierten en enlaces.</p>
             <div className="grid sm:grid-cols-3 gap-3">
@@ -7191,6 +7259,7 @@ function Avisos({ db, user, mutar }) {
             </button>
             <button className={btnPrim} disabled={guardando} onClick={() => {
               if (!editando.titulo.trim() || !editando.descripcion.trim()) { setErr("El título y la descripción son obligatorios."); return; }
+              if (!gruposDeAviso(editando).length) { setErr("Elige al menos un grupo de destinatarios."); return; }
               setConfirmar(editando);
             }}><Send size={15}/>Publicar aviso</button>
           </div>
@@ -7200,7 +7269,7 @@ function Avisos({ db, user, mutar }) {
       {/* Confirmación de publicación */}
       {confirmar && (
         <Modal titulo="Confirmar publicación" onClose={() => setConfirmar(null)}>
-          <p className="text-sm text-slate-600">¿Deseas publicar este aviso? Una vez publicado será visible para todos los docentes.</p>
+          <p className="text-sm text-slate-600">¿Deseas publicar este aviso? Una vez publicado será visible para: <b>{textoDestino(confirmar)}</b> ({destinatariosDe(db, confirmar).length} personas).</p>
           <div className="flex justify-end gap-2 mt-4">
             <button className={btnSec} onClick={() => setConfirmar(null)}>Cancelar</button>
             <button className={btnPrim} disabled={guardando} onClick={() => guardar(true)}>
@@ -7226,11 +7295,11 @@ function SeguimientoAviso({ db, aviso, onClose }) {
     .sort((a, b) => a.d.nombre.localeCompare(b.d.nombre));
 
   const exportar = () => {
-    const filasCSV = [["Docente", "Área", "Estado", "Fecha", "Hora"]];
+    const filasCSV = [["Nombre", "Área o puesto", "Estado", "Fecha", "Hora"]];
     s.total.slice().sort((a, b) => a.nombre.localeCompare(b.nombre)).forEach(d => {
       const ac = acuseDe(db, aviso.id, d.id);
       const f = ac ? new Date(ac.fecha) : null;
-      filasCSV.push([d.nombre, d.area || "", ac ? "Enterado" : "Pendiente",
+      filasCSV.push([d.nombre, d.rol === "docente" ? (d.area || "Docente") : (NOMBRE_ROL[d.rol] || ""), ac ? "Enterado" : "Pendiente",
         f ? f.toLocaleDateString("es-MX") : "", f ? f.toLocaleTimeString("es-MX") : ""]);
     });
     descargarCSV(`seguimiento_${aviso.titulo.slice(0, 30).replace(/\s+/g, "_")}`, filasCSV);
@@ -7247,16 +7316,17 @@ function SeguimientoAviso({ db, aviso, onClose }) {
           <p className="text-xs text-slate-500 mt-1">
             Publicado: {aviso.fechaPublicacion ? new Date(aviso.fechaPublicacion).toLocaleString("es-MX") : "—"}
             {aviso.fechaLimite && ` · Fecha límite: ${fmtFecha(aviso.fechaLimite)}`}
+            {` · Para: ${textoDestino(aviso)}`}
           </p>
           {avisoVencido(aviso) && s.pendientes.length > 0 && (
             <p className="text-xs text-rose-600 font-semibold mt-1 flex items-center gap-1.5">
-              <AlertTriangle size={13}/>{s.pendientes.length} docente(s) pendiente(s) después de la fecha límite.
+              <AlertTriangle size={13}/>{s.pendientes.length} persona(s) pendiente(s) después de la fecha límite.
             </p>
           )}
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <Stat icono={Users} label="Docentes" valor={s.total.length} />
+          <Stat icono={Users} label="Destinatarios" valor={s.total.length} />
           <Stat icono={CheckCircle2} label="Enterados" valor={s.enterados.length} />
           <Stat icono={Clock} label="Pendientes" valor={s.pendientes.length} color={s.pendientes.length ? "text-amber-600" : "text-slate-900"} />
           <Stat icono={TrendingUp} label="Avance" valor={s.pct + "%"} />
@@ -7268,7 +7338,7 @@ function SeguimientoAviso({ db, aviso, onClose }) {
         <div className="flex flex-wrap gap-2 items-center">
           <div className="relative flex-1 min-w-[160px]">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar docente…" value={q} onChange={e => setQ(e.target.value)} />
+            <input className={inputCls + " !mt-0 !pl-8"} placeholder="Buscar persona…" value={q} onChange={e => setQ(e.target.value)} />
           </div>
           <select className={inputCls + " !mt-0 !w-auto"} value={filtro} onChange={e => setFiltro(e.target.value)}>
             <option value="todos">Todos</option>
@@ -7282,13 +7352,13 @@ function SeguimientoAviso({ db, aviso, onClose }) {
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-white">
               <tr className="text-left text-[11px] uppercase text-slate-400 border-b border-slate-200">
-                <th className="py-2 pr-3">Docente</th><th className="py-2 pr-3">Estado</th><th className="py-2">Fecha de enterado</th>
+                <th className="py-2 pr-3">Nombre</th><th className="py-2 pr-3">Estado</th><th className="py-2">Fecha de enterado</th>
               </tr>
             </thead>
             <tbody>
               {filas.map(({ d, ac }) => (
                 <tr key={d.id} className="border-b border-slate-100 last:border-0">
-                  <td className="py-2 pr-3">{d.nombre}<span className="block text-[11px] text-slate-400">{d.area || "—"}</span></td>
+                  <td className="py-2 pr-3">{d.nombre}<span className="block text-[11px] text-slate-400">{d.rol === "docente" ? (d.area || "Docente") : (NOMBRE_ROL[d.rol] || "—")}</span></td>
                   <td className="py-2 pr-3">
                     {ac ? <span className="text-emerald-700 font-semibold text-xs">✓ Enterado</span>
                         : <span className="text-amber-600 font-semibold text-xs">⚠ Pendiente</span>}
@@ -7321,7 +7391,7 @@ function MisAvisos({ db, user, recargar }) {
      avisos ya publicados conserva exactamente los mismos números. */
   const mios = db.avisos.filter(a => a.estado !== "draft" && (
     destinatariosDe(db, a).some(d => d.id === user.id) ||
-    user.rol === "personal_administrativo"));
+    (user.rol === "personal_administrativo" && a.destino?.tipo !== "grupos")));
   const pendientes = mios.filter(a => a.estado === "published" && !acuseDe(db, a.id, user.id));
   const atendidos = mios.filter(a => acuseDe(db, a.id, user.id));
   const lista = tab === "pendientes" ? pendientes : atendidos;
