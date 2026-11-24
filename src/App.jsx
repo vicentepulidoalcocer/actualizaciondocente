@@ -1026,6 +1026,17 @@ export default function App() {
   const [menuAbierto, setMenuAbierto] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const [verNotifs, setVerNotifs] = useState(false);
+  /* El panel de notificaciones se cierra solo al tocar cualquier otra
+     parte de la pantalla (el menú, el contenido, el buscador…). El toque
+     sigue su curso: si fue en una opción del menú, también la abre. */
+  const refNotifs = useRef(null);
+  useEffect(() => {
+    if (!verNotifs) return;
+    const fuera = (e) => { if (e.target.closest?.("[data-campana-notifs]")) return; // la campana ya alterna el panel
+      if (refNotifs.current && !refNotifs.current.contains(e.target)) setVerNotifs(false); };
+    document.addEventListener("pointerdown", fuera);
+    return () => document.removeEventListener("pointerdown", fuera);
+  }, [verNotifs]);
   const snapRef = useRef(null); // último estado confirmado en la nube
 
   useEffect(() => {
@@ -1254,7 +1265,7 @@ export default function App() {
     { id: "logros", label: "Logros", icono: Award },
   ];
 
-  const irA = (p, ctx = null) => { setPagina(p); setPaginaCtx(ctx); setMenuAbierto(false); setBusqueda(""); };
+  const irA = (p, ctx = null) => { setPagina(p); setPaginaCtx(ctx); setMenuAbierto(false); setBusqueda(""); setVerNotifs(false); };
 
   const marcarLeidas = () => mutar(d => { d.notifs.forEach(n => { if (n.userId === user.id) n.leida = true; }); });
 
@@ -1293,7 +1304,7 @@ export default function App() {
             {busqueda.trim() && <Buscador db={db} user={user} q={busqueda} irA={irA} cerrar={() => setBusqueda("")} />}
           </div>
           )}
-          <button className="relative p-2 rounded-lg hover:bg-white/10" onClick={() => { setVerNotifs(v => !v); if (!verNotifs) marcarLeidas(); }}>
+          <button data-campana-notifs className="relative p-2 rounded-lg hover:bg-white/10" onClick={() => { setVerNotifs(v => !v); if (!verNotifs) marcarLeidas(); }}>
             <Bell size={19} />
             {noLeidas > 0 && <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-[#E8871E] text-[10px] font-bold flex items-center justify-center">{noLeidas}</span>}
           </button>
@@ -1305,7 +1316,7 @@ export default function App() {
         </div>
         <FranjaTema tema={tema} />
         {verNotifs && (
-          <div className="absolute right-4 top-14 w-80 max-h-96 overflow-y-auto bg-white text-slate-800 rounded-2xl shadow-xl border border-slate-200 z-50">
+          <div ref={refNotifs} className="absolute right-4 top-14 w-80 max-h-96 overflow-y-auto bg-white text-slate-800 rounded-2xl shadow-xl border border-slate-200 z-50">
             <div className="px-4 py-2.5 font-bold text-sm border-b border-slate-100">Notificaciones</div>
             {misNotifs.length === 0 && <p className="p-4 text-sm text-slate-500">Sin notificaciones por ahora.</p>}
             {misNotifs.slice(0, 30).map(n => (
