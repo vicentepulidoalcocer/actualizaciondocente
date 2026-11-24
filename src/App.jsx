@@ -1213,7 +1213,7 @@ export default function App() {
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "jefe_rh" ? [
     { id: "asistencia_docente", label: "Recursos Humanos", icono: Clock },
-    { id: "avisos", label: "Avisos y Circulares", icono: Megaphone },
+    { id: "avisos", label: "Avisos", icono: Megaphone },
     { id: "calendario", label: "Calendarios", icono: CalendarDays },
   ] : user.rol === "jefe_academico" ? [
     { id: "dashboard", label: "Dashboard", icono: LayoutDashboard },
@@ -1355,7 +1355,7 @@ export default function App() {
           )}
           {pagina === "ranking_general" && esRolComunicador(user.rol) && <RankingGeneral db={db} user={user} />}
           {pagina === "logros" && <Logros db={db} user={user} />}
-          {pagina === "avisos" && (esRolComunicador(user.rol) && user.rol !== "coord_baetam"
+          {pagina === "avisos" && (esRolComunicador(user.rol) && user.rol !== "coord_baetam" && user.rol !== "jefe_rh"
             ? <Avisos db={db} user={user} mutar={mutar} recargar={() => recargar(user.id)} />
             : <MisAvisos db={db} user={user} recargar={() => recargar(user.id)} />)}
           {pagina === "asistencia" && esRolControlEscolar(user.rol) && (
