@@ -7,7 +7,7 @@ import {
   FolderOpen, User, Activity, ShieldCheck, Menu, X, Megaphone,
   Paperclip, Link2, Archive, Send, Sparkles, CalendarDays, ScanLine, RefreshCw,
   Image as ImageIcon, HardDrive, History
-, Save } from "lucide-react";
+, Save, ChevronDown } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie,
   Cell, LineChart, Line, Legend, CartesianGrid
@@ -742,18 +742,34 @@ const GRUPOS_AVISO = [
 const esJefeDepto = (r) => ROLES_JEFE_DEPTO.includes(r);
 const gruposDeAviso = (aviso) => {
   const d = aviso?.destino || { tipo: "todos" };
-  return d.tipo === "grupos" && Array.isArray(d.grupos) ? d.grupos : ["docentes"];
+  return d.tipo === "grupos" && Array.isArray(d.grupos) ? d.grupos : (d.tipo === "grupos" ? [] : ["docentes"]);
 };
-const textoDestino = (aviso) => {
-  const g = gruposDeAviso(aviso);
-  return GRUPOS_AVISO.filter(x => g.includes(x.id)).map(x => x.label).join(", ") || "Sin destinatarios";
+/* Personas elegidas una a una (además de los grupos completos) */
+const idsDeAviso = (aviso) => {
+  const d = aviso?.destino || {};
+  return d.tipo === "grupos" && Array.isArray(d.ids) ? d.ids : [];
 };
+const tieneDestinatarios = (aviso) => gruposDeAviso(aviso).length > 0 || idsDeAviso(aviso).length > 0;
+/* Miembros activos de un grupo que pueden recibir el aviso */
+const miembrosGrupo = (db, g, excluirId) => db.users
+  .filter(u => u.activo && u.id !== excluirId && g.es(u.rol))
+  .sort((a, b) => (a.nombre || "").localeCompare(b.nombre || ""));
+function textoDestino(aviso, db) {
+  const g = gruposDeAviso(aviso), ids = idsDeAviso(aviso);
+  const partes = GRUPOS_AVISO.map(x => {
+    if (g.includes(x.id)) return x.label;
+    const n = db ? db.users.filter(u => ids.includes(u.id) && x.es(u.rol)).length : 0;
+    return n ? `${n} de ${x.label.toLowerCase()}` : null;
+  }).filter(Boolean);
+  return partes.join(", ") || "Sin destinatarios";
+}
 function destinatariosDe(db, aviso) {
   const destino = aviso?.destino || { tipo: "todos" };
-  if (destino.tipo === "grupos" && Array.isArray(destino.grupos)) {
-    const grupos = GRUPOS_AVISO.filter(g => destino.grupos.includes(g.id));
+  if (destino.tipo === "grupos") {
+    const grupos = GRUPOS_AVISO.filter(g => (destino.grupos || []).includes(g.id));
+    const ids = Array.isArray(destino.ids) ? destino.ids : [];
     return db.users.filter(u => u.activo && u.id !== aviso.creadoPorId
-      && grupos.some(g => g.es(u.rol)));
+      && (grupos.some(g => g.es(u.rol)) || ids.includes(u.id)));
   }
   const activos = db.users.filter(u => u.rol === "docente" && u.activo);
   if (destino.tipo === "docentes" && Array.isArray(destino.ids)) {
@@ -7004,8 +7020,8 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
     if (!editando.titulo.trim() || !editando.descripcion.trim()) {
       setErr("El título y la descripción son obligatorios."); return;
     }
-    if (!gruposDeAviso(editando).length) {
-      setErr("Elige al menos un grupo de destinatarios."); return;
+    if (!tieneDestinatarios(editando)) {
+      setErr("Elige al menos un destinatario."); return;
     }
     setGuardando(true); setErr("");
     try {
@@ -7112,7 +7128,7 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
                 <div className="text-xs text-slate-500 mt-0.5">
                   {a.estado === "draft" ? "Sin publicar" : `Publicado ${fmtFecha((a.fechaPublicacion || "").slice(0,10))}`}
                   {a.fechaLimite && ` · Límite ${fmtFecha(a.fechaLimite)}`}
-                  {` · Para: ${textoDestino(a)}`}
+                  {` · Para: ${textoDestino(a, db)}`}
                   {adjuntosDe(a).length > 0 && ` · 📎 ${adjuntosDe(a).length === 1
                     ? adjuntosDe(a)[0].nombre
                     : `${adjuntosDe(a).length} archivos`}`}
@@ -7166,23 +7182,8 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
                 onChange={e => setEditando({ ...editando, descripcion: e.target.value })} />
             </Campo>
             <Campo label="Destinatarios">
-              <div className="flex flex-wrap gap-2 mt-1">
-                {GRUPOS_AVISO.map(g => {
-                  const sel = gruposDeAviso(editando);
-                  const on = sel.includes(g.id);
-                  const n = db.users.filter(u => u.activo && u.id !== (editando.creadoPorId || user.id) && g.es(u.rol)).length;
-                  return (
-                    <label key={g.id} className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-sm cursor-pointer select-none ${
-                      on ? "bg-emerald-50 border-emerald-400 text-emerald-900 font-semibold" : "bg-white border-slate-200 text-slate-600"}`}>
-                      <input type="checkbox" checked={on} className="accent-emerald-600"
-                        onChange={() => setEditando({ ...editando, destino: { tipo: "grupos",
-                          grupos: on ? sel.filter(x => x !== g.id) : [...sel, g.id] } })} />
-                      {g.label}<span className="text-[11px] text-slate-400 font-normal">({n})</span>
-                    </label>
-                  );
-                })}
-              </div>
-              <p className="text-[11px] text-slate-400 mt-1">Solo las personas de los grupos marcados verán el aviso y deberán marcarlo como enterado.</p>
+              <SelectorDestinatarios db={db} aviso={editando} yoId={editando.creadoPorId || user.id}
+                onChange={(destino) => setEditando({ ...editando, destino })} />
             </Campo>
             <p className="text-[11px] text-slate-400 -mt-1">Formato: **negritas**, *cursivas*, líneas que empiezan con “- ” para listas. Las direcciones web se convierten en enlaces.</p>
             <div className="grid sm:grid-cols-3 gap-3">
@@ -7259,7 +7260,7 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
             </button>
             <button className={btnPrim} disabled={guardando} onClick={() => {
               if (!editando.titulo.trim() || !editando.descripcion.trim()) { setErr("El título y la descripción son obligatorios."); return; }
-              if (!gruposDeAviso(editando).length) { setErr("Elige al menos un grupo de destinatarios."); return; }
+              if (!tieneDestinatarios(editando)) { setErr("Elige al menos un destinatario."); return; }
               setConfirmar(editando);
             }}><Send size={15}/>Publicar aviso</button>
           </div>
@@ -7269,7 +7270,7 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
       {/* Confirmación de publicación */}
       {confirmar && (
         <Modal titulo="Confirmar publicación" onClose={() => setConfirmar(null)}>
-          <p className="text-sm text-slate-600">¿Deseas publicar este aviso? Una vez publicado será visible para: <b>{textoDestino(confirmar)}</b> ({destinatariosDe(db, confirmar).length} personas).</p>
+          <p className="text-sm text-slate-600">¿Deseas publicar este aviso? Una vez publicado será visible para: <b>{textoDestino(confirmar, db)}</b> ({destinatariosDe(db, confirmar).length} personas).</p>
           <div className="flex justify-end gap-2 mt-4">
             <button className={btnSec} onClick={() => setConfirmar(null)}>Cancelar</button>
             <button className={btnPrim} disabled={guardando} onClick={() => guardar(true)}>
@@ -7280,6 +7281,76 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
       )}
 
       {siguiendo && <SeguimientoAviso db={db} aviso={siguiendo} onClose={() => setSiguiendo(null)} />}
+    </div>
+  );
+}
+
+/* Elección de destinatarios: cada grupo se marca completo con su casilla,
+   o se abre su lista para elegir a las personas una a una. */
+function SelectorDestinatarios({ db, aviso, yoId, onChange }) {
+  const [abierto, setAbierto] = useState(null);
+  const grupos = gruposDeAviso(aviso), ids = idsDeAviso(aviso);
+  const fijar = (g, i) => onChange({ tipo: "grupos", grupos: g, ids: i });
+
+  return (
+    <div className="space-y-2 mt-1">
+      {GRUPOS_AVISO.map(g => {
+        const miembros = miembrosGrupo(db, g, yoId);
+        const mIds = miembros.map(u => u.id);
+        const completo = grupos.includes(g.id);
+        const elegidos = completo ? miembros.length : mIds.filter(id => ids.includes(id)).length;
+        const parcial = !completo && elegidos > 0;
+        const sinMiembros = ids.filter(id => !mIds.includes(id));
+
+        const toggleGrupo = () => completo
+          ? fijar(grupos.filter(x => x !== g.id), sinMiembros)
+          : fijar([...grupos, g.id], sinMiembros);
+
+        const togglePersona = (id) => {
+          let sel = completo ? mIds : mIds.filter(x => ids.includes(x));
+          sel = sel.includes(id) ? sel.filter(x => x !== id) : [...sel, id];
+          if (sel.length === miembros.length && miembros.length > 0) {
+            fijar([...grupos.filter(x => x !== g.id), g.id], sinMiembros);
+          } else {
+            fijar(grupos.filter(x => x !== g.id), [...sinMiembros, ...sel]);
+          }
+        };
+
+        return (
+          <div key={g.id} className={`rounded-xl border ${completo || parcial ? "border-emerald-400 bg-emerald-50/50" : "border-slate-200 bg-white"}`}>
+            <div className="flex items-center gap-2 px-3 py-2">
+              <input type="checkbox" className="accent-emerald-600 w-4 h-4" checked={completo}
+                ref={el => { if (el) el.indeterminate = parcial; }} onChange={toggleGrupo} />
+              <button type="button" className="flex-1 text-left text-sm font-semibold text-slate-700" onClick={toggleGrupo}>
+                {g.label}
+              </button>
+              <span className="text-[11px] text-slate-500">{elegidos}/{miembros.length}</span>
+              <button type="button" className="text-xs font-semibold text-indigo-600 hover:underline flex items-center gap-0.5"
+                onClick={() => setAbierto(abierto === g.id ? null : g.id)}>
+                {abierto === g.id ? "Ocultar lista" : "Elegir personas"}
+                <ChevronDown size={13} className={abierto === g.id ? "rotate-180 transition" : "transition"} />
+              </button>
+            </div>
+            {abierto === g.id && (
+              <div className="border-t border-slate-200 px-3 py-2 max-h-56 overflow-y-auto grid sm:grid-cols-2 gap-x-3">
+                {miembros.length === 0 && <p className="text-xs text-slate-400 py-1">No hay personas activas en este grupo.</p>}
+                {miembros.map(u => (
+                  <label key={u.id} className="flex items-center gap-2 py-1 text-sm cursor-pointer">
+                    <input type="checkbox" className="accent-emerald-600" checked={completo || ids.includes(u.id)}
+                      onChange={() => togglePersona(u.id)} />
+                    <span className="truncate">{u.nombre}
+                      {g.id === "jefes" && <span className="text-[11px] text-slate-400"> · {NOMBRE_ROL[u.rol]}</span>}
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      <p className="text-[11px] text-slate-400">
+        Marca un grupo completo o abre su lista para elegir personas una a una. Solo los destinatarios verán el aviso y deberán marcarlo como enterado.
+      </p>
     </div>
   );
 }
@@ -7316,7 +7387,7 @@ function SeguimientoAviso({ db, aviso, onClose }) {
           <p className="text-xs text-slate-500 mt-1">
             Publicado: {aviso.fechaPublicacion ? new Date(aviso.fechaPublicacion).toLocaleString("es-MX") : "—"}
             {aviso.fechaLimite && ` · Fecha límite: ${fmtFecha(aviso.fechaLimite)}`}
-            {` · Para: ${textoDestino(aviso)}`}
+            {` · Para: ${textoDestino(aviso, db)}`}
           </p>
           {avisoVencido(aviso) && s.pendientes.length > 0 && (
             <p className="text-xs text-rose-600 font-semibold mt-1 flex items-center gap-1.5">
