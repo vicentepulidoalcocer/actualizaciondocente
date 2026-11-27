@@ -142,7 +142,11 @@ const COLOR_PRIORIDAD = {
   Importante: { chip: "bg-amber-100 text-amber-800", borde: "border-amber-300", punto: "🟠" },
   Urgente:    { chip: "bg-rose-100 text-rose-700",   borde: "border-rose-400",  punto: "🔴" },
 };
-const ESTADO_AVISO = { draft: "Borrador", published: "Publicado", archived: "Archivado" };
+const ESTADO_AVISO = { draft: "Borrador", scheduled: "Programado", published: "Publicado", archived: "Archivado" };
+/* Fecha y hora legibles de un aviso programado */
+const fmtProgramado = (iso) => iso ? new Date(iso).toLocaleString("es-MX", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "America/Cancun" }) : "";
+/* Valor por omisión para programar: mañana a las 7:00 a.m. (hora local) */
+const mananaSieteAM = () => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(7, 0, 0, 0); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T07:00`; };
 
 /* Las insignias cubren las dos áreas del trabajo docente: la capacitación
    y el cumplimiento de planeaciones, planes de trabajo e informes. */
@@ -3378,7 +3382,7 @@ function Respaldo({ db, user }) {
       zip.file(`Indices/avisos_${sello}.csv`, csvTexto(fAvisos));
 
       const fAcuses = [["Aviso", "Docente", "Estado", "Fecha y hora del acuse"]];
-      db.avisos.filter(a => a.estado !== "draft").forEach(a => {
+      db.avisos.filter(a => a.estado === "published" || a.estado === "archived").forEach(a => {
         destinatariosDe(db, a).forEach(d => {
           const ac = acuseDe(db, a.id, d.id);
           fAcuses.push([a.titulo, d.nombre, ac ? "Enterado" : "Pendiente",
@@ -7026,8 +7030,12 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
     return subidos;
   };
 
-  const guardar = async (publicar) => {
+  /* publicar: true publica ya. programarEn (ISO): deja el aviso programado;
+     lo publica el servidor a esa hora (función avisos-programados). */
+  const guardar = async (publicar, programarEnArg = null) => {
     let paraPush = [];
+    // Guardar cambios de un aviso programado conserva su programación
+    const programarEn = programarEnArg || (!publicar && editando.estado === "scheduled" ? editando.publicarEn : null);
     if (!editando.titulo.trim() || !editando.descripcion.trim()) {
       setErr("El título y la descripción son obligatorios."); return;
     }
@@ -7050,9 +7058,12 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
           archivoGuardado: !!conservaVieja,
           archivoNombre: conservaVieja ? conservaVieja.nombre : null,
           archivoTipo: conservaVieja ? conservaVieja.tipo : "",
-          estado: publicar ? "published" : "draft",
+          estado: programarEn ? "scheduled" : publicar ? "published" : "draft",
           actualizadoEn: ahora(),
         };
+        if (programarEn) base.publicarEn = programarEn;
+        else delete base.publicarEn;
+        if (programarEn) registrarActividad(d, `Se programó el aviso “${base.titulo}” para ${fmtProgramado(programarEn)}.`);
         if (publicar && !base.fechaPublicacion) base.fechaPublicacion = ahora();
         const i = d.avisos.findIndex(a => a.id === base.id);
         if (i >= 0) d.avisos[i] = { ...d.avisos[i], ...base };
@@ -7087,6 +7098,16 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
   };
 
   const cambiarEstado = async (aviso, estado) => {
+    if (estado === "draft") {
+      if (!window.confirm(`¿Cancelar la programación de “${aviso.titulo}”?\n\nEl aviso queda como borrador y no se publicará.`)) return;
+      await mutar(d => {
+        const a = d.avisos.find(x => x.id === aviso.id);
+        if (a.estado !== "scheduled") return;
+        a.estado = "draft"; delete a.publicarEn; a.actualizadoEn = ahora();
+        registrarActividad(d, `Se canceló la programación del aviso “${a.titulo}”.`);
+      });
+      return;
+    }
     const verbo = estado === "archived" ? "archivar" : "reactivar";
     if (!window.confirm(`¿Deseas ${verbo} el aviso “${aviso.titulo}”?\n\nLos acuses ya registrados se conservan.`)) return;
     await mutar(d => {
@@ -7095,6 +7116,7 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
       registrarActividad(d, `Se ${estado === "archived" ? "archivó" : "reactivó"} el aviso “${a.titulo}”.`);
     });
   };
+  const copiaEditable = (a) => ({ ...JSON.parse(JSON.stringify(a)), adjuntos: adjuntosDe(a), _nuevos: [], _borrar: [] });
 
   return (
     <div className="space-y-4">
@@ -7137,7 +7159,9 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
                   <span className="text-[11px] text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full">{a.tipo}</span>
                 </div>
                 <div className="text-xs text-slate-500 mt-0.5">
-                  {a.estado === "draft" ? "Sin publicar" : `Publicado ${fmtFecha((a.fechaPublicacion || "").slice(0,10))}`}
+                  {a.estado === "draft" ? "Sin publicar"
+                    : a.estado === "scheduled" ? (new Date(a.publicarEn) <= new Date() ? "Publicándose…" : `Se publicará el ${fmtProgramado(a.publicarEn)}`)
+                    : `Publicado ${fmtFecha((a.fechaPublicacion || "").slice(0,10))}`}
                   {a.fechaLimite && ` · Límite ${fmtFecha(a.fechaLimite)}`}
                   {` · Para: ${textoDestino(a, db)}`}
                   {adjuntosDe(a).length > 0 && ` · 📎 ${adjuntosDe(a).length === 1
@@ -7145,7 +7169,7 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
                     : `${adjuntosDe(a).length} archivos`}`}
                 </div>
               </div>
-              {a.estado !== "draft" && (
+              {(a.estado === "published" || a.estado === "archived") && (
                 <div className="text-center min-w-[86px]">
                   <div className="text-sm font-bold">{s.enterados.length}/{s.total.length}</div>
                   <div className="w-20 h-1.5 rounded-full bg-slate-200 overflow-hidden mx-auto mt-1">
@@ -7155,12 +7179,19 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
               )}
               <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
                 a.estado === "published" ? "bg-emerald-100 text-emerald-800"
+                : a.estado === "scheduled" ? "bg-amber-100 text-amber-800"
                 : a.estado === "draft" ? "bg-slate-100 text-slate-600" : "bg-slate-200 text-slate-500"}`}>
                 {ESTADO_AVISO[a.estado]}
               </span>
               <div className="flex gap-1">
-                {a.estado !== "draft" &&
+                {(a.estado === "published" || a.estado === "archived") &&
                   <button className={btnSec + " !px-3 !py-1.5"} onClick={() => setSiguiendo(a)}>Ver seguimiento</button>}
+                {a.estado === "scheduled" && new Date(a.publicarEn) > new Date() && <>
+                  <button className={btnSec + " !px-3 !py-1.5"} title="Publicar ahora"
+                    onClick={() => { const c = copiaEditable(a); setEditando(c); setConfirmar(c); }}><Send size={14}/>Publicar ahora</button>
+                  <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Cancelar programación"
+                    onClick={() => cambiarEstado(a, "draft")}><X size={15}/></button>
+                </>}
                 <button className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="Editar"
                   onClick={() => setEditando({
                     ...JSON.parse(JSON.stringify(a)),
@@ -7267,19 +7298,46 @@ function AvisosPublicar({ db, user, mutar, pestanas }) {
           <div className="flex flex-wrap justify-end gap-2 mt-4">
             <button className={btnSec} onClick={() => setEditando(null)}>Cancelar</button>
             <button className={btnSec} disabled={guardando} onClick={() => guardar(false)}>
-              {guardando && <Loader2 size={14} className="animate-spin"/>}Guardar borrador
+              {guardando && <Loader2 size={14} className="animate-spin"/>}{editando.estado === "scheduled" ? "Guardar cambios" : "Guardar borrador"}
             </button>
+            {editando.estado !== "published" && editando.estado !== "archived" &&
+              <button className={btnSec} disabled={guardando} onClick={() => {
+                if (!editando.titulo.trim() || !editando.descripcion.trim()) { setErr("El título y la descripción son obligatorios."); return; }
+                if (!tieneDestinatarios(editando)) { setErr("Elige al menos un destinatario."); return; }
+                setErr("");
+                setConfirmar({ ...editando, _modo: "programar", _cuando: editando.publicarEn ? (() => { const d = new Date(editando.publicarEn); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; })() : mananaSieteAM() });
+              }}><Clock size={15}/>Programar</button>}
             <button className={btnPrim} disabled={guardando} onClick={() => {
               if (!editando.titulo.trim() || !editando.descripcion.trim()) { setErr("El título y la descripción son obligatorios."); return; }
               if (!tieneDestinatarios(editando)) { setErr("Elige al menos un destinatario."); return; }
               setConfirmar(editando);
-            }}><Send size={15}/>Publicar aviso</button>
+            }}><Send size={15}/>{editando.estado === "published" ? "Publicar aviso" : "Publicar ahora"}</button>
           </div>
         </Modal>
       )}
 
       {/* Confirmación de publicación */}
-      {confirmar && (
+      {confirmar && confirmar._modo === "programar" && (
+        <Modal titulo="Programar publicación" onClose={() => setConfirmar(null)}>
+          <p className="text-sm text-slate-600">El aviso se publicará solo en la fecha y hora que elijas, aunque nadie tenga el portal abierto. Ese momento les llegará la notificación a: <b>{textoDestino(confirmar, db)}</b> ({destinatariosDe(db, confirmar).length} personas).</p>
+          <Campo label="Fecha y hora de publicación">
+            <input type="datetime-local" className={inputCls} value={confirmar._cuando}
+              onChange={e => setConfirmar({ ...confirmar, _cuando: e.target.value })} />
+          </Campo>
+          <p className="text-[11px] text-slate-400 mt-1">Puede tardar hasta 5 minutos después de la hora elegida. Mientras tanto puedes editarlo, publicarlo antes o cancelar la programación.</p>
+          {err && <p className="text-sm text-rose-600 mt-2">{err}</p>}
+          <div className="flex justify-end gap-2 mt-4">
+            <button className={btnSec} onClick={() => setConfirmar(null)}>Cancelar</button>
+            <button className={btnPrim} disabled={guardando} onClick={() => {
+              const t = new Date(confirmar._cuando);
+              if (!confirmar._cuando || isNaN(t)) { setErr("Elige la fecha y la hora."); return; }
+              if (t.getTime() < Date.now() + 60000) { setErr("Elige una hora futura (al menos un minuto después de ahora)."); return; }
+              guardar(false, t.toISOString());
+            }}>{guardando && <Loader2 size={14} className="animate-spin"/>}<Clock size={15}/>Programar</button>
+          </div>
+        </Modal>
+      )}
+      {confirmar && confirmar._modo !== "programar" && (
         <Modal titulo="Confirmar publicación" onClose={() => setConfirmar(null)}>
           <p className="text-sm text-slate-600">¿Deseas publicar este aviso? Una vez publicado será visible para: <b>{textoDestino(confirmar, db)}</b> ({destinatariosDe(db, confirmar).length} personas).</p>
           <div className="flex justify-end gap-2 mt-4">
@@ -7471,7 +7529,7 @@ function MisAvisos({ db, user, recargar }) {
   /* El personal administrativo consulta los avisos publicados aunque no
      figure como destinatario: así el seguimiento de enterados de los
      avisos ya publicados conserva exactamente los mismos números. */
-  const mios = db.avisos.filter(a => a.estado !== "draft" && (
+  const mios = db.avisos.filter(a => (a.estado === "published" || a.estado === "archived") && (
     destinatariosDe(db, a).some(d => d.id === user.id) ||
     (user.rol === "personal_administrativo" && a.destino?.tipo !== "grupos")));
   const pendientes = mios.filter(a => a.estado === "published" && !acuseDe(db, a.id, user.id));

@@ -13,6 +13,7 @@
    guardado general. Para quitarlo ver quitar_paec.sql.
    ================================================================ */
 
+import { registrarConstancia, qrVerificacion } from "./lib/verificacion.js";
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Users, Camera, Trash2, Loader2, Plus, Pencil, Save, X, Copy, Check,
@@ -1284,6 +1285,23 @@ async function generarConstanciaPAEC({ proyecto, persona, actividades, nEvidenci
   doc.setDrawColor(60); doc.setLineWidth(0.3); doc.line(W / 2 - 40, y, W / 2 + 40, y);
   doc.setFont("helvetica", "bold"); doc.setFontSize(10);
   doc.text("DIRECCIÓN DEL PLANTEL", W / 2, y + 5, { align: "center" });
+
+  // Código QR de verificación junto a la firma
+  const folio = await registrarConstancia({
+    clave: `paec:${proyecto.id || proyecto.ciclo}:${persona.id}`, tipo: "paec",
+    titularId: persona.id, titular: persona.nombre,
+    detalle: `Participación en el Programa Aula, Escuela y Comunidad con el proyecto «${proyecto.nombre}», ciclo escolar ${proyecto.ciclo}.`,
+    datos: { ciclo: proyecto.ciclo, evidencias: nEvidencias || 0 },
+  });
+  if (folio) {
+    try {
+      doc.addImage(await qrVerificacion(folio), "PNG", W - M - 22, y - 20, 22, 22);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(6); doc.setTextColor(90);
+      doc.text(`Folio ${folio}`, W - M - 11, y + 5, { align: "center" });
+      doc.text("Escanee para verificar", W - M - 11, y + 8, { align: "center" });
+      doc.setTextColor(0);
+    } catch { /* sin QR si la imagen falla */ }
+  }
 
   const total = doc.getNumberOfPages();
   for (let n = 1; n <= total; n++) {

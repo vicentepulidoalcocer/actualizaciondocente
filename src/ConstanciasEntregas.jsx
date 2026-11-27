@@ -12,6 +12,7 @@
    El formato es el verde institucional de los reportes de alumnos.
    ================================================================ */
 
+import { registrarConstancia, qrVerificacion } from "./lib/verificacion.js";
 import React, { useMemo, useState } from "react";
 import { Award, FileText, Download, Loader2, ChevronDown, ChevronRight, CheckCircle2, AlertTriangle, Search } from "lucide-react";
 
@@ -106,6 +107,21 @@ async function pdfDocente({ docente, rev, ciclo, periodo, h }) {
 
   let y;
   if (rev.completo) {
+    // Código QR de verificación (el registro se conserva aunque se borren los archivos del semestre)
+    const folio = await registrarConstancia({
+      clave: `entregas:${docente.id}:${ciclo}:${periodo}`, tipo: "entregas",
+      titularId: docente.id, titular: docente.nombre,
+      detalle: `Cumplimiento de entregas académicas del semestre ${semestre} (${rev.ent} de ${rev.req} documentos requeridos).`,
+      datos: { ciclo, periodo, entregados: rev.ent, requeridos: rev.req },
+    });
+    if (folio) {
+      try {
+        doc.addImage(await qrVerificacion(folio), "PNG", M, 106, 62, 62);
+        doc.setTextColor(...GRIS); doc.setFont("helvetica", "normal"); doc.setFontSize(6.5);
+        doc.text(`Folio ${folio}`, M, 176);
+        doc.text("Escanee para verificar", M, 184);
+      } catch { /* sin QR si la imagen falla */ }
+    }
     doc.setTextColor(...VERDE); doc.setFont("helvetica", "bold"); doc.setFontSize(20);
     doc.text("CONSTANCIA", W / 2, 168, { align: "center" });
     doc.setTextColor(...GRIS); doc.setFont("helvetica", "normal"); doc.setFontSize(10);
